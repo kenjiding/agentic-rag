@@ -1,6 +1,8 @@
 from typing import List
 import pickle
 import hashlib
+import asyncio
+import time
 from pathlib import Path
 from docling.document_converter import DocumentConverter
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -8,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_ollama import ChatOllama
+from agentic_rag.llm import LLM
 
 # 1. 定义 Markdown 标题切分器
 headers_to_split_on = [
@@ -43,7 +45,7 @@ chunk_splitter = RecursiveCharacterTextSplitter(
 class PDFParser:
   def __init__(self, cache_dir: str = "tmp/pdf_cache"):
     self.converter = DocumentConverter()
-    self.llm = ChatOllama(model="qwen3:8b", temperature=0)
+    self.llm = LLM(model_name="openai:gpt-3.5-turbo", temperature=0.2).get_llm()
     self.cache_dir = Path(cache_dir)
     self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -97,27 +99,38 @@ class PDFParser:
     context_chain = context_prompt | self.llm | StrOutputParser()
     print(f"Processing {len(header_splits)} logical sections...")
 
+    # 收集所有需要处理的 chunk 数据
+    chunks_to_process = []
     for split in header_splits:
       # 如果章节本身太长，进一步物理切分
       sub_splits = chunk_splitter.split_documents([split])
-
       for sub_split in sub_splits:
-        original_content = sub_split.page_content
-        headers = sub_split.metadata
-        # --- 2025 核心优化点：语境增强 ---
-        # 对每个 chunk 调用 LLM 生成上下文 (生产环境建议异步并发处理以提速)
-        # 注意：这会增加索引成本，但极大提高召回准确率
-        try:
-          context_desc = context_chain.invoke({"headers": headers, "content": original_content})
+        chunks_to_process.append({
+          "original_content": sub_split.page_content,
+          "headers": sub_split.metadata,
+          "pdf_path": pdf_path
+        })
 
+    # 异步并发处理所有 chunk
+    async def process_chunk_async(chunk_data: dict, semaphore: asyncio.Semaphore, chunk_idx: int) -> Document:
+      """异步处理单个 chunk 的上下文生成"""
+      async with semaphore:  # 控制并发数，避免过多并发导致问题
+        
+        original_content = chunk_data["original_content"]
+        headers = chunk_data["headers"]
+        pdf_path = chunk_data["pdf_path"]
+        
+        try:
+          # 使用异步调用
+          context_desc = await context_chain.ainvoke({"headers": headers, "content": original_content})
         except Exception as e:
-          print(f"Error generating context for chunk: {e}")
+          print(f"Error generating context for chunk {chunk_idx}: {e}")
           context_desc = "Context generation failed."
 
         # 将生成的上下文拼接到原始内容前面，用于向量检索，但保留原始内容用于展示
         # 这种技术叫做 "Document Shadowing" 或 "Contextual Retrieval"
         enhanced_content = f"Context: {context_desc}\n\nOriginal Content:\n{original_content}"
-        new_doc = Document(
+        return Document(
             page_content=enhanced_content, # 检索时用这个包含上下文的内容
             metadata={
                 **headers,
@@ -126,7 +139,22 @@ class PDFParser:
                 "original_content": original_content # 后面生成答案时用纯净内容
             }
         )
-        final_chunks.append(new_doc)
+
+    # 并发处理所有 chunk
+    async def process_all_chunks_async():
+      # 使用 semaphore 控制并发数（设置为 10，可以根据实际情况调整）
+      # 这样可以避免过多并发导致 HTTP 连接池耗尽
+      semaphore = asyncio.Semaphore(10)
+      # 创建所有任务，确保它们真正并发执行
+      tasks = [asyncio.create_task(process_chunk_async(chunk_data, semaphore, idx)) 
+               for idx, chunk_data in enumerate(chunks_to_process)]
+      results = await asyncio.gather(*tasks)
+      print(f"All tasks completed at {time.time():.2f}s")
+      return results
+
+    # 在同步方法中运行异步代码
+    print(f"Processing {len(chunks_to_process)} chunks concurrently (max 10 at a time)...")
+    final_chunks = asyncio.run(process_all_chunks_async())
     
     # 保存缓存
     try:

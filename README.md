@@ -97,11 +97,9 @@ agentic-agent/
 │   ├── 08-完整系统集成.md
 │   └── 09-高级优化与实践.md
 ├── src/                     # 源代码
-│   ├── rag/                # 传统 RAG 实现
 │   ├── agentic_rag/        # Agentic RAG 实现
 │   └── utils/              # 工具函数
 ├── examples/               # 示例代码
-│   ├── 01_basic_rag.py
 │   ├── 02_agentic_rag.py
 │   ├── 03_complete_system.py
 │   ├── 06_complete_system.py

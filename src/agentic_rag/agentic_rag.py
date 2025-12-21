@@ -1,8 +1,4 @@
 """Agentic RAG 完整系统 - 修复持久化问题版"""
-import os
-import shutil
-import gc
-import time
 from typing import List, Optional
 from agentic_rag.llm import LLM
 from agentic_rag.splitter import DocsSplitter
@@ -14,6 +10,9 @@ from src.agentic_rag.graph import create_agentic_rag_graph, create_initial_state
 from src.agentic_rag.vector_store import VectorStore # 建议直接在类中使用 Chroma 以确保存储逻辑控制在手
 from src.agentic_rag.threshold_config import ThresholdConfig
 from src.utils.config import AgenticRAGConfig
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class AgenticRAG:
     """完整的 Agentic RAG 系统"""
@@ -44,7 +43,7 @@ class AgenticRAG:
         self.threshold_config = threshold_config
         
         # 初始化 LLM
-        self.llm = llm or LLM(model_name="gpt-4o-mini", temperature=0.1).llm
+        self.llm = llm or LLM(model_name="openai:gpt-4o-mini", temperature=0.1).get_llm()
         
         # 初始化文本分割器
         self.init_splitter()

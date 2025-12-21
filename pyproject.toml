@@ -23,6 +23,7 @@ dependencies = [
     "docling>=2.65.0",
     "colorama>=0.4.6",
     "langchain-ollama>=1.0.1",
+    "langchain-google-genai>=4.0.0",
 ]
 
 [project.optional-dependencies]
