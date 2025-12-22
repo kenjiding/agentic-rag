@@ -85,7 +85,7 @@ def main():
     #     """)
     # ]
     
-    # pdf_path = get_absolute_path(current_file, "../uber_10q_march_2022_page26.pdf")
+    # pdf_path = get_absolute_path(current_file, "../黑神话悟空.pdf")
     # pdf_parser = PDFParser()
     # pdf_chunks = pdf_parser.parse_pdf_to_documents(pdf_path, refresh=True)
     # pdf_parser = DocsParser(file_path=pdf_path)
@@ -97,7 +97,9 @@ def main():
     # 4. 测试查询 - 展示迭代优化
     print("\n[步骤 4] 测试查询（展示 Agentic RAG 的迭代优化能力）...")
     questions = [
-        "Uber 2021年和2022年Legal, tax, and regulatory reserve changes and settlements 业务的调整后EBITDA分别是多少?",
+      # "黑神话悟空有哪几个章节?",
+      "uber发展历程是怎样的?"
+        # "Uber 2021年和2022年Legal, tax, and regulatory reserve changes and settlements 业务的调整后EBITDA分别是多少?",
         # "2022年福布斯富豪榜杰夫·贝索斯财富是多少?",
         # "2019年福布斯富豪榜杰夫·贝索斯财富是多少?",
         # "2019年, 2020,2021年福布斯富豪榜杰夫·贝索斯财富是上升了还是下降了? 请给出具体数据.",

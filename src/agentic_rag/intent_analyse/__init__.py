@@ -1,9 +1,9 @@
-from .intent_classifier import IntentClassifier, QueryIntent, PipelineOption
-from .optimized_query import QueryOptimizer
+from .intent_classifier import IntentClassifier, QueryIntent, SubQuery, PipelineOption, DecompositionType
 
 __all__ = [
     "IntentClassifier",
     "QueryIntent",
+    "SubQuery",
     "PipelineOption",
-    "QueryOptimizer"
+    "DecompositionType"
 ]

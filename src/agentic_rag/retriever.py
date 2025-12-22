@@ -311,7 +311,7 @@ class IntelligentRetriever:
         context: Optional[str] = None,
         k: int = 3,
         rewrite_query: bool = False,
-        split_queries: Optional[List[str]] = None
+        split_queries: Optional[List] = None
     ) -> List[Document]:
         """
         检索文档
@@ -323,13 +323,15 @@ class IntelligentRetriever:
             context: 上下文信息
             k: 返回文档数量
             rewrite_query: 是否改写查询
-            split_queries: 拆分后的查询列表
+            split_queries: 拆分后的查询列表（支持两种格式）
+                - List[str]: 向后兼容的字符串列表
+                - List[Dict]: 包含 query, strategy, k 的字典列表（2025 最佳实践）
 
         Returns:
             检索到的文档列表
         """
         # 如果是对比查询且有拆分查询，使用拆分查询进行检索
-        if split_queries and len(split_queries) > 1:
+        if split_queries and len(split_queries) >= 1:
             return self._retrieve_with_split_queries(
                 split_queries,
                 strategies or [strategy or self.default_strategy],
@@ -362,22 +364,58 @@ class IntelligentRetriever:
 
     def _retrieve_with_split_queries(
         self,
-        split_queries: List[str],
-        strategies: List[PipelineOption],
-        k: int
+        split_queries: List,
+        default_strategies: List[PipelineOption],
+        default_k: int
     ) -> List[Document]:
-        """使用拆分查询进行检索"""
+        """
+        使用拆分查询进行检索
+
+        2025 最佳实践：每个子查询使用独立的检索策略
+
+        Args:
+            split_queries: 拆分后的查询列表，支持两种格式：
+                - List[str]: 向后兼容，所有查询使用相同策略
+                - List[Dict]: 每个包含 {query, strategy, k}，使用独立策略
+            default_strategies: 默认检索策略（当子查询没有指定策略时使用）
+            default_k: 默认检索数量
+
+        Returns:
+            检索到的文档列表
+        """
         all_docs = []
 
-        print(f"[检索] 对比查询：使用 {len(split_queries)} 个拆分查询，策略: {strategies}")
+        print(f"[检索] 对比查询：使用 {len(split_queries)} 个拆分查询")
 
-        for split_query in split_queries:
-            print(f"[检索] 检索拆分查询: {split_query}")
-            for strategy in strategies:
-                docs = self._retrieve_with_strategy(split_query, strategy, None, k)
+        for item in split_queries:
+            # 解析子查询信息
+            if isinstance(item, dict):
+                # 新格式：包含独立策略
+                query_text = item.get("query", "")
+                query_strategies = item.get("strategy", default_strategies)
+                query_k = item.get("k", default_k)
+                # 确保 strategies 是列表
+                if not isinstance(query_strategies, list):
+                    query_strategies = [query_strategies] if query_strategies else default_strategies
+            else:
+                # 向后兼容：字符串格式
+                query_text = str(item)
+                query_strategies = default_strategies
+                query_k = default_k
+
+            print(f"[检索] 子查询: '{query_text}' | 策略: {query_strategies} | k={query_k}")
+
+            for strategy in query_strategies:
+                docs = self._retrieve_with_strategy(query_text, strategy, None, query_k)
                 all_docs.extend(docs)
 
-        all_docs = self._post_process(all_docs, split_queries[0] if split_queries else "")
+        # 获取第一个查询文本用于后处理
+        first_query = ""
+        if split_queries:
+            first_item = split_queries[0]
+            first_query = first_item.get("query", "") if isinstance(first_item, dict) else str(first_item)
+
+        all_docs = self._post_process(all_docs, first_query)
         print(f"[检索] 对比查询检索完成，共 {len(all_docs)} 个文档")
         return all_docs
 

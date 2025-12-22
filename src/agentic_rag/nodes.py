@@ -16,7 +16,6 @@ from src.agentic_rag.retriever import IntelligentRetriever
 from src.agentic_rag.generator import IntelligentGenerator
 from src.agentic_rag.intent_analyse import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
-from src.agentic_rag.intent_analyse import QueryOptimizer
 from src.agentic_rag.web_search import CorrectiveRAGHandler
 
 def create_intent_classification_node(
@@ -67,7 +66,10 @@ def create_intent_classification_node(
             
             print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 意图类型: {intent.intent_type}{Style.RESET_ALL}")
             print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 复杂度: {intent.complexity}{Style.RESET_ALL}")
-            print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 是否对比: {intent.is_comparison}{Style.RESET_ALL}")
+            print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 需要分解: {intent.needs_decomposition}{Style.RESET_ALL}")
+            if intent.needs_decomposition:
+                print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 分解类型: {intent.decomposition_type}{Style.RESET_ALL}")
+                print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 子查询数: {len(intent.sub_queries)}{Style.RESET_ALL}")
             print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 推荐策略: {intent.recommended_retrieval_strategy}, k={intent.recommended_k}{Style.RESET_ALL}")
             print(f"{Style.BRIGHT}{Fore.MAGENTA}🎯【intent节点】 置信度: {intent.confidence:.2f}{Style.RESET_ALL}")
             if intent.reasoning:
@@ -135,16 +137,59 @@ def create_retrieve_node(
                     strategies = [strategies] if strategies else ["semantic"]
                 k = query_intent.get("recommended_k", threshold_config.retrieval.default_k)
                 
-                # 如果是对比查询，直接使用comparison_items作为拆分查询
-                intent_type = query_intent.get("intent_type")
-                is_comparison = query_intent.get("is_comparison", False)
-                comparison_items = query_intent.get("comparison_items", [])
+                # 通用查询分解：检查是否需要分解查询
+                needs_decomposition = query_intent.get("needs_decomposition", False)
+                decomposition_type = query_intent.get("decomposition_type")
+                sub_queries = query_intent.get("sub_queries", [])
+
+                # 向后兼容：支持旧的 comparison_items 字段
+                if not sub_queries:
+                    sub_queries = query_intent.get("comparison_items", [])
+                    if sub_queries and not needs_decomposition:
+                        needs_decomposition = True
+                        decomposition_type = "comparison"
+
                 print("query_intent意图识别结果:", query_intent)
-                
-                if (intent_type == "comparison" or is_comparison) and comparison_items:
-                    # comparison_items 已经包含拆分后的完整查询
-                    split_queries = comparison_items
-                    print(f"{Style.BRIGHT}{Fore.BLUE}🔍【retrieve节点】 对比查询：使用 {len(split_queries)} 个拆分查询{Style.RESET_ALL}")
+
+                if needs_decomposition and sub_queries:
+                    # 2025 最佳实践：通用查询分解，每个子查询有独立的检索策略
+                    split_queries = []
+                    for item in sub_queries:
+                        if isinstance(item, dict):
+                            # 从字典中提取完整的子查询信息
+                            split_queries.append({
+                                "query": item.get("query", ""),
+                                "strategy": item.get("recommended_strategy", ["semantic"]),
+                                "k": item.get("recommended_k", 3),
+                                "purpose": item.get("purpose", ""),
+                                "order": item.get("order", 0),
+                                "depends_on": item.get("depends_on", [])
+                            })
+                        elif isinstance(item, str):
+                            # 向后兼容：如果是字符串，使用默认策略
+                            split_queries.append({
+                                "query": item,
+                                "strategy": strategies,
+                                "k": k // len(sub_queries) if sub_queries else k,
+                                "purpose": "",
+                                "order": 0,
+                                "depends_on": []
+                            })
+                        else:
+                            # Pydantic 模型（SubQuery）
+                            split_queries.append({
+                                "query": item.query if hasattr(item, 'query') else str(item),
+                                "strategy": item.recommended_strategy if hasattr(item, 'recommended_strategy') else ["semantic"],
+                                "k": item.recommended_k if hasattr(item, 'recommended_k') else 3,
+                                "purpose": item.purpose if hasattr(item, 'purpose') else "",
+                                "order": item.order if hasattr(item, 'order') else 0,
+                                "depends_on": item.depends_on if hasattr(item, 'depends_on') else []
+                            })
+
+                    # 按 order 排序（支持多跳查询的顺序执行）
+                    split_queries.sort(key=lambda x: x.get("order", 0))
+
+                    print(f"{Style.BRIGHT}{Fore.BLUE}🔍【retrieve节点】 查询分解（{decomposition_type}）：使用 {len(split_queries)} 个子查询{Style.RESET_ALL}")
                 else:
                     split_queries = None
                 
@@ -328,18 +373,19 @@ def create_generate_node(
 
 def create_decision_node(
     detector: AdvancedNeedsMoreInfoDetector,
-    query_optimizer: QueryOptimizer,
     crag_handler: Optional[CorrectiveRAGHandler] = None,
     threshold_config: Optional[ThresholdConfig] = None
 ):
     """
     创建决策节点（统一版本，支持可选的 Web Search）
 
-    2025 最佳实践：统一决策节点，通过参数控制是否启用 Web Search
+    2025 最佳实践：
+    - 统一决策节点，通过参数控制是否启用 Web Search
+    - 查询分解由意图识别模块（IntentClassifier）完成，不再需要 QueryOptimizer
+    - 检索质量不足时，使用意图识别已生成的 sub_queries 而非重新优化查询
 
     Args:
         detector: 信息需求检测器
-        query_optimizer: 查询优化器
         crag_handler: CRAG 处理器（可选，如果提供则启用 Web Search）
         threshold_config: 阈值配置（如果为None，使用默认配置）
 
@@ -407,14 +453,29 @@ def create_decision_node(
                 return {"next_action": "web_search"}
 
         # 检索质量不足，继续检索
+        # 2025 最佳实践：使用意图识别已生成的 sub_queries，而非重新优化查询
         if (retrieval_quality < retrieval_threshold) and iteration < 2 and len(retrieved_docs) > 0:
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索质量不足 ({retrieval_quality:.2f})，继续检索{Style.RESET_ALL}")
             query_intent = state.get("query_intent")
             if query_intent:
-                origin_question = query_intent.get("query")
-                optimized_query = query_optimizer.optimize(origin_question, query_intent)
-                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 优化后的查询: {optimized_query.primary_query}{Style.RESET_ALL}")
-                return {"next_action": "retrieve", "question": optimized_query.primary_query}
+                # 检查是否有 sub_queries 可用
+                sub_queries = query_intent.get("sub_queries", [])
+                used_sub_query_indices = state.get("used_sub_query_indices", [])
+
+                # 尝试使用下一个未使用的 sub_query
+                for idx, sq in enumerate(sub_queries):
+                    if idx not in used_sub_query_indices:
+                        sq_query = sq.get("query", "") if isinstance(sq, dict) else (sq.query if hasattr(sq, 'query') else str(sq))
+                        if sq_query:
+                            print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 使用子查询 [{idx}]: {sq_query}{Style.RESET_ALL}")
+                            return {
+                                "next_action": "retrieve",
+                                "question": sq_query,
+                                "used_sub_query_indices": used_sub_query_indices + [idx]
+                            }
+
+                # 如果没有可用的 sub_queries，直接用原查询重试
+                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 无可用子查询，使用原查询重试{Style.RESET_ALL}")
             return {"next_action": "retrieve"}
 
         # 检索失败处理
@@ -557,32 +618,3 @@ def create_web_search_node(
             }
 
     return web_search_node
-
-
-# 向后兼容：保留别名
-def create_decision_node_with_web_search(
-    detector: AdvancedNeedsMoreInfoDetector,
-    query_optimizer: QueryOptimizer,
-    crag_handler: CorrectiveRAGHandler,
-    threshold_config: Optional[ThresholdConfig] = None
-):
-    """
-    创建支持 Web Search 的决策节点（向后兼容别名）
-
-    注意：此函数已合并到 create_decision_node，建议直接使用 create_decision_node(crag_handler=...)
-
-    Args:
-        detector: 信息需求检测器
-        query_optimizer: 查询优化器
-        crag_handler: CRAG 处理器
-        threshold_config: 阈值配置
-
-    Returns:
-        决策节点函数
-    """
-    return create_decision_node(
-        detector=detector,
-        query_optimizer=query_optimizer,
-        crag_handler=crag_handler,
-        threshold_config=threshold_config
-    )

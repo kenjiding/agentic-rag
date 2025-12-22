@@ -5,9 +5,11 @@
 2. 统一结构生成（UIE框架思想）
 3. 知识增强的提示调优
 4. 使用LLM进行结构化输出
+5. 通用查询分解机制（自动判断是否需要分解）
 
 该模块在接收到用户问题后，首先进行意图识别，以明确用户需求，
-从而选择最适合的处理策略和响应方式。
+从而选择最适合的处理策略和响应方式。对于复杂查询，自动判断
+是否需要分解为多个子查询以提高检索效果。
 """
 from typing import Optional, List, Literal
 from pydantic import BaseModel, Field
@@ -17,137 +19,217 @@ from src.agentic_rag.threshold_config import ThresholdConfig
 
 PipelineOption = Literal["semantic", "hybrid", "rerank"]
 
+# 查询分解类型
+DecompositionType = Literal[
+    "comparison",     # 对比分解：按对比项分解（A vs B → 查A + 查B）
+    "multi_hop",      # 多跳分解：按推理步骤分解，有顺序依赖
+    "dimensional",    # 多维分解：按分析维度分解（原因分析 → 技术+商业+市场）
+    "temporal",       # 时间分解：按时间段分解（10年发展 → 多个时间段）
+    "causal_chain",   # 因果链分解：按因果关系分解
+    "information_needs"  # 信息需求分解：按独立信息需求点分解
+]
+
+
+class SubQuery(BaseModel):
+    """子查询结构 - 包含查询文本、检索策略和执行依赖
+
+    2025 最佳实践：
+    1. 每个子查询有独立的检索策略，避免复杂策略应用于简单查询
+    2. 支持执行顺序和依赖关系，用于多跳查询等场景
+    """
+
+    query: str = Field(description="子查询文本")
+
+    purpose: str = Field(
+        default="",
+        description="该子查询的目的说明（如：获取基础事实、验证假设、补充细节等）"
+    )
+
+    recommended_strategy: List[PipelineOption] = Field(
+        default_factory=lambda: ["semantic"],
+        description="该子查询的推荐检索策略（根据子查询的特点独立选择）"
+    )
+
+    recommended_k: int = Field(
+        default=5,
+        description="该子查询的推荐检索数量"
+    )
+
+    order: int = Field(
+        default=0,
+        description="执行顺序：0表示可并行执行，>0表示需按顺序执行（数字越小越先执行）"
+    )
+
+    depends_on: List[int] = Field(
+        default_factory=list,
+        description="依赖的子查询索引列表（用于多跳查询，表示需要先执行哪些查询）"
+    )
+
+
 class QueryIntent(BaseModel):
-    """查询意图结构（统一信息抽取框架）"""
-    
+    """查询意图结构（统一信息抽取框架）
+
+    支持通用的查询分解机制，能够根据查询复杂度自动判断是否需要分解，
+    并根据不同的分解类型生成相应的子查询。
+    """
+
     # 主要意图类型
     intent_type: Literal[
         "factual",      # 事实性查询：询问具体事实、数据、定义
         "comparison",   # 对比查询：比较两个或多个对象/时间点
         "analytical",   # 分析性查询：需要推理、分析、总结
-        "procedural",  # 程序性查询：询问如何做某事
-        "causal",      # 因果查询：询问原因、结果、影响
-        "temporal",    # 时间序列查询：询问变化趋势、历史
-        "multi_hop",   # 多跳查询：需要多个步骤推理
-        "other"        # 其他类型
+        "procedural",   # 程序性查询：询问如何做某事
+        "causal",       # 因果查询：询问原因、结果、影响
+        "temporal",     # 时间序列查询：询问变化趋势、历史
+        "multi_hop",    # 多跳查询：需要多个步骤推理
+        "other"         # 其他类型
     ] = Field(description="查询的主要意图类型")
-    
+
     # 查询复杂度
     complexity: Literal["simple", "moderate", "complex"] = Field(
-        description="查询复杂度：simple(<5词), moderate(5-15词), complex(>15词或需要多步推理)"
+        description="查询复杂度：simple(单一信息点), moderate(2-3个信息点), complex(多信息点或需要多步推理)"
     )
-    
-    # 是否需要对比（槽位填充）
-    is_comparison: bool = Field(
-        description="是否需要对比多个对象、时间点或状态"
+
+    # ==================== 通用查询分解机制 ====================
+
+    # 是否需要查询分解（核心判断字段）
+    needs_decomposition: bool = Field(
+        description="""是否需要将原查询分解为多个子查询。
+
+**需要分解的信号**（满足任一条件即可）：
+1. 复杂度为 complex
+2. 包含多个独立的信息需求点（如"介绍X的原理、应用和前景"）
+3. 需要对比多个对象/时间点（comparison）
+4. 需要多步推理（multi_hop）
+5. 需要从多个维度分析（analytical）
+6. 需要按时间段查询（temporal跨度大）
+7. 涉及因果链条（causal有多个层次）
+
+**不需要分解的信号**：
+1. 简单的单一事实查询
+2. 查询已经足够具体明确
+3. procedural类型查询（步骤是内容本身，不是检索单位）
+4. 分解会导致上下文信息丢失
+"""
     )
-    
+
+    # 分解类型（当 needs_decomposition=True 时必填）
+    decomposition_type: Optional[Literal[
+        "comparison",        # 对比分解：按对比项分解（A vs B → 查A + 查B）
+        "multi_hop",         # 多跳分解：按推理步骤分解，有顺序依赖
+        "dimensional",       # 多维分解：按分析维度分解（分析原因 → 技术+商业+市场）
+        "temporal",          # 时间分解：按时间段分解（10年发展 → 多个时间段）
+        "causal_chain",      # 因果链分解：按因果关系分解（为什么 → 直接+间接+根本原因）
+        "information_needs"  # 信息需求分解：按独立信息需求点分解
+    ]] = Field(
+        default=None,
+        description="分解类型，当 needs_decomposition=True 时必须指定"
+    )
+
+    # 分解原因说明
+    decomposition_reason: str = Field(
+        default="",
+        description="为什么需要分解的简要说明（如果 needs_decomposition=True）"
+    )
+
+    # 通用子查询列表（替代原来的 comparison_items）
+    sub_queries: List[SubQuery] = Field(
+        default_factory=list,
+        description="""分解后的子查询列表。每个子查询包含：
+- query: 子查询文本
+- purpose: 该子查询的目的
+- recommended_strategy: 推荐的检索策略
+- recommended_k: 推荐的检索数量
+- order: 执行顺序（0=可并行，>0=按顺序）
+- depends_on: 依赖的子查询索引
+
+**分解类型与子查询特点**：
+
+1. comparison（对比分解）- order=0，可并行执行
+   - 将对比查询拆分为独立的事实查询
+   - 移除对比性表述，转换为事实询问
+
+2. multi_hop（多跳分解）- order>0，有顺序依赖
+   - 按推理步骤分解，后续步骤依赖前序结果
+   - 使用 depends_on 指明依赖关系
+
+3. dimensional（多维分解）- order=0，可并行执行
+   - 按分析维度拆分（技术/商业/市场等）
+   - 每个维度独立查询
+
+4. temporal（时间分解）- order=0，可并行执行
+   - 按时间段拆分
+   - 每个时间段独立查询
+
+5. causal_chain（因果链分解）- 可能有顺序依赖
+   - 直接原因、间接原因、根本原因
+   - 可能需要按因果层次查询
+
+6. information_needs（信息需求分解）- order=0，可并行执行
+   - 按独立信息需求点拆分
+   - 每个需求点独立查询
+"""
+    )
+
+    # ==================== 槽位填充信息 ====================
+
     # 提取的关键信息（槽位）
     entities: List[str] = Field(
         default_factory=list,
         description="查询中提到的关键实体（人名、地名、时间、组织等）"
     )
-    
+
     # 时间信息
     time_points: List[str] = Field(
         default_factory=list,
         description="查询中提到的具体时间点（年份、日期等）"
     )
-    
-    # 对比查询拆分后的完整查询列表（如果是对比查询）
-    comparison_items: List[str] = Field(
-        default_factory=list,
-        description="""如果is_comparison=True，此字段应包含拆分后的完整查询列表。
 
-**核心原则**：
-对比查询需要多个独立的事实作为输入，因此必须拆分为多个事实性查询。
+    # ==================== 检索策略建议 ====================
 
-**通用拆分方法**：
-1. 识别对比的维度（时间/对象/属性/状态等）
-2. 识别查询的核心信息需求（不是对比本身，而是用于对比的基础事实）
-3. 为每个对比项生成独立的事实性查询
-4. 移除所有对比性表述（因为对比是在获取事实后进行的）
-
-**关键转换**：
-"X和Y的Z【对比性表述】" → ["X的Z是【事实询问】", "Y的Z是【事实询问】"]
-
-对比性表述包括但不限于：
-- 变化类：上升/下降/增加/减少/变化/波动/趋势
-- 比较类：更大/更小/更好/更差/更快/更慢/差异/区别
-- 关系类：相比/对比/比较/versus/vs/哪个/哪种
-
-事实询问包括但不限于：
-- 数值查询：是多少/有多少/数量/金额/价格/规模
-- 状态查询：是什么/如何/怎样/情况/特点/属性
-- 存在查询：有没有/是否/存在/包含
-
-**多样化场景示例**：
-
-1. 时间对比（趋势分析）：
-   原："2019-2021年贝索斯财富是上升还是下降？"
-   拆分：["2019年贝索斯的财富是多少？", "2020年贝索斯的财富是多少？", "2021年贝索斯的财富是多少？"]
-
-2. 对象对比（横向比较）：
-   原："苹果和微软哪个市值更高？"
-   拆分：["苹果的市值是多少？", "微软的市值是多少？"]
-
-3. 属性对比（多维比较）：
-   原："Python和Java在性能和易用性上有什么区别？"
-   拆分：["Python的性能特点是什么？", "Python的易用性特点是什么？", "Java的性能特点是什么？", "Java的易用性特点是什么？"]
-
-4. 状态对比（前后变化）：
-   原："疫情前后中国旅游业变化如何？"
-   拆分：["疫情前中国旅游业的情况是怎样的？", "疫情后中国旅游业的情况是怎样的？"]
-
-5. 多对象多属性：
-   原："特斯拉Model 3和Model Y在价格和续航上的差异？"
-   拆分：["特斯拉Model 3的价格是多少？", "特斯拉Model 3的续航是多少？", "特斯拉Model Y的价格是多少？", "特斯拉Model Y的续航是多少？"]
-
-6. 隐含对比（需要推理）：
-   原："哪个国家的GDP增长最快？"
-   拆分：["各主要国家的GDP增长率分别是多少？"] （单一查询，因为需要先获取多个数据再比较）
-
-7. 复杂嵌套对比：
-   原："相比美国，中国和印度在AI领域的投资增长更快吗？"
-   拆分：["美国在AI领域的投资增长率是多少？", "中国在AI领域的投资增长率是多少？", "印度在AI领域的投资增长率是多少？"]
-
-8. 非数值对比：
-   原："民主党和共和党在气候政策上的立场有何不同？"
-   拆分：["民主党在气候政策上的立场是什么？", "共和党在气候政策上的立场是什么？"]
-
-**特殊情况处理**：
-- 如果对比项不明确或需要先查询才能确定，可以生成单一的开放性查询
-- 如果对比维度过多（>5个），考虑合并相关维度或生成更概括的查询
-- 保持查询的自然语言流畅性，避免过于机械的拆分
-"""
-    )
-    
-    # 检索策略建议
+    # 检索策略建议（针对原查询或不分解时使用）
     recommended_retrieval_strategy: List[PipelineOption] = Field(
         default_factory=list,
-        description="推荐的检索策略, 你需要认真详细的分析, 然后给出单个策略, 或者多个策略组合的方式, 如: semantic+hybrid, semantic+rerank, hybrid+rerank, semantic+hybrid+rerank等"
+        description="推荐的检索策略（当不分解时使用，分解时参考各子查询的策略）"
     )
-    
+
     # 检索数量建议
     recommended_k: int = Field(
-        description="推荐的检索文档数量（根据意图类型和复杂度调整, 当intent_type为comparison时, 会拆分成多个单独的查询, k值需要根据对比项的数量来调整）"
+        default=5,
+        description="推荐的检索文档数量（当不分解时使用）"
     )
-    
+
     # 是否需要多轮检索
     needs_multi_round_retrieval: bool = Field(
-        description="是否需要多轮检索（对于复杂查询或多跳查询）"
+        description="是否需要多轮检索（对于多跳查询或需要迭代细化的查询）"
     )
-    
+
+    # ==================== 元信息 ====================
+
     # 置信度
     confidence: float = Field(
         ge=0.0, le=1.0,
         description="意图识别的置信度（0-1）"
     )
-    
-    # 说明
+
+    # 推理过程说明
     reasoning: str = Field(
-        description="意图识别的推理过程（使用与查询相同的语言）"
+        description="意图识别和分解决策的推理过程（使用与查询相同的语言）"
     )
+
+    # ==================== 向后兼容字段 ====================
+
+    @property
+    def is_comparison(self) -> bool:
+        """向后兼容：是否是对比查询"""
+        return self.intent_type == "comparison" or self.decomposition_type == "comparison"
+
+    @property
+    def comparison_items(self) -> List[SubQuery]:
+        """向后兼容：对比查询的子查询列表"""
+        if self.decomposition_type == "comparison":
+            return self.sub_queries
+        return []
 
 
 class IntentClassifier:
@@ -212,14 +294,16 @@ class IntentClassifier:
         Returns:
             查询意图结构
         """
-        template = """你是一个专业的查询意图分析器。请分析以下查询，识别其意图类型、复杂度和关键信息。
+        template = """你是一个专业的查询意图分析器和查询分解专家。请分析以下查询，识别其意图类型、复杂度，并**自主判断是否需要将查询分解为多个子查询**以提高检索效果。
 
-**分析要求**：
-1. **联合意图检测与槽位填充**：同时识别意图类型和提取关键信息（实体、时间、对比对象等）
-2. **统一结构生成**：严格按照指定的JSON结构输出，确保一致性
+# 分析要求
+
+1. **联合意图检测与槽位填充**：同时识别意图类型和提取关键信息
+2. **自主分解判断**：根据查询复杂度和特点，自动判断是否需要分解
 3. **通用性**：使用通用的方法识别意图，适用于任何领域和场景
 
-**意图类型说明**：
+# 意图类型说明
+
 - factual: 事实性查询（询问具体事实、数据、定义）
 - comparison: 对比查询（比较两个或多个对象/时间点/状态）
 - analytical: 分析性查询（需要推理、分析、总结）
@@ -229,51 +313,118 @@ class IntentClassifier:
 - multi_hop: 多跳查询（需要多个步骤推理）
 - other: 其他类型
 
-**对比查询的通用处理方法**：
+# 查询分解机制（核心功能）
 
-对比查询的本质是：用户想要基于多个独立的事实进行比较分析。
-因此，你的任务是将对比查询拆分为获取这些基础事实的查询。
+## 是否需要分解的判断标准
 
-**拆分的通用步骤**：
-1. **识别对比维度**：时间（2019 vs 2020）、对象（苹果 vs 微软）、属性（价格 vs 性能）、状态（前 vs 后）等
-2. **识别核心信息需求**：用户实际需要什么信息？（财富数据、市值、性能指标等）
-3. **移除对比性表述**：删除"上升/下降/更大/更小/差异/对比"等词汇
-4. **转换为事实性询问**：将"X和Y谁更Z"转换为"X的Z是多少？Y的Z是多少？"
-5. **确保查询独立性**：每个拆分查询应该能够独立回答一个具体事实
+**需要分解的信号**（满足任一条件）：
+1. 包含多个独立的信息需求点（如"介绍X的原理、应用和前景"）
+2. 需要对比多个对象/时间点（comparison）
+3. 需要多步推理，后续步骤依赖前序结果（multi_hop）
+4. 需要从多个维度分析（analytical）
+5. 时间跨度大，需要按时间段查询（temporal）
+6. 涉及因果链条，有多个层次（causal）
+7. 单次检索难以覆盖所有信息需求
 
-**关键原则**：
-- 拆分后的查询应该是事实性的，而不是对比性的
-- 每个查询应该针对一个具体的对比项（时间点/对象/属性等）
-- 保留查询的核心主题和关键信息
-- 确保查询的自然语言流畅性
+**不需要分解的信号**：
+1. 简单的单一事实查询（如"北京的人口是多少？"）
+2. 查询已经足够具体明确
+3. procedural类型查询（步骤是内容本身，不是检索单位）
+4. 分解会导致上下文信息丢失
 
-**通用转换模式**：
-- "X和Y的Z【对比词】" → ["X的Z是【事实询问】？", "Y的Z是【事实询问】？"]
-- "【时间1】和【时间2】的X如何变化" → ["【时间1】的X是多少？", "【时间2】的X是多少？"]
-- "哪个/哪种X更【比较词】" → ["各X的【相关属性】分别是什么？"]
-- "X相比Y【对比表述】" → ["X的【属性】是什么？", "Y的【属性】是什么？"]
+## 分解类型
 
-**检索策略建议**：
-- semantic: 标准语义检索（适合大多数查询）
-- hybrid: 混合检索，使用MMR增加多样性（适合对比查询、需要多个不同信息片段的查询）
-- rerank: 重排序检索（适合需要精确匹配的查询）
-- 也可以根据实际情况深思熟虑后选择最合适的策略, 可以单个策略, 也可以多个策略组合的方式进行检索
+- comparison: 对比分解 - 按对比项分解（A vs B → 查A + 查B），可并行执行
+- multi_hop: 多跳分解 - 按推理步骤分解，有顺序依赖（先查X，再根据X查Y）
+- dimensional: 多维分解 - 按分析维度分解（分析原因 → 技术+商业+市场），可并行执行
+- temporal: 时间分解 - 按时间段分解（10年发展 → 多个时间段），可并行执行
+- causal_chain: 因果链分解 - 按因果关系分解（为什么 → 直接+间接+根本原因）
+- information_needs: 信息需求分解 - 按独立信息需求点分解，可并行执行
 
-**检索数量建议**：
-- simple: 3-5
-- moderate: 5-7
-- complex/comparison: 8-12
-- multi_hop: 10-15
+## 子查询结构 SubQuery
 
-查询：{query}
+每个子查询包含：
+- query: 子查询文本
+- purpose: 该子查询的目的说明
+- recommended_strategy: 推荐的检索策略 ["semantic"] / ["hybrid"] / ["rerank"] / ["semantic", "rerank"]
+- recommended_k: 推荐的检索数量 (3-10)
+- order: 执行顺序（0=可并行，1/2/3...=按顺序执行）
+- depends_on: 依赖的子查询索引列表（用于multi_hop）
 
-请严格按照QueryIntent结构输出JSON，确保：
-1. 准确识别意图类型（基于查询的实际意图，不依赖特定领域知识）
-2. 正确评估复杂度（基于查询长度和推理步骤）
-3. 提取所有关键信息（实体、时间等，使用通用的识别方法）
-4. **对于对比查询，必须将对比性问题转换为事实性问题**（适用于任何对比场景）
-5. 提供合理的检索策略和数量建议（基于意图类型和复杂度）
-6. 给出置信度和推理过程
+## 检索策略选择指南
+
+- semantic: 简单事实查询，明确单一信息点
+- hybrid: 需要多角度信息，多样化信息片段
+- rerank: 专业术语，需要高精度匹配
+- 组合策略: 复杂专业查询可用 ["semantic", "rerank"]
+
+## 分解示例
+
+### 示例1 - comparison（对比分解，可并行）
+原查询："2019和2020年苹果营收对比"
+分析：对比查询，需要分解为独立的事实查询
+sub_queries: [
+  {{"query": "2019年苹果的营收是多少？", "purpose": "获取2019年数据", "recommended_strategy": ["semantic"], "recommended_k": 3, "order": 0}},
+  {{"query": "2020年苹果的营收是多少？", "purpose": "获取2020年数据", "recommended_strategy": ["semantic"], "recommended_k": 3, "order": 0}}
+]
+
+### 示例2 - multi_hop（多跳分解，有顺序依赖）
+原查询："谁是马云的大学同学中最成功的企业家？"
+分析：需要多步推理，先查同学，再查成就
+sub_queries: [
+  {{"query": "马云的大学同学有哪些人？", "purpose": "获取同学名单", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 1, "depends_on": []}},
+  {{"query": "马云大学同学中有哪些人成为了企业家？", "purpose": "筛选企业家", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 2, "depends_on": [0]}},
+  {{"query": "这些企业家同学各自的成就和影响力如何？", "purpose": "比较成就", "recommended_strategy": ["hybrid"], "recommended_k": 8, "order": 3, "depends_on": [1]}}
+]
+
+### 示例3 - dimensional（多维分解，可并行）
+原查询："分析特斯拉成功的原因"
+分析：需要从多个维度分析
+sub_queries: [
+  {{"query": "特斯拉的技术创新有哪些？", "purpose": "技术维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
+  {{"query": "特斯拉的商业模式是什么？", "purpose": "商业维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
+  {{"query": "特斯拉的市场营销策略是什么？", "purpose": "营销维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
+  {{"query": "特斯拉的领导力和企业文化如何？", "purpose": "管理维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
+]
+
+### 示例4 - causal_chain（因果链分解）
+原查询："为什么2008年金融危机会发生？"
+分析：涉及因果链条
+sub_queries: [
+  {{"query": "2008年金融危机的直接导火索是什么？", "purpose": "直接原因", "recommended_strategy": ["semantic"], "recommended_k": 5, "order": 0}},
+  {{"query": "次贷危机是如何引发的？", "purpose": "间接原因", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
+  {{"query": "2008年金融危机的深层制度性原因是什么？", "purpose": "根本原因", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
+]
+
+### 示例5 - information_needs（信息需求分解，可并行）
+原查询："介绍量子计算的原理、应用和发展前景"
+分析：包含3个独立信息需求点
+sub_queries: [
+  {{"query": "量子计算的基本原理是什么？", "purpose": "原理介绍", "recommended_strategy": ["semantic"], "recommended_k": 5, "order": 0}},
+  {{"query": "量子计算目前有哪些应用场景？", "purpose": "应用场景", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
+  {{"query": "量子计算的发展前景如何？", "purpose": "发展前景", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
+]
+
+### 示例6 - 不需要分解
+原查询："北京的人口是多少？"
+分析：简单事实查询，无需分解
+needs_decomposition: false
+sub_queries: []
+
+# 查询
+
+{query}
+
+# 输出要求
+
+请严格按照QueryIntent结构输出JSON：
+1. 准确识别意图类型
+2. 正确评估复杂度（simple/moderate/complex）
+3. **自主判断是否需要分解**（needs_decomposition）
+4. 如需分解，指定分解类型（decomposition_type）和原因（decomposition_reason）
+5. 生成子查询列表（sub_queries），每个子查询包含完整信息
+6. 提取关键实体和时间点
+7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
 
 输出JSON："""
 
@@ -347,48 +498,112 @@ class IntentClassifier:
         if len(time_points) >= 2:
             is_comparison = True
         
-        # 尝试生成简单的拆分查询（如果是对比查询）
-        comparison_items = []
+        # ==================== 通用查询分解判断 ====================
+        sub_queries: List[SubQuery] = []
+        needs_decomposition = False
+        decomposition_type: Optional[str] = None
+        decomposition_reason = ""
+
+        # 判断是否需要分解
         if is_comparison:
+            needs_decomposition = True
+            decomposition_type = "comparison"
+            decomposition_reason = "检测到对比查询，需要拆分为独立的事实查询"
+        elif complexity == "complex":
+            # 复杂查询可能需要分解
+            needs_decomposition = True
+            decomposition_type = "information_needs"
+            decomposition_reason = "复杂查询包含多个信息需求点"
+
+        # 如果需要分解，生成子查询
+        if needs_decomposition:
             # 通用的对比词移除
             comparison_words = [
                 # 中文
-                '对比', '比较', '相比', '变化', '上升', '下降', '增加', '减少', 
+                '对比', '比较', '相比', '变化', '上升', '下降', '增加', '减少',
                 '差异', '区别', '和', '与', '还是', '哪个', '哪种', '更', '较',
                 # 英文
                 'compare', 'comparison', 'versus', 'vs', 'compared to', 'difference',
                 'change', 'increase', 'decrease', 'and', 'or', 'which', 'better',
                 'worse', 'more', 'less', 'than'
             ]
-            
+
             clean_query = query
             for word in comparison_words:
                 clean_query = re.sub(rf'\b{re.escape(word)}\b', ' ', clean_query, flags=re.IGNORECASE)
             clean_query = ' '.join(clean_query.split())  # 清理多余空格
-            
-            # 如果检测到时间点，为每个时间点生成查询
-            if time_points:
+
+            # 情况1：时间对比/时间分解 - 为每个时间点生成查询
+            if len(time_points) >= 2:
+                decomposition_type = "comparison" if is_comparison else "temporal"
                 base_query = clean_query
                 for tp in time_points:
                     base_query = base_query.replace(tp, '').strip()
-                
+
                 for tp in time_points:
                     if base_query:
-                        comparison_items.append(f"{tp}{base_query}是多少？")
-            # 如果没有明显的时间点，但检测到对比词汇，生成通用查询
+                        sub_queries.append(SubQuery(
+                            query=f"{tp}{base_query}是多少？",
+                            purpose=f"获取{tp}的具体数据",
+                            recommended_strategy=["semantic"],
+                            recommended_k=3,
+                            order=0  # 可并行执行
+                        ))
+
+            # 情况2：对象对比 - 为每个检测到的实体生成查询
+            elif len(entities) >= 2 and is_comparison:
+                decomposition_type = "comparison"
+                # 尝试从查询中提取属性关键词
+                attribute_keywords = []
+                attribute_patterns = [
+                    r'(价格|市值|营收|收入|利润|规模|性能|速度|效率)',
+                    r'(price|value|revenue|profit|performance|speed|efficiency)',
+                ]
+                for pattern in attribute_patterns:
+                    matches = re.findall(pattern, clean_query, re.IGNORECASE)
+                    attribute_keywords.extend(matches)
+
+                attribute = attribute_keywords[0] if attribute_keywords else "情况"
+
+                for entity in entities[:4]:  # 最多处理4个实体
+                    sub_queries.append(SubQuery(
+                        query=f"{entity}的{attribute}是什么？",
+                        purpose=f"获取{entity}的{attribute}信息",
+                        recommended_strategy=["semantic"],
+                        recommended_k=3,
+                        order=0
+                    ))
+
+            # 情况3：复杂查询但无法明确拆分 - 生成开放性查询
             elif clean_query:
-                comparison_items.append(f"{clean_query}的具体情况是什么？")
-        
+                sub_queries.append(SubQuery(
+                    query=f"{clean_query}的具体情况是什么？",
+                    purpose="获取综合信息",
+                    recommended_strategy=["hybrid"],
+                    recommended_k=8,
+                    order=0
+                ))
+
+        # 确定意图类型
+        if is_comparison:
+            intent_type = "comparison"
+        elif complexity == "complex":
+            intent_type = "analytical"
+        else:
+            intent_type = "factual"
+
         return QueryIntent(
-            intent_type="comparison" if is_comparison else "factual",
+            intent_type=intent_type,
             complexity=complexity,
-            is_comparison=is_comparison,
+            needs_decomposition=needs_decomposition,
+            decomposition_type=decomposition_type,
+            decomposition_reason=decomposition_reason,
+            sub_queries=sub_queries,
             entities=entities,
             time_points=time_points,
-            comparison_items=comparison_items,
-            recommended_retrieval_strategy=["hybrid"] if is_comparison else ["semantic"],
-            recommended_k=10 if is_comparison else (5 if complexity == "simple" else 7),
+            recommended_retrieval_strategy=["hybrid"] if needs_decomposition else ["semantic"],
+            recommended_k=10 if needs_decomposition else (5 if complexity == "simple" else 7),
             needs_multi_round_retrieval=complexity == "complex",
             confidence=0.5,
-            reasoning="回退模式：使用通用启发式规则。对于对比查询，已尝试将对比性问题转换为事实性问题。"
+            reasoning=f"回退模式：使用通用启发式规则。{decomposition_reason if needs_decomposition else '简单查询，无需分解。'}"
         )

@@ -102,8 +102,10 @@ class IntelligentGenerator:
         intent_specific_guidance = ""
         if query_intent:
             intent_type = query_intent.get("intent_type", "factual")
-            is_comparison = query_intent.get("is_comparison", False)
-            
+            decomposition_type = query_intent.get("decomposition_type")
+            # 向后兼容：检查旧的 is_comparison 字段
+            is_comparison = query_intent.get("is_comparison", False) or decomposition_type == "comparison"
+
             if intent_type == "comparison" or is_comparison:
                 intent_specific_guidance = """
 **特别说明（对比类查询）**：

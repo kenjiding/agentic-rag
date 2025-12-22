@@ -22,7 +22,7 @@ from src.agentic_rag.nodes import (
     create_decision_node,
     create_web_search_node,
 )
-from src.agentic_rag.intent_analyse import IntentClassifier, QueryOptimizer
+from src.agentic_rag.intent_analyse import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
 from src.agentic_rag.web_search import CorrectiveRAGHandler, WebSearchTool
 
@@ -87,8 +87,6 @@ def create_agentic_rag_graph(
             threshold_config=threshold_config
         )
 
-    query_optimizer = QueryOptimizer(llm=llm)
-
     # 创建 CRAG 处理器（如果启用 Web 搜索）
     crag_handler = None
     if enable_web_search:
@@ -111,7 +109,6 @@ def create_agentic_rag_graph(
     # 创建决策节点（统一 API，通过 crag_handler 参数控制是否启用 Web Search）
     decision_node = create_decision_node(
         detector,
-        query_optimizer=query_optimizer,
         crag_handler=crag_handler if enable_web_search else None,
         threshold_config=threshold_config
     )
