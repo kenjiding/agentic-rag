@@ -107,12 +107,42 @@ class IntentClassificationThresholds:
     """意图识别阈值配置"""
     # LLM温度
     llm_temperature: float = 0.0  # 意图识别使用的LLM温度（低温度保证稳定性）
-    
+
     # 意图识别开关
     enable_intent_classification: bool = True  # 是否启用意图识别
-    
+
     # 置信度阈值
     min_confidence: float = 0.7  # 最小置信度（低于此值使用回退策略）
+
+
+@dataclass
+class AdaptiveRetrievalThresholds:
+    """自适应检索阈值配置 - 2025 企业级最佳实践"""
+
+    # 失败分析相关
+    enable_failure_analysis: bool = True  # 是否启用失败分析
+    enable_llm_deep_analysis: bool = True  # 是否启用 LLM 深度分析
+    redundancy_threshold: float = 0.7  # 冗余检测阈值（重叠度超过此值视为冗余）
+
+    # 查询重写相关
+    enable_adaptive_rewrite: bool = True  # 是否启用自适应查询重写
+    max_query_variants: int = 5  # 最大查询变体数量
+    rewrite_temperature: float = 0.3  # 查询重写 LLM 温度
+
+    # 渐进式策略相关
+    enable_progressive_strategy: bool = True  # 是否启用渐进式策略
+    max_retrieval_rounds: int = 5  # 最大检索轮次
+    min_quality_for_stop: float = 0.7  # 停止检索的最低质量阈值
+
+    # 动态意图重识别相关
+    enable_intent_reclassification: bool = True  # 是否启用动态意图重识别
+    max_reclassification_count: int = 2  # 最大重识别次数
+    reclassification_trigger_round: int = 2  # 触发重识别的轮次阈值
+
+    # 策略升级参数
+    k_increment_per_round: int = 3  # 每轮 k 值增量
+    threshold_decrement_per_round: float = 0.1  # 每轮阈值降低幅度
+    min_quality_threshold: float = 0.3  # 最低质量阈值
 
 
 @dataclass
@@ -130,7 +160,8 @@ class ThresholdConfig:
     retriever: RetrieverThresholds = None
     generator: GeneratorThresholds = None
     intent_classification: IntentClassificationThresholds = None
-    
+    adaptive_retrieval: AdaptiveRetrievalThresholds = None  # 自适应检索配置
+
     def __post_init__(self):
         """初始化后处理：为None的配置使用默认值"""
         if self.retrieval is None:
@@ -149,6 +180,8 @@ class ThresholdConfig:
             self.generator = GeneratorThresholds()
         if self.intent_classification is None:
             self.intent_classification = IntentClassificationThresholds()
+        if self.adaptive_retrieval is None:
+            self.adaptive_retrieval = AdaptiveRetrievalThresholds()
     
     @classmethod
     def default(cls) -> "ThresholdConfig":
@@ -257,6 +290,23 @@ class ThresholdConfig:
                 "llm_temperature": self.intent_classification.llm_temperature,
                 "enable_intent_classification": self.intent_classification.enable_intent_classification,
                 "min_confidence": self.intent_classification.min_confidence,
+            },
+            "adaptive_retrieval": {
+                "enable_failure_analysis": self.adaptive_retrieval.enable_failure_analysis,
+                "enable_llm_deep_analysis": self.adaptive_retrieval.enable_llm_deep_analysis,
+                "redundancy_threshold": self.adaptive_retrieval.redundancy_threshold,
+                "enable_adaptive_rewrite": self.adaptive_retrieval.enable_adaptive_rewrite,
+                "max_query_variants": self.adaptive_retrieval.max_query_variants,
+                "rewrite_temperature": self.adaptive_retrieval.rewrite_temperature,
+                "enable_progressive_strategy": self.adaptive_retrieval.enable_progressive_strategy,
+                "max_retrieval_rounds": self.adaptive_retrieval.max_retrieval_rounds,
+                "min_quality_for_stop": self.adaptive_retrieval.min_quality_for_stop,
+                "enable_intent_reclassification": self.adaptive_retrieval.enable_intent_reclassification,
+                "max_reclassification_count": self.adaptive_retrieval.max_reclassification_count,
+                "reclassification_trigger_round": self.adaptive_retrieval.reclassification_trigger_round,
+                "k_increment_per_round": self.adaptive_retrieval.k_increment_per_round,
+                "threshold_decrement_per_round": self.adaptive_retrieval.threshold_decrement_per_round,
+                "min_quality_threshold": self.adaptive_retrieval.min_quality_threshold,
             },
         }
 

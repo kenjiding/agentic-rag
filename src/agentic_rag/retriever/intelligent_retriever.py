@@ -1,214 +1,24 @@
 """智能检索器实现 - 2025 最佳实践版
 
-基于 2025 年最新研究实现的检索策略：
-1. 真正的混合检索 (BM25 + Dense + RRF 融合)
-2. Cross-encoder 重排序
-3. 多策略检索融合
-
-参考:
-- https://www.pinecone.io/learn/advanced-rag-techniques/
-- https://humanloop.com/blog/rag-architectures
+支持：
+1. 语义检索（Dense）
+2. 关键词检索（BM25）
+3. 真正的混合检索（BM25 + Dense + RRF 融合）
+4. Cross-encoder 重排序
 """
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
-import numpy as np
 
 from src.agentic_rag.evaluation_config import RetrievalQualityConfig
 from src.agentic_rag.evaluators import RetrievalQualityEvaluator
 from src.agentic_rag.threshold_config import ThresholdConfig, RetrieverThresholds
 from src.agentic_rag.intent_analyse import PipelineOption
-
-# 尝试导入 BM25 和 Cross-encoder
-try:
-    from rank_bm25 import BM25Okapi
-    HAS_BM25 = True
-except ImportError:
-    HAS_BM25 = False
-    print("[警告] rank-bm25 未安装，BM25 检索将不可用。运行: uv add rank-bm25")
-
-try:
-    from sentence_transformers import CrossEncoder
-    HAS_CROSS_ENCODER = True
-except ImportError:
-    HAS_CROSS_ENCODER = False
-    print("[警告] sentence-transformers 未安装，Cross-encoder 重排序将不可用。运行: uv add sentence-transformers")
-
-
-class BM25Retriever:
-    """BM25 关键词检索器
-
-    2025 最佳实践：结合稀疏检索（BM25）和稠密检索（向量）
-    """
-
-    def __init__(self, documents: List[Document] = None):
-        """
-        初始化 BM25 检索器
-
-        Args:
-            documents: 文档列表
-        """
-        self.documents = documents or []
-        self.bm25 = None
-        self.tokenized_corpus = []
-
-        if documents:
-            self._build_index(documents)
-
-    def _tokenize(self, text: str) -> List[str]:
-        """分词（支持中英文）"""
-        import re
-        # 简单分词：按空格和标点分割
-        tokens = re.findall(r'\w+', text.lower())
-        return tokens
-
-    def _build_index(self, documents: List[Document]):
-        """构建 BM25 索引"""
-        if not HAS_BM25:
-            return
-
-        self.documents = documents
-        self.tokenized_corpus = [
-            self._tokenize(doc.page_content)
-            for doc in documents
-        ]
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
-
-    def add_documents(self, documents: List[Document]):
-        """添加文档到索引"""
-        self.documents.extend(documents)
-        self._build_index(self.documents)
-
-    def search(self, query: str, k: int = 5) -> List[Tuple[Document, float]]:
-        """
-        使用 BM25 搜索
-
-        Args:
-            query: 查询文本
-            k: 返回数量
-
-        Returns:
-            (文档, 分数) 元组列表
-        """
-        if not HAS_BM25 or self.bm25 is None:
-            return []
-
-        tokenized_query = self._tokenize(query)
-        scores = self.bm25.get_scores(tokenized_query)
-
-        # 获取 top-k
-        top_indices = np.argsort(scores)[::-1][:k]
-        results = [
-            (self.documents[i], scores[i])
-            for i in top_indices
-            if scores[i] > 0
-        ]
-
-        return results
-
-
-class CrossEncoderReranker:
-    """Cross-encoder 重排序器
-
-    2025 最佳实践：使用 Cross-encoder 进行精确重排序
-    """
-
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        """
-        初始化 Cross-encoder
-
-        Args:
-            model_name: 模型名称
-        """
-        self.model = None
-        self.model_name = model_name
-
-        if HAS_CROSS_ENCODER:
-            try:
-                self.model = CrossEncoder(model_name)
-                print(f"[检索] Cross-encoder 重排序器已加载: {model_name}")
-            except Exception as e:
-                print(f"[警告] 加载 Cross-encoder 失败: {e}")
-
-    def rerank(
-        self,
-        query: str,
-        documents: List[Document],
-        top_k: int = None
-    ) -> List[Tuple[Document, float]]:
-        """
-        重排序文档
-
-        Args:
-            query: 查询文本
-            documents: 文档列表
-            top_k: 返回 top-k 个结果
-
-        Returns:
-            (文档, 分数) 元组列表
-        """
-        if not self.model or not documents:
-            return [(doc, 0.0) for doc in documents]
-
-        # 准备输入对
-        pairs = [[query, doc.page_content] for doc in documents]
-
-        # 计算分数
-        scores = self.model.predict(pairs)
-
-        # 排序
-        doc_scores = list(zip(documents, scores))
-        doc_scores.sort(key=lambda x: x[1], reverse=True)
-
-        if top_k:
-            doc_scores = doc_scores[:top_k]
-
-        return doc_scores
-
-
-def reciprocal_rank_fusion(
-    results_list: List[List[Tuple[Document, float]]],
-    k: int = 60
-) -> List[Tuple[Document, float]]:
-    """
-    Reciprocal Rank Fusion (RRF) 融合多个检索结果
-
-    2025 最佳实践：使用 RRF 融合不同检索策略的结果
-
-    公式：RRF(d) = Σ 1/(k + rank(d))
-
-    Args:
-        results_list: 多个检索结果列表，每个元素是 (文档, 分数) 元组列表
-        k: RRF 参数（默认 60，论文推荐值）
-
-    Returns:
-        融合后的 (文档, RRF分数) 列表
-    """
-    # 用文档内容哈希作为唯一标识
-    doc_scores: Dict[int, Tuple[Document, float]] = {}
-
-    for results in results_list:
-        for rank, (doc, _) in enumerate(results):
-            doc_hash = hash(doc.page_content)
-            rrf_score = 1.0 / (k + rank + 1)
-
-            if doc_hash in doc_scores:
-                # 累加 RRF 分数
-                existing_doc, existing_score = doc_scores[doc_hash]
-                doc_scores[doc_hash] = (existing_doc, existing_score + rrf_score)
-            else:
-                doc_scores[doc_hash] = (doc, rrf_score)
-
-    # 按 RRF 分数排序
-    sorted_results = sorted(
-        doc_scores.values(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    return sorted_results
+from src.agentic_rag.retriever.bm25_retriever import BM25Retriever, HAS_BM25
+from src.agentic_rag.retriever.reranker import CrossEncoderReranker, HAS_CROSS_ENCODER
+from src.agentic_rag.retriever.fusion import reciprocal_rank_fusion
 
 
 class IntelligentRetriever:
@@ -654,3 +464,4 @@ class IntelligentRetriever:
         )
 
         return result.final_score, result.meets_threshold
+

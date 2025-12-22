@@ -132,7 +132,7 @@ class QueryIntent(BaseModel):
         description="为什么需要分解的简要说明（如果 needs_decomposition=True）"
     )
 
-    # 通用子查询列表（替代原来的 comparison_items）
+    # 通用子查询列表
     sub_queries: List[SubQuery] = Field(
         default_factory=list,
         description="""分解后的子查询列表。每个子查询包含：
@@ -217,19 +217,6 @@ class QueryIntent(BaseModel):
         description="意图识别和分解决策的推理过程（使用与查询相同的语言）"
     )
 
-    # ==================== 向后兼容字段 ====================
-
-    @property
-    def is_comparison(self) -> bool:
-        """向后兼容：是否是对比查询"""
-        return self.intent_type == "comparison" or self.decomposition_type == "comparison"
-
-    @property
-    def comparison_items(self) -> List[SubQuery]:
-        """向后兼容：对比查询的子查询列表"""
-        if self.decomposition_type == "comparison":
-            return self.sub_queries
-        return []
 
 
 class IntentClassifier:
@@ -469,7 +456,7 @@ sub_queries: []
             # 符号
             r'\b(vs\.?|versus)\b'
         ]
-        is_comparison = any(re.search(pattern, query, re.IGNORECASE) for pattern in comparison_patterns)
+        has_comparison_pattern = any(re.search(pattern, query, re.IGNORECASE) for pattern in comparison_patterns)
         
         # 时间点检测：通用的时间格式
         time_patterns = [
@@ -494,18 +481,14 @@ sub_queries: []
             entities.extend(re.findall(pattern, query))
         entities = list(set([e.strip('"\'') for e in entities]))[:10]
         
-        # 如果有多个时间点，更可能是对比查询
-        if len(time_points) >= 2:
-            is_comparison = True
-        
         # ==================== 通用查询分解判断 ====================
         sub_queries: List[SubQuery] = []
         needs_decomposition = False
         decomposition_type: Optional[str] = None
         decomposition_reason = ""
 
-        # 判断是否需要分解
-        if is_comparison:
+        # 判断是否需要分解：检测对比查询
+        if has_comparison_pattern or len(time_points) >= 2:
             needs_decomposition = True
             decomposition_type = "comparison"
             decomposition_reason = "检测到对比查询，需要拆分为独立的事实查询"
@@ -535,7 +518,9 @@ sub_queries: []
 
             # 情况1：时间对比/时间分解 - 为每个时间点生成查询
             if len(time_points) >= 2:
-                decomposition_type = "comparison" if is_comparison else "temporal"
+                # 如果之前没有设置 decomposition_type，根据是否有对比模式决定
+                if not decomposition_type:
+                    decomposition_type = "comparison" if has_comparison_pattern else "temporal"
                 base_query = clean_query
                 for tp in time_points:
                     base_query = base_query.replace(tp, '').strip()
@@ -551,7 +536,7 @@ sub_queries: []
                         ))
 
             # 情况2：对象对比 - 为每个检测到的实体生成查询
-            elif len(entities) >= 2 and is_comparison:
+            elif len(entities) >= 2 and has_comparison_pattern:
                 decomposition_type = "comparison"
                 # 尝试从查询中提取属性关键词
                 attribute_keywords = []
@@ -585,7 +570,7 @@ sub_queries: []
                 ))
 
         # 确定意图类型
-        if is_comparison:
+        if decomposition_type == "comparison":
             intent_type = "comparison"
         elif complexity == "complex":
             intent_type = "analytical"

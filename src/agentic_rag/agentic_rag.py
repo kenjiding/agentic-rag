@@ -1,5 +1,6 @@
 """Agentic RAG 完整系统 - 修复持久化问题版"""
 from typing import List, Optional
+import logging
 from agentic_rag.llm import LLM
 from agentic_rag.splitter import DocsSplitter
 from langchain_core.documents import Document
@@ -13,6 +14,12 @@ from src.utils.config import AgenticRAGConfig
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 配置日志：禁用 HTTP 请求日志输出
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 class AgenticRAG:
     """完整的 Agentic RAG 系统"""
@@ -247,7 +254,10 @@ class AgenticRAG:
             print(f"问题: {question}")
         
         initial_state = create_initial_state(question=question, max_iterations=self.max_iterations)
-        config = {"recursion_limit": 50}
+        # recursion_limit 应该至少是 max_iterations 的 4 倍（每个迭代循环可能包含多个节点）
+        # 增加一些缓冲以避免达到限制：每个迭代循环最多 4 个节点（decision -> retrieve/generate/web_search -> decision）
+        recursion_limit = max(50, self.max_iterations * 10)
+        config = {"recursion_limit": recursion_limit}
         
         try:
             final_state = self.graph.invoke(initial_state, config=config)

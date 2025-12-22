@@ -1,11 +1,17 @@
-"""Agentic RAG 完整图实现 - 2025 最佳实践版
+"""Agentic RAG 完整图实现 - 2025 企业级最佳实践版
 
 包含:
-1. 意图识别节点
-2. 检索节点（支持 BM25 + Dense + Rerank）
+1. 意图识别节点（支持动态重识别）
+2. 检索节点（支持自适应多轮检索）
 3. 生成节点
-4. 决策节点
+4. 决策节点（集成失败分析和策略调整）
 5. Web Search 节点 (Corrective RAG)
+
+2025 企业级最佳实践：
+- 自适应多轮检索：每轮使用不同的查询和策略
+- 失败分析驱动：根据上一轮失败原因调整策略
+- 动态意图重识别：多轮失败后重新分析意图
+- 渐进式策略升级：逐步放宽参数以获得更好结果
 """
 from agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
 from langgraph.graph import StateGraph, END
@@ -32,10 +38,15 @@ def create_agentic_rag_graph(
     llm: ChatOpenAI = None,
     max_iterations: int = 5,
     threshold_config: Optional[ThresholdConfig] = None,
-    enable_web_search: bool = True
+    enable_web_search: bool = False
 ):
     """
-    创建完整的 Agentic RAG 图 - 2025 最佳实践版
+    创建完整的 Agentic RAG 图 - 2025 企业级最佳实践版
+
+    新增功能：
+    - 自适应多轮检索
+    - 失败分析驱动的策略调整
+    - 动态意图重识别
 
     Args:
         vectorstore: 向量数据库
@@ -106,7 +117,7 @@ def create_agentic_rag_graph(
     retrieve_node = create_retrieve_node(retriever, threshold_config=threshold_config)
     generate_node = create_generate_node(generator, threshold_config=threshold_config)
 
-    # 创建决策节点（统一 API，通过 crag_handler 参数控制是否启用 Web Search）
+    # 创建决策节点（统一 API，支持自适应检索和 Web Search）
     decision_node = create_decision_node(
         detector,
         crag_handler=crag_handler if enable_web_search else None,
@@ -116,7 +127,11 @@ def create_agentic_rag_graph(
     # 创建 Web Search 节点（如果启用）
     web_search_node = None
     if enable_web_search and crag_handler:
-        web_search_node = create_web_search_node(crag_handler, threshold_config=threshold_config)
+        web_search_node = create_web_search_node(
+            crag_handler,
+            retriever=retriever,  # 传入 retriever 用于评估检索质量
+            threshold_config=threshold_config
+        )
 
     # 创建状态图
     graph = StateGraph(AgenticRAGState)
@@ -132,7 +147,7 @@ def create_agentic_rag_graph(
     if web_search_node:
         graph.add_node("web_search", web_search_node)
 
-    # 设置入口点：如果启用意图识别，先进行意图识别，否则直接进入决策节点
+    # 设置入口点
     if intent_node:
         graph.set_entry_point("intent")
         # 意图识别后进入决策节点
@@ -140,8 +155,35 @@ def create_agentic_rag_graph(
     else:
         graph.set_entry_point("decision")
 
-    # 添加条件边（包含 Web Search）
-    if web_search_node:
+    # 构建条件边的路由映射
+    def get_next_node(state: AgenticRAGState) -> str:
+        """决定下一个节点"""
+        next_action = state.get("next_action", "finish")
+
+        # 动态意图重识别：如果需要重识别且有意图节点，转到意图节点
+        if next_action == "reclassify_intent" and intent_node:
+            return "intent"
+
+        # 其他情况按照 next_action 路由
+        return next_action
+
+    # 添加条件边
+    if web_search_node and intent_node:
+        # 完整版：包含 Web Search 和动态意图重识别
+        graph.add_conditional_edges(
+            "decision",
+            get_next_node,
+            {
+                "retrieve": "retrieve",
+                "generate": "generate",
+                "web_search": "web_search",
+                "reclassify_intent": "intent",  # 动态意图重识别
+                "finish": END
+            }
+        )
+        graph.add_edge("web_search", "decision")
+    elif web_search_node:
+        # 仅 Web Search
         graph.add_conditional_edges(
             "decision",
             lambda state: state.get("next_action", "finish"),
@@ -152,9 +194,21 @@ def create_agentic_rag_graph(
                 "finish": END
             }
         )
-        # Web Search 后回到决策节点
         graph.add_edge("web_search", "decision")
+    elif intent_node:
+        # 仅意图重识别
+        graph.add_conditional_edges(
+            "decision",
+            get_next_node,
+            {
+                "retrieve": "retrieve",
+                "generate": "generate",
+                "reclassify_intent": "intent",
+                "finish": END
+            }
+        )
     else:
+        # 基础版
         graph.add_conditional_edges(
             "decision",
             lambda state: state.get("next_action", "finish"),
@@ -182,7 +236,9 @@ def create_initial_state(
     max_iterations: int = 5
 ) -> AgenticRAGState:
     """
-    创建初始状态 - 2025 最佳实践版
+    创建初始状态 - 2025 企业级最佳实践版
+
+    包含自适应检索所需的所有字段
 
     Args:
         question: 用户问题
@@ -193,22 +249,39 @@ def create_initial_state(
     """
     return {
         "question": question,
-        "query_intent": None,  # 意图识别结果（将在intent节点中填充）
+
+        # 意图识别相关
+        "query_intent": None,  # 意图识别结果
+        "intent_reclassification_count": 0,  # 意图重识别次数
+
+        # 检索相关
         "retrieved_docs": [],
         "retrieval_history": [],
         "retrieval_quality": 0.0,
         "retrieval_strategy": "semantic",
+
+        # 自适应检索相关 - 2025 企业级最佳实践
+        "failure_analysis": None,  # 检索失败分析结果
+        "query_variants": [],  # 查询变体列表
+        "used_variants": [],  # 已使用过的查询变体
+        "current_round_config": None,  # 当前轮次的检索配置
+
+        # 生成相关
         "answer": "",
         "generation_history": [],
         "answer_quality": 0.0,
         "evaluation_feedback": "",
+
+        # 控制流
         "iteration_count": 0,
         "max_iterations": max_iterations,
         "next_action": None,
+
         # Web Search (Corrective RAG) 相关
         "web_search_used": False,
         "web_search_results": [],
         "web_search_count": 0,
+
         # 元数据
         "error_message": "",
         "tools_used": []

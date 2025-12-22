@@ -2,6 +2,9 @@
 import sys
 from pathlib import Path
 import os
+import logging
+import time
+from colorama import Fore, Style
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent
@@ -16,6 +19,12 @@ from src.agentic_rag.parser import PDFParser
 
 # 加载环境变量
 load_dotenv()
+
+# 配置日志：禁用 HTTP 请求日志输出
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
 def main():
@@ -97,12 +106,13 @@ def main():
     # 4. 测试查询 - 展示迭代优化
     print("\n[步骤 4] 测试查询（展示 Agentic RAG 的迭代优化能力）...")
     questions = [
+      # "深圳的发展历程是怎样的?",
       # "黑神话悟空有哪几个章节?",
-      "uber发展历程是怎样的?"
+      # "uber发展历程是怎样的?"
         # "Uber 2021年和2022年Legal, tax, and regulatory reserve changes and settlements 业务的调整后EBITDA分别是多少?",
         # "2022年福布斯富豪榜杰夫·贝索斯财富是多少?",
         # "2019年福布斯富豪榜杰夫·贝索斯财富是多少?",
-        # "2019年, 2020,2021年福布斯富豪榜杰夫·贝索斯财富是上升了还是下降了? 请给出具体数据.",
+        "2019年, 2020,2021年福布斯富豪榜杰夫·贝索斯财富是上升了还是下降了? 请给出具体数据.",
         # "kenjiding的low code项目是在哪家公司做的?",
         # "kenjiding有哪些公司工作过?",
         # "据你的了解,kenjiding最厉害的经历是哪些?",
@@ -116,9 +126,13 @@ def main():
         print(f"\n{'='*60}")
         print(f"测试 {i}/{len(questions)}: {question}")
         print(f"{'='*60}\n")
-        
+        start_time = time.perf_counter()
+
         result = rag.query(question, verbose=True)
-        
+              
+        end_time = time.perf_counter()
+        print(f"{Style.BRIGHT}{Fore.RED}运行时间: {end_time - start_time:.6f} 秒{Style.RESET_ALL}")
+
         print(f"\n📊 执行统计:")
         print(f"  总迭代次数: {result.get('iteration_count', 0)}")
         print(f"  检索轮数: {len(result.get('retrieval_history', []))}")

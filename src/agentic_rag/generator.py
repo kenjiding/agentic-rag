@@ -103,10 +103,8 @@ class IntelligentGenerator:
         if query_intent:
             intent_type = query_intent.get("intent_type", "factual")
             decomposition_type = query_intent.get("decomposition_type")
-            # 向后兼容：检查旧的 is_comparison 字段
-            is_comparison = query_intent.get("is_comparison", False) or decomposition_type == "comparison"
 
-            if intent_type == "comparison" or is_comparison:
+            if intent_type == "comparison" or decomposition_type == "comparison":
                 intent_specific_guidance = """
 **特别说明（对比类查询）**：
 1. **仔细查找所有相关时间点/对象的信息**：在上下文中找出所有提到的时间点和对应的数据

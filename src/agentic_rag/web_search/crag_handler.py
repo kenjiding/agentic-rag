@@ -1,127 +1,16 @@
-"""Web Search 工具 - Corrective RAG 回退机制
+"""Corrective RAG 处理器实现
 
-基于 2025 年 Corrective RAG (CRAG) 论文实现：
-当本地知识库检索质量不足时，回退到 Web 搜索获取外部信息。
-
-参考:
-- https://arxiv.org/abs/2401.15884 (Corrective RAG)
-- https://arxiv.org/abs/2501.09136 (Agentic RAG Survey)
+实现 CRAG 论文中的核心逻辑：
+1. 评估检索质量
+2. 根据质量决定是否需要 Web 搜索
+3. 融合本地和 Web 搜索结果
 """
 from typing import List, Optional, Dict, Any
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-# 尝试导入 Web Search 库
-try:
-    from duckduckgo_search import DDGS
-    HAS_DUCKDUCKGO = True
-except ImportError:
-    HAS_DUCKDUCKGO = False
-    print("[警告] duckduckgo-search 未安装，Web Search 将不可用。运行: uv add duckduckgo-search")
-
-
-class WebSearchTool:
-    """Web 搜索工具
-
-    2025 最佳实践 (Corrective RAG)：
-    当本地检索质量不足时，使用 Web 搜索获取外部信息
-    """
-
-    def __init__(
-        self,
-        max_results: int = 5,
-        region: str = "wt-wt",  # 全球
-        safesearch: str = "moderate",
-        time_range: Optional[str] = None,  # d: day, w: week, m: month, y: year
-    ):
-        """
-        初始化 Web 搜索工具
-
-        Args:
-            max_results: 最大结果数
-            region: 搜索区域
-            safesearch: 安全搜索级别
-            time_range: 时间范围
-        """
-        self.max_results = max_results
-        self.region = region
-        self.safesearch = safesearch
-        self.time_range = time_range
-        self.available = HAS_DUCKDUCKGO
-
-        if not self.available:
-            print("[Web Search] DuckDuckGo 不可用，Web 搜索功能禁用")
-
-    def search(self, query: str, max_results: Optional[int] = None) -> List[Document]:
-        """
-        执行 Web 搜索
-
-        Args:
-            query: 搜索查询
-            max_results: 最大结果数（覆盖默认值）
-
-        Returns:
-            包含搜索结果的 Document 列表
-        """
-        if not self.available:
-            print("[Web Search] Web 搜索不可用")
-            return []
-
-        k = max_results or self.max_results
-
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(
-                    query,
-                    region=self.region,
-                    safesearch=self.safesearch,
-                    timelimit=self.time_range,
-                    max_results=k
-                ))
-
-            documents = []
-            for i, result in enumerate(results):
-                content = f"{result.get('title', '')}\n\n{result.get('body', '')}"
-                doc = Document(
-                    page_content=content,
-                    metadata={
-                        "source": result.get("href", ""),
-                        "title": result.get("title", ""),
-                        "snippet": result.get("body", ""),
-                        "search_rank": i + 1,
-                        "source_type": "web_search"
-                    }
-                )
-                documents.append(doc)
-
-            print(f"[Web Search] 搜索 '{query}' 返回 {len(documents)} 个结果")
-            return documents
-
-        except Exception as e:
-            print(f"[Web Search] 搜索失败: {e}")
-            return []
-
-    def search_with_context(
-        self,
-        query: str,
-        context: Optional[str] = None,
-        max_results: Optional[int] = None
-    ) -> List[Document]:
-        """
-        带上下文的搜索（可以优化查询）
-
-        Args:
-            query: 原始查询
-            context: 上下文信息（之前的检索结果等）
-            max_results: 最大结果数
-
-        Returns:
-            搜索结果文档列表
-        """
-        # 简单实现：直接使用原始查询
-        # 高级实现可以使用 LLM 优化查询
-        return self.search(query, max_results)
+from src.agentic_rag.web_search.web_search_tool import WebSearchTool
 
 
 class CorrectiveRAGHandler:
@@ -202,11 +91,18 @@ class CorrectiveRAGHandler:
 原始查询：{query}
 
 要求：
-1. 提取核心关键词
-2. 移除过于具体或限制性的词汇
-3. 添加必要的上下文词汇以提高搜索精度
-4. 保持查询简洁（不超过 10 个词）
-5. 只返回优化后的查询，不要解释
+1. **保持查询的核心意图和关键实体不变**
+2. 使用与原查询相同的语言（中文查询保持中文）
+3. 转换为适合搜索引擎的形式（关键词组合）
+4. 保留重要的限定词（时间、地点、数量等）
+5. 如果是问句，转换为陈述式关键词
+6. 保持查询简洁（5-15 个词）
+7. 只返回优化后的查询，不要解释
+
+示例：
+- "2019和2020年苹果营收对比" -> "苹果公司 2019年 2020年 营收 财报"
+- "特斯拉为什么成功" -> "特斯拉 成功原因 分析"
+- "量子计算的原理和应用" -> "量子计算 原理 应用 介绍"
 
 优化后的查询："""
 
@@ -216,6 +112,8 @@ class CorrectiveRAGHandler:
         try:
             response = chain.invoke({"query": query})
             optimized = response.content.strip()
+            # 去除可能的引号
+            optimized = optimized.strip('"\'')
             print(f"[CRAG] 查询优化: '{query}' -> '{optimized}'")
             return optimized
         except Exception as e:
@@ -228,7 +126,10 @@ class CorrectiveRAGHandler:
         optimize_query: bool = True
     ) -> List[Document]:
         """
-        执行 Web 搜索
+        执行 Web 搜索（带重试机制）
+
+        如果优化后的查询返回空结果或不相关结果，
+        会尝试使用原始查询重新搜索。
 
         Args:
             query: 查询文本
@@ -241,11 +142,19 @@ class CorrectiveRAGHandler:
             print("[CRAG] Web 搜索不可用")
             return []
 
+        # 第一次尝试：使用优化后的查询
         search_query = query
-        if optimize_query:
-            search_query = self.optimize_query_for_web(query)
+        # if optimize_query:
+        #     search_query = self.optimize_query_for_web(query)
 
-        return self.web_search.search(search_query, self.max_web_results)
+        results = self.web_search.search(search_query, self.max_web_results)
+
+        # 如果结果为空且使用了优化查询，尝试原始查询
+        if not results and optimize_query and search_query != query:
+            print(f"[CRAG] 优化查询无结果，尝试原始查询: '{query}'")
+            results = self.web_search.search(query, self.max_web_results)
+
+        return results
 
     def refine_web_results(
         self,
@@ -255,7 +164,7 @@ class CorrectiveRAGHandler:
         """
         精炼 Web 搜索结果（CRAG 知识精炼）
 
-        过滤掉不相关的结果，提取关键信息
+        使用 LLM 评估每个结果的相关性，过滤掉不相关的结果
 
         Args:
             query: 原始查询
@@ -267,9 +176,51 @@ class CorrectiveRAGHandler:
         if not web_docs:
             return []
 
-        # 简单实现：保留所有结果
-        # 高级实现可以使用 LLM 评估每个结果的相关性
-        return web_docs
+        # 使用 LLM 评估每个结果的相关性
+        relevance_template = """你是一个信息相关性评估专家。请判断以下搜索结果是否与用户查询相关。
+
+用户查询：{query}
+
+搜索结果：
+标题：{title}
+内容：{content}
+
+评估标准：
+1. 内容是否直接回答或涉及用户查询的主题
+2. 信息是否有助于回答用户的问题
+3. 内容质量是否可靠（非广告、非垃圾信息）
+
+请只回答 "相关" 或 "不相关"，不要解释。"""
+
+        refined_docs = []
+        for doc in web_docs:
+            try:
+                title = doc.metadata.get("title", "")
+                content = doc.page_content[:500]  # 限制长度
+
+                prompt = ChatPromptTemplate.from_template(relevance_template)
+                chain = prompt | self.llm
+
+                response = chain.invoke({
+                    "query": query,
+                    "title": title,
+                    "content": content
+                })
+
+                result = response.content.strip()
+                if "相关" in result and "不相关" not in result:
+                    refined_docs.append(doc)
+                    print(f"[CRAG] ✓ 保留: {title[:50]}...")
+                else:
+                    print(f"[CRAG] ✗ 过滤: {title[:50]}...")
+
+            except Exception as e:
+                print(f"[CRAG] 相关性评估失败: {e}")
+                # 评估失败时保留结果
+                refined_docs.append(doc)
+
+        print(f"[CRAG] 精炼后保留 {len(refined_docs)}/{len(web_docs)} 个结果")
+        return refined_docs
 
     def merge_results(
         self,
@@ -370,13 +321,3 @@ class CorrectiveRAGHandler:
 
         return result
 
-
-# 便捷函数
-def create_web_search_tool(**kwargs) -> WebSearchTool:
-    """创建 Web 搜索工具"""
-    return WebSearchTool(**kwargs)
-
-
-def create_crag_handler(**kwargs) -> CorrectiveRAGHandler:
-    """创建 CRAG 处理器"""
-    return CorrectiveRAGHandler(**kwargs)
