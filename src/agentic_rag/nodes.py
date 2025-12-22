@@ -1,4 +1,12 @@
-"""Agentic RAG 节点实现"""
+"""Agentic RAG 节点实现 - 2025 最佳实践版
+
+包含:
+1. 意图识别节点
+2. 检索节点
+3. 生成节点
+4. 决策节点
+5. Web Search 节点 (Corrective RAG)
+"""
 from typing import List, Optional
 from colorama import Fore, Style, init
 
@@ -9,6 +17,7 @@ from src.agentic_rag.generator import IntelligentGenerator
 from src.agentic_rag.intent_analyse import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
 from src.agentic_rag.intent_analyse import QueryOptimizer
+from src.agentic_rag.web_search import CorrectiveRAGHandler
 
 def create_intent_classification_node(
     intent_classifier: IntentClassifier,
@@ -320,29 +329,41 @@ def create_generate_node(
 def create_decision_node(
     detector: AdvancedNeedsMoreInfoDetector,
     query_optimizer: QueryOptimizer,
+    crag_handler: Optional[CorrectiveRAGHandler] = None,
     threshold_config: Optional[ThresholdConfig] = None
 ):
     """
-    创建决策节点
-    
+    创建决策节点（统一版本，支持可选的 Web Search）
+
+    2025 最佳实践：统一决策节点，通过参数控制是否启用 Web Search
+
     Args:
         detector: 信息需求检测器
+        query_optimizer: 查询优化器
+        crag_handler: CRAG 处理器（可选，如果提供则启用 Web Search）
         threshold_config: 阈值配置（如果为None，使用默认配置）
-    
+
     Returns:
         决策节点函数
     """
     # 将 threshold_config 附加到 detector 上，以便在决策节点中使用
     if threshold_config:
         detector.threshold_config = threshold_config
-    
+
+    # 检查是否启用 Web Search
+    enable_web_search = (
+        crag_handler is not None and
+        hasattr(crag_handler, 'web_search') and
+        crag_handler.web_search.available
+    )
+
     def decision_node(state: AgenticRAGState) -> AgenticRAGState:
         """
         决策节点：决定下一步行动
-        
+
         Args:
             state: 当前状态
-            
+
         Returns:
             更新后的状态（包含 next_action）
         """
@@ -352,28 +373,42 @@ def create_decision_node(
         answer = state.get("answer", "")
         retrieval_quality = state.get("retrieval_quality", 0.0)
         answer_quality = state.get("answer_quality", 0.0)
-        
+        web_search_used = state.get("web_search_used", False)
+        web_search_count = state.get("web_search_count", 0)
+
         print(f"\n{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 第 {iteration + 1} 轮决策{Style.RESET_ALL}")
-        
+
         # 如果超过最大迭代次数，结束
         if iteration >= max_iterations:
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 达到最大迭代次数，结束{Style.RESET_ALL}")
             return {"next_action": "finish"}
-        
+
         # 如果没有检索过，先检索
         if not retrieved_docs:
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 需要检索文档{Style.RESET_ALL}")
             return {"next_action": "retrieve"}
-        
-        # 如果检索质量不够，继续检索（尝试不同策略），但避免无限循环
-        # 使用配置的阈值（从 detector 中获取，如果没有则使用默认值 0.7）
-        retrieval_threshold = 0.7  # 默认值，如果 detector 有 threshold_config 则使用配置值
+
+        # 获取配置的阈值
+        retrieval_threshold = 0.7
+        answer_threshold = 0.7
         if hasattr(detector, 'threshold_config') and detector.threshold_config:
             retrieval_threshold = detector.threshold_config.decision.retrieval_quality_threshold
-        
+            answer_threshold = detector.threshold_config.decision.answer_quality_threshold
+
+        # CRAG 逻辑：检索质量低且已尝试本地检索，触发 Web Search
+        if (enable_web_search and
+            retrieval_quality < retrieval_threshold and
+            iteration >= 2 and
+            not web_search_used and #还没使用过web search才触发，也就是一次也没使用过，使用过web search就没必要再次搜索
+            web_search_count < 1):
+            # 检查是否应该触发 Web 搜索
+            if crag_handler.should_trigger_web_search(retrieval_quality, iteration):
+                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索质量不足 ({retrieval_quality:.2f})，触发 Web 搜索{Style.RESET_ALL}")
+                return {"next_action": "web_search"}
+
+        # 检索质量不足，继续检索
         if (retrieval_quality < retrieval_threshold) and iteration < 2 and len(retrieved_docs) > 0:
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索质量不足 ({retrieval_quality:.2f})，继续检索{Style.RESET_ALL}")
-            # 使用意图识别对用户问题进行优化
             query_intent = state.get("query_intent")
             if query_intent:
                 origin_question = query_intent.get("query")
@@ -381,40 +416,34 @@ def create_decision_node(
                 print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 优化后的查询: {optimized_query.primary_query}{Style.RESET_ALL}")
                 return {"next_action": "retrieve", "question": optimized_query.primary_query}
             return {"next_action": "retrieve"}
-        
-        # 如果检索失败（0个文档）且已尝试多次，尝试生成或结束
+
+        # 检索失败处理
         if len(retrieved_docs) == 0 and iteration >= 2:
-            if not answer:
+            # 尝试 Web 搜索（如果启用）
+            if enable_web_search and not web_search_used:
+                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 本地检索失败，尝试 Web 搜索{Style.RESET_ALL}")
+                return {"next_action": "web_search"}
+            elif not answer:
                 print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索失败，尝试生成答案{Style.RESET_ALL}")
                 return {"next_action": "generate"}
             else:
                 print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索失败且已有答案，结束{Style.RESET_ALL}")
                 return {"next_action": "finish"}
-        
+
         # 如果没有生成过答案，生成
         if not answer:
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 需要生成答案{Style.RESET_ALL}")
             return {"next_action": "generate"}
-        
-        # 如果答案质量不够，需要判断是检索问题还是生成问题
-        # 使用配置的阈值
-        answer_threshold = 0.7  # 默认值
-        retrieval_threshold_for_decision = 0.7  # 默认值
-        if hasattr(detector, 'threshold_config') and detector.threshold_config:
-            answer_threshold = detector.threshold_config.decision.answer_quality_threshold
-            retrieval_threshold_for_decision = detector.threshold_config.decision.retrieval_quality_threshold
-        
+
+        # 答案质量判断
         if answer_quality < answer_threshold:
             question = state.get("question", "")
-            
-            # 关键逻辑：如果检索质量已经很高，但答案质量仍然很低，
-            # 说明问题不在检索，而在生成，应该优先重新生成
-            if retrieval_quality >= retrieval_threshold_for_decision:
-                # 检索质量高但答案质量低，优先重新生成
-                # 可能是生成器没有正确利用上下文，或者需要改进生成策略
+
+            # 检索质量高但答案质量低，重新生成
+            if retrieval_quality >= retrieval_threshold:
                 print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 检索质量高 ({retrieval_quality:.2f}) 但答案质量低 ({answer_quality:.2f})，重新生成{Style.RESET_ALL}")
                 return {"next_action": "generate"}
-            
+
             # 检索质量不够，检查是否需要更多信息
             needs_more_info = detector.needs_more_information(
                 answer=answer,
@@ -422,18 +451,138 @@ def create_decision_node(
                 question=question,
                 answer_quality=answer_quality
             )
-            
-            # 如果确实需要更多信息，且还有迭代次数，继续检索
+
             if needs_more_info and iteration < max_iterations - 1:
-                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 答案质量不足 ({answer_quality:.2f})，检索质量不足 ({retrieval_quality:.2f})，需要更多信息，继续检索{Style.RESET_ALL}")
+                # 如果启用 Web 搜索且还没用过，尝试 Web 搜索
+                if enable_web_search and not web_search_used:
+                    print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 需要更多信息，尝试 Web 搜索{Style.RESET_ALL}")
+                    return {"next_action": "web_search"}
+                print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 需要更多信息，继续检索{Style.RESET_ALL}")
                 return {"next_action": "retrieve"}
             else:
-                # 不需要更多信息，或已达到最大迭代次数，重新生成
                 print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 答案质量不足 ({answer_quality:.2f})，重新生成{Style.RESET_ALL}")
                 return {"next_action": "generate"}
-        
+
         # 质量足够，完成
         print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision节点】 答案质量良好 ({answer_quality:.2f})，完成{Style.RESET_ALL}")
         return {"next_action": "finish"}
-    
+
     return decision_node
+
+
+def create_web_search_node(
+    crag_handler: CorrectiveRAGHandler,
+    threshold_config: Optional[ThresholdConfig] = None
+):
+    """
+    创建 Web Search 节点 (Corrective RAG)
+
+    2025 最佳实践：当本地检索质量不足时，使用 Web 搜索获取外部信息
+
+    Args:
+        crag_handler: CRAG 处理器
+        threshold_config: 阈值配置
+
+    Returns:
+        Web Search 节点函数
+    """
+    if threshold_config is None:
+        threshold_config = ThresholdConfig.default()
+
+    def web_search_node(state: AgenticRAGState) -> AgenticRAGState:
+        """
+        Web Search 节点：执行 Web 搜索并融合结果
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态
+        """
+        question = state["question"]
+        retrieved_docs = state.get("retrieved_docs", [])
+        retrieval_quality = state.get("retrieval_quality", 0.0)
+        iteration = state.get("iteration_count", 0)
+        web_search_count = state.get("web_search_count", 0)
+
+        print(f"\n{Style.BRIGHT}{Fore.CYAN}🌐【web_search节点】 执行 Web 搜索...{Style.RESET_ALL}")
+        print(f"{Style.BRIGHT}{Fore.CYAN}查询: {question}{Style.RESET_ALL}")
+        print(f"{Style.BRIGHT}{Fore.CYAN}当前检索质量: {retrieval_quality:.2f}{Style.RESET_ALL}")
+
+        try:
+            # 执行 CRAG 处理
+            result = crag_handler.process(
+                query=question,
+                local_docs=retrieved_docs,
+                retrieval_quality=retrieval_quality,
+                iteration_count=iteration
+            )
+
+            merged_docs = result["documents"]
+            used_web_search = result["used_web_search"]
+            web_results_count = result["web_results_count"]
+
+            if used_web_search:
+                print(f"{Style.BRIGHT}{Fore.CYAN}🌐【web_search节点】 Web 搜索完成，获取 {web_results_count} 个结果{Style.RESET_ALL}")
+                print(f"{Style.BRIGHT}{Fore.CYAN}🌐【web_search节点】 融合后共 {len(merged_docs)} 个文档{Style.RESET_ALL}")
+            else:
+                print(f"{Style.BRIGHT}{Fore.CYAN}🌐【web_search节点】 Web 搜索未触发或不可用{Style.RESET_ALL}")
+
+            # 更新状态
+            tools_used = state.get("tools_used", [])
+            if used_web_search and "web_search" not in tools_used:
+                tools_used.append("web_search")
+
+            # 更新检索历史
+            retrieval_history = state.get("retrieval_history", [])
+            if used_web_search:
+                retrieval_history.append(merged_docs)
+
+            return {
+                "retrieved_docs": merged_docs,
+                "retrieval_history": retrieval_history,
+                "web_search_used": used_web_search,
+                "web_search_results": result.get("web_docs", []),
+                "web_search_count": web_search_count + (1 if used_web_search else 0),
+                "tools_used": tools_used,
+                "error_message": ""
+            }
+
+        except Exception as e:
+            error_msg = f"Web 搜索错误: {str(e)}"
+            print(f"{Style.BRIGHT}{Fore.YELLOW}🌐【web_search节点】 ❌ {error_msg}{Style.RESET_ALL}")
+            return {
+                "error_message": error_msg,
+                "web_search_used": False
+            }
+
+    return web_search_node
+
+
+# 向后兼容：保留别名
+def create_decision_node_with_web_search(
+    detector: AdvancedNeedsMoreInfoDetector,
+    query_optimizer: QueryOptimizer,
+    crag_handler: CorrectiveRAGHandler,
+    threshold_config: Optional[ThresholdConfig] = None
+):
+    """
+    创建支持 Web Search 的决策节点（向后兼容别名）
+
+    注意：此函数已合并到 create_decision_node，建议直接使用 create_decision_node(crag_handler=...)
+
+    Args:
+        detector: 信息需求检测器
+        query_optimizer: 查询优化器
+        crag_handler: CRAG 处理器
+        threshold_config: 阈值配置
+
+    Returns:
+        决策节点函数
+    """
+    return create_decision_node(
+        detector=detector,
+        query_optimizer=query_optimizer,
+        crag_handler=crag_handler,
+        threshold_config=threshold_config
+    )

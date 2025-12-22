@@ -26,8 +26,13 @@ class AgenticRAGState(TypedDict):
     # 控制流
     iteration_count: int  # 迭代次数
     max_iterations: int  # 最大迭代次数
-    next_action: Optional[Literal["retrieve", "generate", "finish"]]  # 下一步行动
-    
+    next_action: Optional[Literal["retrieve", "generate", "web_search", "finish"]]  # 下一步行动
+
+    # Web Search (Corrective RAG) - 2025 最佳实践
+    web_search_used: bool  # 是否使用了 Web 搜索
+    web_search_results: List[Document]  # Web 搜索结果
+    web_search_count: int  # Web 搜索次数
+
     # 元数据
     error_message: str  # 错误信息
     tools_used: List[str]  # 已使用的工具

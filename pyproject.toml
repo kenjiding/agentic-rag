@@ -24,6 +24,11 @@ dependencies = [
     "colorama>=0.4.6",
     "langchain-ollama>=1.0.1",
     "langchain-google-genai>=4.0.0",
+    # 2025 最佳实践新增依赖
+    "rank-bm25>=0.2.2",  # BM25 关键词检索
+    "sentence-transformers>=2.2.0",  # Cross-encoder reranking
+    "duckduckgo-search>=6.0.0",  # Web Search 回退
+    "langchain-experimental>=0.3.0",  # 语义分块
 ]
 
 [project.optional-dependencies]
