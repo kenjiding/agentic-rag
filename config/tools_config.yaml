@@ -1,0 +1,71 @@
+# 工具配置文件 - 企业级最佳实践
+# 支持从YAML文件加载工具配置
+
+tools:
+  # 计算器工具 - 所有Agent可用
+  - name: calculator
+    category: calculation
+    permission: public
+    allowed_agents: []
+    tags: [math, calculation]
+    description: "执行数学计算"
+    version: "1.0.0"
+    rate_limit: 100
+    timeout: 5.0
+    requires_auth: false
+    cost_per_call: 0.001
+    enabled: true
+    custom_metadata:
+      author: "system"
+      documentation: "https://example.com/docs/calculator"
+  
+  # 天气工具 - 仅chat_agent可用
+  - name: get_weather
+    category: information
+    permission: restricted
+    allowed_agents: [chat_agent]
+    tags: [weather, information]
+    description: "获取天气信息"
+    version: "1.0.0"
+    rate_limit: 60
+    timeout: 10.0
+    requires_auth: false
+    cost_per_call: 0.01
+    enabled: true
+    custom_metadata:
+      author: "system"
+      api_endpoint: "https://api.weather.com"
+  
+  # 网络搜索工具 - 仅rag_agent可用
+  - name: web_search
+    category: search
+    permission: private
+    allowed_agents: [rag_agent]
+    tags: [search, web]
+    description: "网络搜索工具"
+    version: "1.0.0"
+    rate_limit: 30
+    timeout: 15.0
+    requires_auth: true
+    cost_per_call: 0.05
+    enabled: true
+    custom_metadata:
+      author: "system"
+      api_endpoint: "https://api.search.com"
+  
+  # 时间工具 - 所有Agent可用
+  - name: get_current_time
+    category: utility
+    permission: public
+    allowed_agents: []
+    tags: [time, utility]
+    description: "获取当前时间"
+    version: "1.0.0"
+    rate_limit: 200
+    timeout: 1.0
+    requires_auth: false
+    cost_per_call: 0.0001
+    enabled: true
+    custom_metadata:
+      author: "system"
+

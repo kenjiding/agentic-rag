@@ -44,7 +44,14 @@ def create_retrieve_node(
     progressive_strategy = None
     adaptive_config = threshold_config.adaptive_retrieval
     if adaptive_config and adaptive_config.enable_progressive_strategy:
-        failure_analyzer = RetrievalFailureAnalyzer(threshold_config=threshold_config)
+        # 企业级最佳实践：传递embeddings和LLM用于语义相似度检测
+        embeddings = retriever.embeddings if hasattr(retriever, 'embeddings') else None
+        llm = retriever.llm if hasattr(retriever, 'llm') else None
+        failure_analyzer = RetrievalFailureAnalyzer(
+            llm=llm,
+            threshold_config=threshold_config,
+            embeddings=embeddings
+        )
         progressive_strategy = SimpleProgressiveStrategy(threshold_config=threshold_config)
         print(f"{Style.BRIGHT}{Fore.GREEN}✅ 自适应检索已启用（简化版）{Style.RESET_ALL}")
 

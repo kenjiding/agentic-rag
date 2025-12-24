@@ -65,7 +65,6 @@ class Stage:
     GENERATE = "generation"  # 生成
     GENERATE_QUALITY = "generation_quality_eval"  # 生成质量评估
     DECISION = "decision"  # 决策
-    WEB_SEARCH = "web_search"  # Web搜索
     RERANK = "rerank"  # 重排序
     TOTAL = "total"  # 总耗时
 
@@ -293,7 +292,6 @@ class TimingTracker:
             Stage.GENERATE: "生成",
             Stage.GENERATE_QUALITY: "生成质量评估",
             Stage.DECISION: "决策",
-            Stage.WEB_SEARCH: "Web搜索",
             Stage.RERANK: "重排序",
             Stage.TOTAL: "总计"
         }
@@ -308,7 +306,6 @@ class TimingTracker:
             Stage.GENERATE: Fore.GREEN,
             Stage.GENERATE_QUALITY: Fore.LIGHTGREEN_EX,
             Stage.DECISION: Fore.YELLOW,
-            Stage.WEB_SEARCH: Fore.CYAN,
             Stage.RERANK: Fore.LIGHTBLUE_EX,
             Stage.TOTAL: Fore.WHITE
         }

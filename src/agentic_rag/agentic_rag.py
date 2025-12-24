@@ -255,7 +255,7 @@ class AgenticRAG:
         
         initial_state = create_initial_state(question=question, max_iterations=self.max_iterations)
         # recursion_limit 应该至少是 max_iterations 的 4 倍（每个迭代循环可能包含多个节点）
-        # 增加一些缓冲以避免达到限制：每个迭代循环最多 4 个节点（decision -> retrieve/generate/web_search -> decision）
+        # 增加一些缓冲以避免达到限制：每个迭代循环最多 3 个节点（decision -> retrieve/generate -> decision）
         recursion_limit = max(50, self.max_iterations * 10)
         config = {"recursion_limit": recursion_limit}
         

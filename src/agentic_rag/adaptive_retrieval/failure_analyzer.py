@@ -147,7 +147,8 @@ class RetrievalFailureAnalyzer:
         self,
         llm: Optional[ChatOpenAI] = None,
         threshold_config: Optional[ThresholdConfig] = None,
-        enable_llm_analysis: bool = True
+        enable_llm_analysis: bool = True,
+        embeddings = None
     ):
         """
         初始化失败分析器
@@ -156,10 +157,13 @@ class RetrievalFailureAnalyzer:
             llm: LLM 实例（用于深度分析）
             threshold_config: 阈值配置
             enable_llm_analysis: 是否启用 LLM 深度分析
+            embeddings: Embedding模型（用于语义相似度检测，企业级最佳实践）
         """
         self.threshold_config = threshold_config or ThresholdConfig.default()
         self.enable_llm_analysis = enable_llm_analysis
+        self.embeddings = embeddings  # 用于语义相似度检测（企业级最佳实践）
 
+        # 初始化LLM
         if llm is None and enable_llm_analysis:
             llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
         self.llm = llm
@@ -526,12 +530,9 @@ class RetrievalFailureAnalyzer:
 
         for sq in sub_queries:
             sq_query = sq.get("query", "") if isinstance(sq, dict) else str(sq)
-            # 简单的关键词覆盖检测
-            keywords = sq_query.lower().split()
-            if keywords:
-                matched = sum(1 for kw in keywords if kw in doc_text)
-                if matched / len(keywords) > 0.3:  # 30% 关键词匹配
-                    covered += 1
+            # 企业级最佳实践：使用语义相似度检测，而不是简单的关键词匹配
+            if self._is_query_covered_by_docs(docs, sq_query):
+                covered += 1
 
         return covered
 
@@ -540,15 +541,108 @@ class RetrievalFailureAnalyzer:
         docs: List[Document],
         aspect_query: str
     ) -> bool:
-        """检查某个方面是否被文档覆盖"""
+        """
+        检查某个方面是否被文档覆盖（企业级最佳实践）
+        
+        使用语义相似度检测，而不是简单的关键词匹配。
+        
+        Args:
+            docs: 文档列表
+            aspect_query: 方面查询
+            
+        Returns:
+            如果文档覆盖了该方面，返回True
+        """
         if not docs or not aspect_query:
             return False
 
-        doc_text = " ".join([d.page_content for d in docs]).lower()
-        keywords = aspect_query.lower().split()
+        return self._is_query_covered_by_docs(docs, aspect_query)
+    
+    def _is_query_covered_by_docs(
+        self,
+        docs: List[Document],
+        query: str,
+        similarity_threshold: float = 0.3
+    ) -> bool:
+        """
+        检查查询是否被文档覆盖（企业级最佳实践）
+        
+        企业级最佳实践：使用embedding语义相似度检测，而不是关键词匹配。
+        支持多语言，理解语义而非字面匹配。
+        
+        Args:
+            docs: 文档列表
+            query: 查询文本
+            similarity_threshold: 语义相似度阈值（默认0.3）
+            
+        Returns:
+            如果文档覆盖了查询，返回True
+        """
+        if not docs or not query:
+            return False
 
-        if keywords:
-            matched = sum(1 for kw in keywords if kw in doc_text)
-            return matched / len(keywords) > 0.3
-
-        return False
+        # 企业级最佳实践：使用统一的语义相似度工具
+        if self.embeddings:
+            try:
+                from src.agentic_rag.utils.semantic_similarity import SemanticSimilarityCalculator
+                
+                calculator = SemanticSimilarityCalculator(self.embeddings)
+                max_similarity = calculator.calculate_max_similarity(
+                    query=query,
+                    documents=docs,
+                    max_doc_length=1000
+                )
+                
+                # 如果最高相似度超过阈值，认为文档覆盖了查询
+                return max_similarity > similarity_threshold
+                
+            except Exception as e:
+                # 如果embedding计算失败，回退到LLM判断
+                if self.llm:
+                    return self._llm_check_coverage(docs, query)
+                # 如果LLM也不可用，使用简单的长度检查作为最后回退
+                return len(" ".join([d.page_content for d in docs])) > len(query) * 2
+        
+        # 如果没有embedding，使用LLM判断
+        if self.llm:
+            return self._llm_check_coverage(docs, query)
+        
+        # 最后回退：简单的长度检查（非常不可靠，应该避免）
+        return len(" ".join([d.page_content for d in docs])) > len(query) * 2
+    
+    def _llm_check_coverage(
+        self,
+        docs: List[Document],
+        query: str
+    ) -> bool:
+        """
+        使用LLM检查文档是否覆盖查询（企业级最佳实践）
+        
+        使用统一的LLM判断工具，避免代码重复。
+        
+        Args:
+            docs: 文档列表
+            query: 查询文本
+            
+        Returns:
+            如果文档覆盖了查询，返回True
+        """
+        if not self.llm:
+            return False
+        
+        try:
+            from src.agentic_rag.utils.llm_judge import LLMJudge
+            
+            judge = LLMJudge(self.llm)
+            return judge.check_coverage(
+                query=query,
+                documents=docs,
+                max_docs=5,
+                max_doc_length=500,
+                confidence_threshold=0.5
+            )
+            
+        except Exception as e:
+            # LLM判断失败，返回False（保守策略）
+            return False
+    

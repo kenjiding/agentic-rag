@@ -11,12 +11,10 @@ from colorama import Fore, Style
 from agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
 from src.agentic_rag.state import AgenticRAGState
 from src.agentic_rag.threshold_config import ThresholdConfig
-from src.agentic_rag.web_search import CorrectiveRAGHandler
 
 
 def create_decision_node(
     detector: AdvancedNeedsMoreInfoDetector,
-    crag_handler: Optional[CorrectiveRAGHandler] = None,
     threshold_config: Optional[ThresholdConfig] = None
 ):
     """
@@ -24,7 +22,6 @@ def create_decision_node(
 
     Args:
         detector: 信息需求检测器
-        crag_handler: CRAG 处理器（可选，启用 Web Search）
         threshold_config: 阈值配置
 
     Returns:
@@ -34,26 +31,6 @@ def create_decision_node(
         threshold_config = ThresholdConfig.default()
 
     detector.threshold_config = threshold_config
-
-    # 检查是否启用 Web Search
-    enable_web_search = (
-        crag_handler is not None and
-        hasattr(crag_handler, 'web_search') and
-        crag_handler.web_search.available
-    )
-
-    def _should_use_web_search(
-        failure_analysis: Optional[Dict[str, Any]],
-        web_search_count: int
-    ) -> bool:
-        """判断是否应该使用 Web Search"""
-        return (
-            enable_web_search and 
-            web_search_count < 1 and
-            failure_analysis and
-            failure_analysis.get("primary_failure") == "no_results" and
-            failure_analysis.get("severity", 0) > 0.8  # 严重程度很高
-        )
 
     def _should_use_adaptive_retrieval(
         iteration: int,
@@ -71,20 +48,9 @@ def create_decision_node(
         iteration: int
     ) -> Dict[str, Any]:
         """决定如何改进检索（统一逻辑）"""
-        failure_analysis = state.get("failure_analysis")
-        web_search_count = state.get("web_search_count", 0)
         adaptive_config = threshold_config.adaptive_retrieval
 
-        # 1. 检查是否应该使用 Web Search
-        if _should_use_web_search(failure_analysis, web_search_count):
-            print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision】 失败分析显示知识库中可能没有相关信息，尝试 Web Search{Style.RESET_ALL}")
-            return {
-                "next_action": "web_search",
-                "answer": "",
-                "iteration_count": iteration + 1
-            }
-
-        # 2. 优先使用 adaptive_retrieval 改进检索
+        # 优先使用 adaptive_retrieval 改进检索
         if _should_use_adaptive_retrieval(iteration, adaptive_config):
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision】 使用自适应检索改进检索策略{Style.RESET_ALL}")
             return {
@@ -93,15 +59,7 @@ def create_decision_node(
                 "iteration_count": iteration + 1
             }
 
-        # 3. 如果未启用 adaptive_retrieval，且未使用过 Web Search，尝试 Web Search
-        if enable_web_search and web_search_count < 1:
-            return {
-                "next_action": "web_search",
-                "answer": "",
-                "iteration_count": iteration + 1
-            }
-
-        # 4. 回退策略：重新检索
+        # 回退策略：重新检索
         return {
             "next_action": "retrieve",
             "answer": "",
@@ -132,7 +90,6 @@ def create_decision_node(
         retrieval_quality = state.get("retrieval_quality", 0.0)
         answer_quality = state.get("answer_quality", 0.0)
         answer_type = state.get("answer_type", "partial")  # found | not_found | partial
-        web_search_count = state.get("web_search_count", 0)
 
         answer_threshold = threshold_config.decision.answer_quality_threshold
         retrieval_threshold = threshold_config.decision.retrieval_quality_threshold

@@ -5,7 +5,6 @@
 2. 检索节点（支持自适应多轮检索）
 3. 生成节点
 4. 决策节点（集成失败分析和策略调整）
-5. Web Search 节点 (Corrective RAG)
 
 2025 企业级最佳实践：
 - 自适应多轮检索：每轮使用不同的查询和策略
@@ -26,19 +25,16 @@ from src.agentic_rag.nodes import (
     create_retrieve_node,
     create_generate_node,
     create_decision_node,
-    create_web_search_node,
 )
 from src.agentic_rag.intent_analyse import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
-from src.agentic_rag.web_search import CorrectiveRAGHandler, WebSearchTool
 
 
 def create_agentic_rag_graph(
     vectorstore: Chroma,
     llm: ChatOpenAI = None,
     max_iterations: int = 3,
-    threshold_config: Optional[ThresholdConfig] = None,
-    enable_web_search: bool = True
+    threshold_config: Optional[ThresholdConfig] = None
 ):
     """
     创建完整的 Agentic RAG 图 - 2025 企业级最佳实践版
@@ -53,7 +49,6 @@ def create_agentic_rag_graph(
         llm: LLM 实例
         max_iterations: 最大迭代次数
         threshold_config: 阈值配置（如果为None，使用默认配置）
-        enable_web_search: 是否启用 Web 搜索（Corrective RAG）
 
     Returns:
         编译后的图
@@ -98,17 +93,6 @@ def create_agentic_rag_graph(
             threshold_config=threshold_config
         )
 
-    # 创建 CRAG 处理器（如果启用 Web 搜索）
-    crag_handler = None
-    if enable_web_search:
-        web_search_tool = WebSearchTool(max_results=3)
-        crag_handler = CorrectiveRAGHandler(
-            web_search_tool=web_search_tool,
-            llm=llm,
-            quality_threshold=0.5,
-            max_web_results=3
-        )
-
     # 创建节点（传递 threshold_config）
     intent_node = None
     if intent_classifier:
@@ -117,21 +101,11 @@ def create_agentic_rag_graph(
     retrieve_node = create_retrieve_node(retriever, threshold_config=threshold_config)
     generate_node = create_generate_node(generator, threshold_config=threshold_config)
 
-    # 创建决策节点（统一 API，支持自适应检索和 Web Search）
+    # 创建决策节点（统一 API，支持自适应检索）
     decision_node = create_decision_node(
         detector,
-        crag_handler=crag_handler if enable_web_search else None,
         threshold_config=threshold_config
     )
-
-    # 创建 Web Search 节点（如果启用）
-    web_search_node = None
-    if enable_web_search and crag_handler:
-        web_search_node = create_web_search_node(
-            crag_handler,
-            retriever=retriever,  # 传入 retriever 用于评估检索质量
-            threshold_config=threshold_config
-        )
 
     # 创建状态图
     graph = StateGraph(AgenticRAGState)
@@ -142,10 +116,6 @@ def create_agentic_rag_graph(
     graph.add_node("decision", decision_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("generate", generate_node)
-
-    # 添加 Web Search 节点（如果启用）
-    if web_search_node:
-        graph.add_node("web_search", web_search_node)
 
     # 设置入口点
     if intent_node:
@@ -168,42 +138,15 @@ def create_agentic_rag_graph(
         return next_action
 
     # 添加条件边
-    if web_search_node and intent_node:
-        # 完整版：包含 Web Search 和动态意图重识别
+    if intent_node:
+        # 包含动态意图重识别
         graph.add_conditional_edges(
             "decision",
             get_next_node,
             {
                 "retrieve": "retrieve",
                 "generate": "generate",
-                "web_search": "web_search",
                 "reclassify_intent": "intent",  # 动态意图重识别
-                "finish": END
-            }
-        )
-        graph.add_edge("web_search", "decision")
-    elif web_search_node:
-        # 仅 Web Search
-        graph.add_conditional_edges(
-            "decision",
-            lambda state: state.get("next_action", "finish"),
-            {
-                "retrieve": "retrieve",
-                "generate": "generate",
-                "web_search": "web_search",
-                "finish": END
-            }
-        )
-        graph.add_edge("web_search", "decision")
-    elif intent_node:
-        # 仅意图重识别
-        graph.add_conditional_edges(
-            "decision",
-            get_next_node,
-            {
-                "retrieve": "retrieve",
-                "generate": "generate",
-                "reclassify_intent": "intent",
                 "finish": END
             }
         )
@@ -274,11 +217,6 @@ def create_initial_state(
         "iteration_count": 0,
         "max_iterations": max_iterations,
         "next_action": None,
-
-        # Web Search (Corrective RAG) 相关
-        "web_search_used": False,
-        "web_search_results": [],
-        "web_search_count": 0,
 
         # 元数据
         "error_message": "",

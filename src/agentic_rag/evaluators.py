@@ -196,27 +196,20 @@ class RetrievalQualityEvaluator:
             return self._simple_overlap_score(query, doc_content)
     
     def _semantic_relevance_score(self, query: str, doc_content: str) -> float:
-        """使用嵌入向量计算语义相似度"""
+        """
+        使用嵌入向量计算语义相似度（企业级最佳实践）
+        
+        使用统一的语义相似度工具，避免代码重复。
+        """
         try:
-            query_embedding = self.embeddings.embed_query(query)
-            doc_embedding = self.embeddings.embed_query(doc_content)
-
-            query_vec = np.array(query_embedding)
-            doc_vec = np.array(doc_embedding)
-
-            # 计算点积
-            dot_product = np.dot(query_vec, doc_vec)
-            # 计算向量长度
-            norm_query = np.linalg.norm(query_vec)
-            norm_doc = np.linalg.norm(doc_vec)
-
-            if norm_query == 0 or norm_doc == 0:
-                return 0.0
-
-            # 计算余弦相似度
-            cosine_sim = dot_product / (norm_query * norm_doc)
-            # 将 [-1, 1] 映射到 [0, 1]
-            return (cosine_sim + 1) / 2
+            from src.agentic_rag.utils.semantic_similarity import SemanticSimilarityCalculator
+            
+            calculator = SemanticSimilarityCalculator(self.embeddings)
+            return calculator.calculate_similarity(
+                text1=query,
+                text2=doc_content,
+                normalize=True
+            )
         except Exception:
             return self._simple_overlap_score(query, doc_content)
     

@@ -67,18 +67,30 @@ class MultilingualNeedsMoreInfoDetector:
         
         # 2. 检查答案与不确定表述的语义相似度
         # 这是核心功能：检测答案是否表达了不确定性
-        answer_embedding = np.array(self.embeddings.embed_query(answer))
-        uncertain_embeddings = np.array(self._get_uncertain_embeddings())
-        
-        # 计算余弦相似度
-        similarities = np.dot(uncertain_embeddings, answer_embedding) / (
-            np.linalg.norm(uncertain_embeddings, axis=1) * np.linalg.norm(answer_embedding)
-        )
-        
-        # 如果有很高的相似度，说明答案表达了不确定性
-        max_similarity = np.max(similarities)
-        if max_similarity > threshold:
-            return True
+        # 企业级最佳实践：使用统一的语义相似度工具
+        try:
+            from src.agentic_rag.utils.semantic_similarity import SemanticSimilarityCalculator
+            
+            calculator = SemanticSimilarityCalculator(self.embeddings)
+            
+            # 计算答案与每个不确定表述的相似度
+            uncertain_phrases = self.uncertain_phrases
+            max_similarity = 0.0
+            
+            for phrase in uncertain_phrases:
+                similarity = calculator.calculate_similarity(
+                    text1=answer,
+                    text2=phrase,
+                    normalize=True
+                )
+                max_similarity = max(max_similarity, similarity)
+            
+            # 如果有很高的相似度，说明答案表达了不确定性
+            if max_similarity > threshold:
+                return True
+        except Exception:
+            # 如果计算失败，回退到简单的长度检查
+            pass
         
         # 注意：不再检查 answer 和 retrieved_docs 的相似度
         # 因为 answer_quality.accuracy 已经在 generate_node 中评估了答案是否基于上下文
@@ -189,28 +201,31 @@ class AdvancedNeedsMoreInfoDetector:
         return False
     
     def _quick_heuristic_check(self, answer: str) -> bool:
-        """快速启发式检查（多语言关键词）"""
-        answer_lower = answer.lower()
+        """
+        快速启发式检查（企业级最佳实践）
         
-        # 多语言不确定表述（更全面的列表）
-        uncertain_patterns = [
-            # 中文
-            "不知道", "无法确定", "信息不足", "不清楚", "没有找到",
-            "无法回答", "不能确定", "缺少信息",
-            # 英文
-            "i don't know", "don't know", "cannot determine", "cannot tell",
-            "insufficient information", "lack of information", "not enough information",
-            "unclear", "unsure", "uncertain", "not found", "no information",
-            "need more", "requires more", "additional information needed",
-            # 法语
-            "je ne sais pas", "ne peut pas déterminer", "information insuffisante",
-            # 德语
-            "weiß nicht", "kann nicht bestimmen", "unzureichende information",
-            # 日语
-            "わかりません", "確定できません", "情報不足",
-        ]
+        企业级最佳实践：使用embedding语义相似度检测不确定表述，
+        而不是硬编码关键词或正则表达式模式。
         
-        return any(pattern in answer_lower for pattern in uncertain_patterns)
+        Args:
+            answer: 答案文本
+            
+        Returns:
+            如果答案包含不确定表述，返回True
+        """
+        # 企业级最佳实践：优先使用embedding语义相似度
+        if self.use_embedding and self.embedding_detector:
+            # 使用embedding检测器进行语义相似度检测
+            # 这会比较答案与不确定表述的语义相似度
+            return self.embedding_detector.needs_more_information(
+                answer, 
+                [],  # 不需要文档，只检测不确定表述
+                threshold=self.detector_thresholds.embedding_similarity_threshold
+            )
+        
+        # 如果embedding不可用，使用简单的长度检查作为回退
+        # 非常短的答案通常表示信息不足
+        return len(answer.strip()) < self.detector_thresholds.min_answer_length_quick
     
     def _llm_check(
         self, 

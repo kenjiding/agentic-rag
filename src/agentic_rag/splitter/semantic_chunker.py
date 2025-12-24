@@ -61,14 +61,31 @@ class SemanticChunker:
         return [s.strip() for s in sentences if s.strip()]
 
     def _calculate_cosine_distances(self, embeddings: List[List[float]]) -> List[float]:
-        """计算相邻句子嵌入之间的余弦距离"""
+        """
+        计算相邻句子嵌入之间的余弦距离（企业级最佳实践）
+        
+        注意：这里已经有embedding了，所以直接计算相似度，不需要重新计算embedding。
+        使用统一的余弦相似度计算方法。
+        """
         distances = []
         for i in range(len(embeddings) - 1):
             vec1 = np.array(embeddings[i])
             vec2 = np.array(embeddings[i + 1])
 
-            # 计算余弦相似度
-            similarity = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+            # 企业级最佳实践：使用统一的余弦相似度计算方法
+            # 计算点积
+            dot_product = np.dot(vec1, vec2)
+            # 计算向量长度
+            norm1 = np.linalg.norm(vec1)
+            norm2 = np.linalg.norm(vec2)
+            
+            # 避免除零
+            if norm1 == 0 or norm2 == 0:
+                similarity = 0.0
+            else:
+                # 计算余弦相似度
+                similarity = dot_product / (norm1 * norm2)
+            
             # 转换为距离（1 - 相似度）
             distance = 1 - similarity
             distances.append(distance)

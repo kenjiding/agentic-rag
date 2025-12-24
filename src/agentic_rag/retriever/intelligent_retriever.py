@@ -401,15 +401,141 @@ class IntelligentRetriever:
 
         rewritten = response.content.strip()
 
-        # 验证改写后的查询是否合理
-        query_keywords = set(query.lower().split())
-        rewritten_keywords = set(rewritten.lower().split())
-
-        if len(query_keywords & rewritten_keywords) == 0 and len(query_keywords) > min_keywords:
+        # 企业级最佳实践：使用语义相似度验证改写后的查询，而不是简单的关键词匹配
+        if not self._validate_rewritten_query(query, rewritten, min_keywords):
             print(f"[检索] ⚠️ 查询改写可能偏离原意，使用原查询")
             return query
 
         return rewritten
+    
+    def _validate_rewritten_query(
+        self,
+        original_query: str,
+        rewritten_query: str,
+        min_keywords: int = 2
+    ) -> bool:
+        """
+        验证改写后的查询是否合理（企业级最佳实践）
+        
+        企业级最佳实践：使用embedding语义相似度验证，而不是关键词匹配。
+        理解语义相关性，支持多语言。
+        
+        Args:
+            original_query: 原始查询
+            rewritten_query: 改写后的查询
+            min_keywords: 最少关键词数（用于回退判断）
+            
+        Returns:
+            如果改写合理，返回True
+        """
+        # 企业级最佳实践：使用统一的语义相似度工具
+        if self.embeddings:
+            try:
+                from src.agentic_rag.utils.semantic_similarity import SemanticSimilarityCalculator
+                
+                calculator = SemanticSimilarityCalculator(self.embeddings)
+                similarity = calculator.calculate_similarity(
+                    text1=original_query,
+                    text2=rewritten_query,
+                    normalize=True
+                )
+                
+                # 如果语义相似度足够高（>0.5），认为改写合理
+                if similarity > 0.5:
+                    return True
+                # 如果相似度太低（<0.3），认为可能偏离原意
+                elif similarity < 0.3:
+                    return False
+                # 在0.3-0.5之间，使用LLM进一步判断
+                
+            except Exception as e:
+                # embedding计算失败，使用LLM判断
+                pass
+        
+        # 如果没有embedding或相似度在中间范围，使用LLM判断
+        if self.llm:
+            return self._llm_validate_rewritten_query(original_query, rewritten_query)
+        
+        # 最后回退：简单的长度检查（非常不可靠，应该避免）
+        if len(original_query.split()) < min_keywords:
+            return True
+        
+        # 简单的关键词重叠检查（仅作为最后手段）
+        original_words = set(original_query.lower().split())
+        rewritten_words = set(rewritten_query.lower().split())
+        overlap = len(original_words & rewritten_words)
+        overlap_ratio = overlap / len(original_words) if original_words else 0
+        
+        return overlap_ratio > 0.2  # 至少20%的关键词重叠
+    
+    def _llm_validate_rewritten_query(
+        self,
+        original_query: str,
+        rewritten_query: str
+    ) -> bool:
+        """
+        使用LLM验证改写后的查询是否合理（企业级最佳实践）
+        
+        使用统一的LLM判断工具，避免代码重复。
+        
+        Args:
+            original_query: 原始查询
+            rewritten_query: 改写后的查询
+            
+        Returns:
+            如果改写合理，返回True
+        """
+        if not self.llm:
+            return True  # 如果没有LLM，默认认为合理
+        
+        try:
+            from src.agentic_rag.utils.llm_judge import LLMJudge
+            
+            judge = LLMJudge(self.llm)
+            return judge.validate_rewritten_query(
+                original_query=original_query,
+                rewritten_query=rewritten_query,
+                confidence_threshold=0.5
+            )
+            
+        except Exception as e:
+            # LLM判断失败，返回True（保守策略，允许改写）
+            return True
+    
+    def _extract_meaningful_words(self, text: str) -> List[str]:
+        """
+        提取有意义的词（企业级最佳实践）
+        
+        去除停用词和标点，提取核心词汇。
+        支持多语言。
+        
+        Args:
+            text: 文本
+            
+        Returns:
+            有意义的词列表
+        """
+        import re
+        
+        # 转换为小写
+        text_lower = text.lower()
+        
+        # 提取单词（支持中英文）
+        words = re.findall(r'\b\w+\b|[\u4e00-\u9fff]+', text_lower)
+        
+        # 过滤停用词（通用停用词）
+        common_stopwords = {
+            'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'of', 'to', 'in', 'on', 'at', 'for', 'with', 'by', 'from', 'as',
+            '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一', '一个'
+        }
+        
+        meaningful_words = [
+            word for word in words 
+            if len(word) > 1 and word not in common_stopwords
+        ]
+        
+        return meaningful_words
 
     def _post_process(
         self,

@@ -1,0 +1,155 @@
+"""Agentic RAG Agent - 封装RAG搜索能力
+
+本模块将现有的AgenticRAG系统封装为多Agent框架中的一个Agent。
+这样可以在多Agent系统中使用RAG的搜索和知识检索能力。
+"""
+from typing import Dict, Any, Optional
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import AIMessage, HumanMessage
+from src.multi_agent.agents.base_agent import BaseAgent
+from src.multi_agent.state import MultiAgentState
+# 兼容不同的导入路径
+try:
+    from src.agentic_rag.agentic_rag import AgenticRAG
+except ImportError:
+    try:
+        from agentic_rag.agentic_rag import AgenticRAG
+    except ImportError:
+        # 如果都失败，尝试相对导入
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+        from src.agentic_rag.agentic_rag import AgenticRAG
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class RAGAgent(BaseAgent):
+    """Agentic RAG Agent - 提供知识检索和搜索能力
+    
+    此Agent封装了AgenticRAG系统，提供以下能力：
+    1. 从向量数据库中检索相关信息
+    2. 基于检索结果生成高质量答案
+    3. 支持多轮迭代优化检索和生成质量
+    4. 支持Web搜索作为补充（Corrective RAG）
+    
+    使用场景：
+    - 需要从知识库中检索信息的问题
+    - 需要基于文档内容回答的问题
+    - 需要多轮检索优化的问题
+    
+    2025-2026 最佳实践：
+    - 封装现有系统，保持向后兼容
+    - 提供统一的Agent接口
+    - 支持异步执行（未来扩展）
+    - 详细的日志记录
+    """
+    
+    def __init__(
+        self,
+        rag_system: Optional[AgenticRAG] = None,
+        llm: Optional[ChatOpenAI] = None,
+        persist_directory: str = "./tmp/chroma_db/agentic_rag",
+        model_name: str = "gpt-4o-mini",
+        max_iterations: int = 3
+    ):
+        """
+        初始化RAG Agent
+        
+        Args:
+            rag_system: 已初始化的AgenticRAG实例，如果为None则创建新实例
+            llm: 语言模型实例
+            persist_directory: 向量数据库持久化目录
+            model_name: 模型名称
+            max_iterations: RAG最大迭代次数
+        """
+        super().__init__(
+            name="rag_agent",
+            llm=llm,
+            description="专门用于从知识库中检索信息并生成答案的Agent。适用于需要基于文档内容回答的问题。"
+        )
+        
+        # 初始化RAG系统
+        if rag_system:
+            self.rag_system = rag_system
+        else:
+            logger.info(f"初始化RAG系统，持久化目录: {persist_directory}")
+            self.rag_system = AgenticRAG(
+                model_name=model_name,
+                max_iterations=max_iterations,
+                persist_directory=persist_directory
+            )
+    
+    async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
+        """
+        执行RAG搜索和生成
+        
+        从用户消息中提取问题，使用RAG系统检索和生成答案。
+        
+        Args:
+            state: 当前的多Agent系统状态
+            
+        Returns:
+            包含以下字段的字典：
+            - result: RAG查询结果，包含answer、answer_quality等
+            - messages: 新增的AI消息（包含答案）
+            - metadata: 包含检索质量、迭代次数等元数据
+        """
+        try:
+            # 从消息历史中提取最后一个用户问题
+            user_message = None
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HumanMessage):
+                    user_message = msg.content
+                    break
+            
+            if not user_message:
+                return {
+                    "result": None,
+                    "messages": [],
+                    "metadata": {"error": "未找到用户问题"},
+                    "error": "未找到用户问题"
+                }
+            
+            logger.info(f"RAG Agent执行查询: {user_message}")
+            
+            # 调用RAG系统查询
+            rag_result = self.rag_system.query(user_message, verbose=False)
+            
+            # 提取答案
+            answer = rag_result.get("answer", "")
+            if not answer:
+                answer = "抱歉，我无法从知识库中找到相关信息。"
+            
+            # 创建AI消息
+            ai_message = AIMessage(content=answer)
+            
+            # 构建返回结果
+            result = {
+                "result": rag_result,
+                "messages": [ai_message],
+                "metadata": {
+                    "agent": self.name,
+                    "question": user_message,
+                    "answer_quality": rag_result.get("answer_quality", 0.0),
+                    "retrieval_quality": rag_result.get("retrieval_quality", 0.0),
+                    "iteration_count": rag_result.get("iteration_count", 0),
+                    "retrieval_history_count": len(rag_result.get("retrieval_history", [])),
+                    "web_search_used": rag_result.get("web_search_used", False)
+                }
+            }
+            
+            logger.info(f"RAG Agent执行完成，答案质量: {rag_result.get('answer_quality', 0.0):.2f}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"RAG Agent执行错误: {str(e)}", exc_info=True)
+            return {
+                "result": None,
+                "messages": [AIMessage(content=f"执行RAG搜索时出现错误: {str(e)}")],
+                "metadata": {"error": str(e)},
+                "error": str(e)
+            }
+
