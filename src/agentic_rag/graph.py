@@ -12,11 +12,11 @@
 - 动态意图重识别：多轮失败后重新分析意图
 - 渐进式策略升级：逐步放宽参数以获得更好结果
 """
-from agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
+from src.agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
 from langgraph.graph import StateGraph, END
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
-from typing import Optional
+from typing import Optional, Dict, Any
 from src.agentic_rag.state import AgenticRAGState
 from src.agentic_rag.retriever import IntelligentRetriever
 from src.agentic_rag.generator import IntelligentGenerator
@@ -26,7 +26,7 @@ from src.agentic_rag.nodes import (
     create_generate_node,
     create_decision_node,
 )
-from src.agentic_rag.intent_analyse import IntentClassifier
+from src.intent import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
 
 
@@ -34,7 +34,8 @@ def create_agentic_rag_graph(
     vectorstore: Chroma,
     llm: ChatOpenAI = None,
     max_iterations: int = 3,
-    threshold_config: Optional[ThresholdConfig] = None
+    threshold_config: Optional[ThresholdConfig] = None,
+    skip_intent_classification: bool = False
 ):
     """
     创建完整的 Agentic RAG 图 - 2025 企业级最佳实践版
@@ -49,6 +50,7 @@ def create_agentic_rag_graph(
         llm: LLM 实例
         max_iterations: 最大迭代次数
         threshold_config: 阈值配置（如果为None，使用默认配置）
+        skip_intent_classification: 是否跳过意图识别（当通过multi_agent进入时设为True，因为已经做过意图识别）
 
     Returns:
         编译后的图
@@ -85,17 +87,17 @@ def create_agentic_rag_graph(
         threshold_config=threshold_config
     )
 
-    # 创建意图分类器（如果启用）
+    # 创建意图分类器（如果启用且未跳过）
     intent_classifier = None
-    if threshold_config.intent_classification.enable_intent_classification:
+    if not skip_intent_classification and threshold_config.intent_classification.enable_intent_classification:
         intent_classifier = IntentClassifier(
             llm=llm,
-            threshold_config=threshold_config
+            config=threshold_config.intent_classification.to_intent_config()
         )
 
     # 创建节点（传递 threshold_config）
     intent_node = None
-    if intent_classifier:
+    if intent_classifier and not skip_intent_classification:
         intent_node = create_intent_classification_node(intent_classifier, threshold_config=threshold_config)
 
     retrieve_node = create_retrieve_node(retriever, threshold_config=threshold_config)
@@ -176,7 +178,8 @@ def create_agentic_rag_graph(
 
 def create_initial_state(
     question: str,
-    max_iterations: int = 3
+    max_iterations: int = 3,
+    query_intent: Optional[Dict[str, Any]] = None
 ) -> AgenticRAGState:
     """
     创建初始状态 - 2025 企业级最佳实践版
@@ -186,6 +189,7 @@ def create_initial_state(
     Args:
         question: 用户问题
         max_iterations: 最大迭代次数
+        query_intent: 意图识别结果（可选，当从multi_agent传入时使用）
 
     Returns:
         初始状态
@@ -194,7 +198,7 @@ def create_initial_state(
         "question": question,
 
         # 意图识别相关
-        "query_intent": None,  # 意图识别结果
+        "query_intent": query_intent,  # 意图识别结果（如果从multi_agent传入则使用）
         "intent_reclassification_count": 0,  # 意图重识别次数
 
         # 检索相关

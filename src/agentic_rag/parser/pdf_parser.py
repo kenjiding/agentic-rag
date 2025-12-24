@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from agentic_rag.llm import LLM
+from src.agentic_rag.llm import LLM
 
 # 1. 定义 Markdown 标题切分器
 headers_to_split_on = [

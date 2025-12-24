@@ -125,12 +125,13 @@ class SupervisorAgent:
     async def route(self, state: MultiAgentState) -> Dict[str, Any]:
         """
         路由决策 - 决定调用哪个Agent
-        
+
         使用LLM分析用户意图，选择最合适的Agent。
-        
+        如果状态中包含意图识别结果，会利用这些信息做更智能的路由。
+
         Args:
             state: 当前的多Agent系统状态
-            
+
         Returns:
             包含以下字段的字典：
             - next_action: 下一步行动（"rag_search", "chat", "tool_call", "finish"）
@@ -145,7 +146,7 @@ class SupervisorAgent:
                 if isinstance(msg, HumanMessage):
                     user_message = msg.content
                     break
-            
+
             if not user_message:
                 return {
                     "next_action": "finish",
@@ -153,14 +154,18 @@ class SupervisorAgent:
                     "routing_reason": "未找到用户消息",
                     "confidence": 0.0
                 }
-            
+
+            # 获取意图识别结果
+            query_intent = state.get("query_intent")
+            intent_context = self._build_intent_context(query_intent)
+
             # 构建路由提示词
             available_agents = self.get_available_agents()
             agents_description = "\n".join([
                 f"- {agent['name']}: {agent['description']}"
                 for agent in available_agents
             ])
-            
+
             routing_prompt = ChatPromptTemplate.from_messages([
                 ("system", """你是一个智能路由系统，负责分析用户意图并决定调用哪个Agent。
 
@@ -168,50 +173,90 @@ class SupervisorAgent:
 {agents}
 
 路由规则：
-1. 如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"
+1. 如果用户问题需要从知识库中检索信息（如事实查询、文档相关问题），选择 rag_agent，next_action设为"rag_search"
 2. 如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
 3. 如果问题无法由现有Agent处理，next_action设为"finish"
 
-请仔细分析用户问题，做出最佳路由决策。"""),
-                ("user", "用户问题: {question}")
+请仔细分析用户问题，结合意图识别信息（如果有），做出最佳路由决策。"""),
+                ("user", "用户问题: {question}\n\n{intent_context}")
             ])
-            
+
             # 使用结构化输出的LLM进行路由决策
             # with_structured_output会自动确保输出符合RoutingDecision结构
             try:
                 routing_decision = self.structured_llm.invoke(
                     routing_prompt.format_messages(
                         agents=agents_description,
-                        question=user_message
+                        question=user_message,
+                        intent_context=intent_context
                     )
                 )
-                
+
                 # 验证选中的Agent是否存在
                 selected_agent = routing_decision.selected_agent
                 if selected_agent and selected_agent not in self.agents:
                     logger.warning(f"选中的Agent {selected_agent} 不存在，使用chat_agent")
                     selected_agent = "chat_agent" if "chat_agent" in self.agents else None
-                
+
                 result = {
                     "next_action": routing_decision.next_action,
                     "selected_agent": selected_agent,
                     "routing_reason": routing_decision.routing_reason,
                     "confidence": routing_decision.confidence
                 }
-                
+
                 logger.info(f"Supervisor路由决策: {result}")
                 return result
-                
+
             except Exception as e:
                 logger.error(f"结构化输出解析失败: {e}, 使用降级策略", exc_info=True)
                 # 企业级最佳实践：降级时也使用LLM，但用更简单的prompt和更便宜的模型
                 return await self._fallback_routing_with_llm(user_message)
-            
+
         except Exception as e:
             logger.error(f"Supervisor路由决策错误: {str(e)}", exc_info=True)
             # 企业级最佳实践：降级时也使用LLM
             return await self._fallback_routing_with_llm(user_message if 'user_message' in locals() else "")
-    
+
+    def _build_intent_context(self, query_intent: Optional[Dict[str, Any]]) -> str:
+        """
+        构建意图识别上下文信息
+
+        Args:
+            query_intent: 意图识别结果字典
+
+        Returns:
+            格式化的意图上下文字符串
+        """
+        if not query_intent:
+            return "（无意图识别信息）"
+
+        context_parts = []
+
+        intent_type = query_intent.get("intent_type", "unknown")
+        complexity = query_intent.get("complexity", "unknown")
+        context_parts.append(f"意图类型: {intent_type}")
+        context_parts.append(f"复杂度: {complexity}")
+
+        needs_decomposition = query_intent.get("needs_decomposition", False)
+        if needs_decomposition:
+            decomposition_type = query_intent.get("decomposition_type")
+            context_parts.append(f"需要分解: 是 ({decomposition_type})")
+
+            sub_queries = query_intent.get("sub_queries", [])
+            if sub_queries:
+                context_parts.append(f"子查询数量: {len(sub_queries)}")
+                context_parts.append("子查询:")
+                for i, sq in enumerate(sub_queries[:3], 1):
+                    sq_query = sq.get("query", str(sq)) if isinstance(sq, dict) else str(sq)
+                    context_parts.append(f"  {i}. {sq_query[:60]}...")
+
+        recommended_strategy = query_intent.get("recommended_retrieval_strategy", [])
+        if recommended_strategy:
+            context_parts.append(f"推荐检索策略: {', '.join(recommended_strategy)}")
+
+        return "\n".join(context_parts)
+
     async def _fallback_routing_with_llm(self, user_message: str) -> Dict[str, Any]:
         """
         降级路由策略（企业级最佳实践）- 使用更便宜的LLM进行快速路由

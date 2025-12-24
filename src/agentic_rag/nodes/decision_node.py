@@ -8,7 +8,7 @@
 from typing import Optional, Dict, Any
 from colorama import Fore, Style
 
-from agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
+from src.agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
 from src.agentic_rag.state import AgenticRAGState
 from src.agentic_rag.threshold_config import ThresholdConfig
 

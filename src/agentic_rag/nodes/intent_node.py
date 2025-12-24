@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 from colorama import Fore, Style
 
 from src.agentic_rag.state import AgenticRAGState
-from src.agentic_rag.intent_analyse import IntentClassifier
+from src.intent import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
 
 

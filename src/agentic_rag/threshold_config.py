@@ -114,6 +114,19 @@ class IntentClassificationThresholds:
     # 置信度阈值
     min_confidence: float = 0.7  # 最小置信度（低于此值使用回退策略）
 
+    def to_intent_config(self):
+        """转换为通用IntentConfig
+
+        用于集成通用的intent模块。
+        """
+        from src.intent.config import IntentConfig
+
+        return IntentConfig(
+            llm_temperature=self.llm_temperature,
+            enable_intent_classification=self.enable_intent_classification,
+            min_confidence=self.min_confidence,
+        )
+
 
 @dataclass
 class AdaptiveRetrievalThresholds:

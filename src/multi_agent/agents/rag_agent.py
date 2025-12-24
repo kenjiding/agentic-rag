@@ -78,7 +78,8 @@ class RAGAgent(BaseAgent):
             self.rag_system = AgenticRAG(
                 model_name=model_name,
                 max_iterations=max_iterations,
-                persist_directory=persist_directory
+                persist_directory=persist_directory,
+                skip_intent_classification=True  # 从multi_agent进入，已做过意图识别
             )
     
     async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
@@ -112,10 +113,33 @@ class RAGAgent(BaseAgent):
                     "error": "未找到用户问题"
                 }
             
-            logger.info(f"RAG Agent执行查询: {user_message}")
+            # 从state中提取意图识别结果
+            # 注意：query_intent 已经通过 intent.model_dump() 包含了所有字段，包括 sub_queries
+            query_intent = state.get("query_intent")
+            original_question = state.get("original_question", user_message)
             
-            # 调用RAG系统查询
-            rag_result = self.rag_system.query(user_message, verbose=False)
+            # 确保sub_queries是列表格式（如果存在）
+            if query_intent and query_intent.get("sub_queries") and not isinstance(query_intent["sub_queries"], list):
+                query_intent = query_intent.copy()  # 避免修改原始状态
+                query_intent["sub_queries"] = []
+            
+            logger.info(f"RAG Agent执行查询: {user_message}")
+            if query_intent:
+                logger.info(f"RAG Agent使用意图识别结果: {query_intent.get('intent_type', 'unknown')}")
+                if query_intent.get("needs_decomposition"):
+                    sub_queries = query_intent.get("sub_queries", [])
+                    logger.info(f"RAG Agent检测到需要分解，子查询数: {len(sub_queries)}")
+                    for i, sq in enumerate(sub_queries[:3], 1):  # 只打印前3个
+                        sq_text = sq.get("query", str(sq)) if isinstance(sq, dict) else str(sq)
+                        logger.info(f"  子查询 {i}: {sq_text[:50]}...")
+            
+            # 调用RAG系统查询，传入意图识别结果
+            # 使用original_question作为主查询，query_intent中包含sub_queries用于检索
+            rag_result = self.rag_system.query(
+                question=original_question,  # 使用原始问题（用于生成最终答案）
+                verbose=False,
+                query_intent=query_intent  # 传入意图识别结果（包含sub_queries用于检索）
+            )
             
             # 提取答案
             answer = rag_result.get("answer", "")

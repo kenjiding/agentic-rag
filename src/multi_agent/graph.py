@@ -17,12 +17,13 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.supervisor import SupervisorAgent
+from src.intent import IntentClassifier
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.agents.rag_agent import RAGAgent
 from src.multi_agent.agents.chat_agent import ChatAgent
 from src.multi_agent.tools.tool_registry import ToolCategory, ToolPermission, ToolRegistry
 import logging
-from src.tools.web_search import get_web_search_tools
+from src.tools.web_search import create_web_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +51,12 @@ class MultiAgentGraph:
         tool_registry: Optional[ToolRegistry] = None,
         rag_persist_directory: str = "./tmp/chroma_db/agentic_rag",
         max_iterations: int = 10,
-        init_web_search: bool = True
+        init_web_search: bool = True,
+        enable_intent_classification: bool = True
     ):
         """
         初始化多Agent图
-        
+
         Args:
             llm: 语言模型实例
             agents: 自定义Agent列表，如果为None则使用默认Agent
@@ -63,11 +65,13 @@ class MultiAgentGraph:
             max_iterations: 最大迭代次数
             init_web_search: 是否在初始化时加载web search tools（默认True）
                             如果设置为False，可以稍后调用async_init_web_search_tools()异步加载
+            enable_intent_classification: 是否启用意图识别（默认True）
         """
         self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
         self.tool_registry = tool_registry or ToolRegistry()
         self.max_iterations = max_iterations
         self._web_search_initialized = False
+        self.enable_intent_classification = enable_intent_classification
 
         # 延迟加载web search tools，避免阻塞初始化
         # 如果初始化失败，系统仍可正常运行（只是没有web search功能）
@@ -81,6 +85,12 @@ class MultiAgentGraph:
             logger.info("跳过web search tools初始化，可在需要时调用async_init_web_search_tools()异步加载")
         # 初始化Supervisor
         self.supervisor = SupervisorAgent(llm=self.llm)
+
+        # 初始化意图分类器
+        if self.enable_intent_classification:
+            self.intent_classifier = IntentClassifier(llm=self.llm)
+        else:
+            self.intent_classifier = None
         
         # 初始化默认Agents（如果未提供）
         if agents is None:
@@ -119,30 +129,12 @@ class MultiAgentGraph:
     
     def _init_web_search_tools(self):
         """
-        初始化web search tools（同步包装）
+        初始化web search tools（基于 DDGS）
         如果失败，系统仍可正常运行
         """
         try:
-            # 检查是否已有事件循环在运行
-            try:
-                loop = asyncio.get_running_loop()
-                # 如果已有事件循环，在新线程中创建新的事件循环
-                import concurrent.futures
-                
-                def run_in_new_loop():
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    try:
-                        return new_loop.run_until_complete(get_web_search_tools())
-                    finally:
-                        new_loop.close()
-                
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(run_in_new_loop)
-                    web_search_tools = future.result(timeout=30)  # 30秒超时
-            except RuntimeError:
-                # 没有运行中的事件循环，可以直接使用asyncio.run
-                web_search_tools = asyncio.run(get_web_search_tools())
+            # 使用 DDGS 创建 web search tools（同步调用）
+            web_search_tools = create_web_search_tool()
             
             if web_search_tools:
                 for tool in web_search_tools:
@@ -153,14 +145,11 @@ class MultiAgentGraph:
                         permission=ToolPermission.PUBLIC,
                         allowed_agents=["chat_agent", "rag_agent"]
                     )
-                logger.info(f"成功注册 {len(web_search_tools)} 个web search tools")
+                logger.info(f"成功注册 {len(web_search_tools)} 个web search tools（基于 DDGS）")
                 self._web_search_initialized = True
             else:
                 logger.warning("Web search tools返回为空")
                 self._web_search_initialized = False
-        except concurrent.futures.TimeoutError:
-            logger.warning("Web search tools初始化超时（30秒）")
-            self._web_search_initialized = False
         except Exception as e:
             logger.warning(f"Web search tools初始化失败: {e}", exc_info=True)
             self._web_search_initialized = False
@@ -168,7 +157,7 @@ class MultiAgentGraph:
     
     async def async_init_web_search_tools(self):
         """
-        异步初始化web search tools
+        异步初始化web search tools（基于 DDGS）
         可以在需要时异步调用，不会阻塞
         """
         if self._web_search_initialized:
@@ -176,7 +165,8 @@ class MultiAgentGraph:
             return
         
         try:
-            web_search_tools = await get_web_search_tools()
+            # 使用 DDGS 创建 web search tools（同步函数，但在异步上下文中调用）
+            web_search_tools = create_web_search_tool()
             if web_search_tools:
                 for tool in web_search_tools:
                     self.tool_registry.register_tool(
@@ -186,7 +176,7 @@ class MultiAgentGraph:
                         permission=ToolPermission.PUBLIC,
                         allowed_agents=["chat_agent", "rag_agent"]
                     )
-                logger.info(f"成功注册 {len(web_search_tools)} 个web search tools")
+                logger.info(f"成功注册 {len(web_search_tools)} 个web search tools（基于 DDGS）")
                 self._web_search_initialized = True
                 
                 # 刷新所有已注册的agent的工具列表
@@ -202,20 +192,29 @@ class MultiAgentGraph:
     def _build_graph(self) -> StateGraph:
         """
         构建LangGraph工作流
-        
+
+        流程: intent_recognition -> supervisor -> agents -> finish
+
         Returns:
             编译后的图
         """
         # 创建状态图
         graph = StateGraph(MultiAgentState)
-        
+
         # 添加节点
+        if self.intent_classifier:
+            graph.add_node("intent_recognition", self._intent_recognition_node)
         graph.add_node("supervisor", self._supervisor_node)
         graph.add_node("rag_agent", self._rag_agent_node)
         graph.add_node("chat_agent", self._chat_agent_node)
-        
-        # 设置入口点
-        graph.set_entry_point("supervisor")
+
+        # 设置入口点 - 意图识别优先
+        if self.intent_classifier:
+            graph.set_entry_point("intent_recognition")
+            # 意图识别后进入Supervisor
+            graph.add_edge("intent_recognition", "supervisor")
+        else:
+            graph.set_entry_point("supervisor")
         
         # 添加条件边：Supervisor根据路由决策选择下一个节点
         graph.add_conditional_edges(
@@ -251,6 +250,80 @@ class MultiAgentGraph:
         # 编译图
         return graph.compile()
     
+    async def _intent_recognition_node(self, state: MultiAgentState) -> MultiAgentState:
+        """
+        意图识别节点 - 分析用户查询意图
+
+        在进入Supervisor之前先进行意图识别，这样可以：
+        1. 拆分复杂问题为子查询
+        2. 为Supervisor提供更多上下文信息
+        3. 优化路由决策
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态（包含query_intent）
+        """
+        try:
+            # 提取用户问题
+            question = state.get("original_question")
+            if not question or not isinstance(question, str):
+                # 从messages中获取
+                for msg in state.get("messages", []):
+                    if isinstance(msg, HumanMessage):
+                        question = msg.content
+                        break
+
+            if not question:
+                logger.warning("未找到用户问题，跳过意图识别")
+                # 只返回更新的字段，LangGraph会自动合并
+                return {
+                    "query_intent": None,
+                    "original_question": question
+                }
+
+            logger.info(f"🎯【意图识别】分析查询: {question}")
+
+            # 检查intent_classifier是否可用
+            if self.intent_classifier is None:
+                logger.warning("意图分类器未初始化，跳过意图识别")
+                return {
+                    "query_intent": None,
+                    "original_question": question
+                }
+
+            # 执行意图识别
+            intent = self.intent_classifier.classify(question)
+
+            # 转换为字典格式存储到状态
+            intent_dict = intent.model_dump()
+
+            # 打印识别结果
+            logger.info(f"🎯【意图识别】类型: {intent.intent_type}, 复杂度: {intent.complexity}")
+            if intent.needs_decomposition:
+                logger.info(f"🎯【意图识别】需要分解: {intent.decomposition_type}")
+                logger.info(f"🎯【意图识别】子查询数: {len(intent.sub_queries)}")
+                for sq in intent.sub_queries[:3]:
+                    logger.info(f"  - {sq.query[:50]}...")
+
+            # 更新状态 - 只返回需要更新的字段
+            # 注意：intent_dict 已经通过 model_dump() 包含了所有字段，包括 sub_queries
+            updated_state = {
+                "query_intent": intent_dict,
+                "original_question": question
+            }
+
+            logger.info(f"🎯【意图识别】完成，置信度: {intent.confidence:.2f}")
+            return updated_state
+
+        except Exception as e:
+            logger.error(f"意图识别节点执行错误: {str(e)}", exc_info=True)
+            return {
+                "query_intent": None,
+                "error_message": f"意图识别错误: {str(e)}"
+            }
+
     async def _supervisor_node(self, state: MultiAgentState) -> MultiAgentState:
         """
         Supervisor节点 - 路由决策（生产环境异步版本）

@@ -1,6 +1,6 @@
 """智能生成器实现"""
 from typing import List, Optional
-from agentic_rag.answer_evaluation import AnswerEvaluation
+from src.agentic_rag.answer_evaluation import AnswerEvaluation
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate

@@ -1,8 +1,8 @@
 """Agentic RAG 完整系统 - 修复持久化问题版"""
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import logging
-from agentic_rag.llm import LLM
-from agentic_rag.splitter import DocsSplitter
+from src.agentic_rag.llm import LLM
+from src.agentic_rag.splitter import DocsSplitter
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -23,7 +23,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 class AgenticRAG:
     """完整的 Agentic RAG 系统"""
-    
+
     def __init__(
         self,
         vectorstore: Optional[Chroma] = None,
@@ -34,10 +34,12 @@ class AgenticRAG:
         # 修改点 1: 设置一个默认的本地路径，确保不是 None
         persist_directory: str = "./chroma_db",
         threshold_config: Optional[ThresholdConfig] = None,
-        config: Optional[AgenticRAGConfig] = None
+        config: Optional[AgenticRAGConfig] = None,
+        skip_intent_classification: bool = False  # 当通过multi_agent进入时设为True
     ):
         self.max_iterations = max_iterations
         self.embedding_model = embedding_model
+        self.skip_intent_classification = skip_intent_classification  # 保存到实例变量
         # 修改点 2: 显式保存持久化路径到实例变量
         self.persist_directory = persist_directory
         
@@ -78,12 +80,13 @@ class AgenticRAG:
             except Exception as e:
                 print(f"[系统] 数据库连接异常: {str(e)}")
 
-        # 创建图（传递 threshold_config）
+        # 创建图（传递 threshold_config 和 skip_intent_classification）
         self.graph = create_agentic_rag_graph(
             vectorstore=self.vectorstore,
             llm=self.llm,
             max_iterations=max_iterations,
-            threshold_config=self.threshold_config
+            threshold_config=self.threshold_config,
+            skip_intent_classification=skip_intent_classification
         )
 
     def init_splitter(self) -> None:
@@ -195,12 +198,13 @@ class AgenticRAG:
                 embedding_function="text-embedding-3-small",
                 persist_directory=self.persist_directory
             ).get_vectorstore()
-        # 重新创建图（传递 threshold_config）
+        # 重新创建图（传递 threshold_config 和 skip_intent_classification）
         self.graph = create_agentic_rag_graph(
             vectorstore=self.vectorstore,
             llm=self.llm,
             max_iterations=self.max_iterations,
-            threshold_config=self.threshold_config
+            threshold_config=self.threshold_config,
+            skip_intent_classification=self.skip_intent_classification
         )
 
         final_count = self.vectorstore._collection.count()
@@ -243,17 +247,55 @@ class AgenticRAG:
         self.vectorstore.add_documents(documents)
 
     # query 和 stream_query 方法保持不变...
-    def query(self, question: str, verbose: bool = True) -> dict:
-        # ... (保持原本代码)
-        return super().query(question, verbose) if hasattr(super(), 'query') else self._query_impl(question, verbose)
+    def query(
+        self, 
+        question: str, 
+        verbose: bool = True,
+        query_intent: Optional[Dict[str, Any]] = None
+    ) -> dict:
+        """
+        执行查询
+        
+        Args:
+            question: 用户问题
+            verbose: 是否打印详细信息
+            query_intent: 意图识别结果（可选，当从multi_agent传入时使用）
+        
+        Returns:
+            查询结果字典
+        """
+        return super().query(question, verbose, query_intent) if hasattr(super(), 'query') else self._query_impl(question, verbose, query_intent)
 
-    def _query_impl(self, question: str, verbose: bool = True) -> dict:
-        # 为了完整性，这里放你原来的 query 代码逻辑
+    def _query_impl(
+        self, 
+        question: str, 
+        verbose: bool = True,
+        query_intent: Optional[Dict[str, Any]] = None
+    ) -> dict:
+        """
+        查询实现
+        
+        Args:
+            question: 用户问题
+            verbose: 是否打印详细信息
+            query_intent: 意图识别结果（可选，当从multi_agent传入时使用）
+        
+        Returns:
+            查询结果字典
+        """
         if verbose:
             print("=" * 60)
             print(f"问题: {question}")
+            if query_intent:
+                print(f"意图识别结果: {query_intent.get('intent_type', 'unknown')}")
+                if query_intent.get('needs_decomposition'):
+                    print(f"需要分解: {query_intent.get('decomposition_type', 'unknown')}, 子查询数: {len(query_intent.get('sub_queries', []))}")
         
-        initial_state = create_initial_state(question=question, max_iterations=self.max_iterations)
+        initial_state = create_initial_state(
+            question=question, 
+            max_iterations=self.max_iterations,
+            query_intent=query_intent
+        )
         # recursion_limit 应该至少是 max_iterations 的 4 倍（每个迭代循环可能包含多个节点）
         # 增加一些缓冲以避免达到限制：每个迭代循环最多 3 个节点（decision -> retrieve/generate -> decision）
         recursion_limit = max(50, self.max_iterations * 10)

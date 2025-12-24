@@ -53,3 +53,7 @@ class MultiAgentState(TypedDict):
     next_action: Optional[Literal["rag_search", "chat", "tool_call", "finish"]]  # 下一步行动
     routing_reason: Optional[str]  # 路由决策的原因说明
 
+    # 意图识别
+    query_intent: Optional[Dict[str, Any]]  # 意图识别结果（QueryIntent转字典）
+    original_question: Optional[str]  # 用户原始问题（用于意图识别）
+

@@ -45,7 +45,20 @@ def print_section(title: str):
 def print_result(result, question: str):
     """打印执行结果"""
     print_section("执行结果")
-    
+
+    # 打印意图识别结果
+    query_intent = result.get("query_intent")
+    if query_intent:
+        print(f"{Fore.MAGENTA}🎯 意图识别结果: {Style.RESET_ALL}")
+        print(f"  意图类型: {query_intent.get('intent_type', 'N/A')}")
+        print(f"  复杂度: {query_intent.get('complexity', 'N/A')}")
+        if query_intent.get('needs_decomposition'):
+            print(f"  需要分解: 是 ({query_intent.get('decomposition_type', 'N/A')})")
+            sub_queries = query_intent.get('sub_queries', [])
+            if sub_queries:
+                print(f"  子查询数: {len(sub_queries)}")
+        print()
+
     # 打印最终答案
     messages = result.get("messages", [])
     if messages:
@@ -53,12 +66,12 @@ def print_result(result, question: str):
         if hasattr(last_message, 'content'):
             print(f"{Fore.GREEN}答案: {Style.RESET_ALL}")
             print(f"{last_message.content}\n")
-    
+
     # 打印路由信息
     routing_reason = result.get("routing_reason")
     if routing_reason:
         print(f"{Fore.YELLOW}路由决策: {Style.RESET_ALL}{routing_reason}\n")
-    
+
     # 打印Agent执行历史
     agent_history = result.get("agent_history", [])
     if agent_history:
@@ -72,9 +85,9 @@ def print_result(result, question: str):
             if "retrieval_quality" in metadata:
                 print(f"     检索质量: {metadata['retrieval_quality']:.2f}")
         print()
-    
+
     # 打印统计信息
-    print(f"{Fore.MAGENTA}统计信息: {Style.RESET_ALL}")
+    print(f"{Fore.CYAN}统计信息: {Style.RESET_ALL}")
     print(f"  迭代次数: {result.get('iteration_count', 0)}")
     print(f"  使用的Agent: {result.get('current_agent', 'N/A')}")
     if result.get("error_message"):
@@ -107,8 +120,10 @@ def main():
     # 测试查询
     test_questions = [
       # "广东有哪些知名粤菜?",
-        "为什么我的快递还没到?",  # 应该路由到chat_agent
-        # "2019到2021年福布斯富豪榜杰夫·贝索斯财富是多少?",  # 应该路由到rag_agent（如果有数据）
+      # "中国有哪些著名的旅游景点最受欢迎?",
+      "黑悟空游戏怎样?",
+        # "2019-2021年福布斯富豪榜杰夫·贝索斯财富是多少?",
+        # "为什么我的快递还没到?",  # 应该路由到chat_agent
         # "你好，介绍一下你自己",  # 应该路由到chat_agent
     ]
     
@@ -126,10 +141,11 @@ def main():
     
     print_section("示例完成")
     print("💡 提示:")
-    print("1. 系统会根据问题类型自动选择最合适的Agent")
-    print("2. 需要知识检索的问题会路由到RAG Agent")
-    print("3. 一般对话会路由到Chat Agent")
-    print("4. 可以通过添加新的Agent来扩展系统功能")
+    print("1. 系统会先进行意图识别，分析用户查询的类型和复杂度")
+    print("2. 然后Supervisor根据意图识别结果智能路由到合适的Agent")
+    print("3. 需要知识检索的问题会路由到RAG Agent")
+    print("4. 一般对话会路由到Chat Agent")
+    print("5. 可以通过添加新的Agent来扩展系统功能")
 
 
 if __name__ == "__main__":

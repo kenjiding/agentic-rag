@@ -15,7 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from src.agentic_rag.evaluation_config import RetrievalQualityConfig
 from src.agentic_rag.evaluators import RetrievalQualityEvaluator
 from src.agentic_rag.threshold_config import ThresholdConfig, RetrieverThresholds
-from src.agentic_rag.intent_analyse import PipelineOption
+from src.intent.models import PipelineOption
 from src.agentic_rag.retriever.bm25_retriever import BM25Retriever, HAS_BM25
 from src.agentic_rag.retriever.reranker import CrossEncoderReranker, HAS_CROSS_ENCODER
 from src.agentic_rag.retriever.fusion import reciprocal_rank_fusion

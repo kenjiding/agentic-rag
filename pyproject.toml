@@ -27,10 +27,10 @@ dependencies = [
     # 2025 最佳实践新增依赖
     "rank-bm25>=0.2.2", # BM25 关键词检索
     "sentence-transformers>=2.2.0", # Web Search 回退
-    "langchain-experimental>=0.3.0", # 语义分块
-    "ddgs>=9.10.0",
+    "langchain-experimental>=0.3.0",
     "mcp>=1.25.0",
     "langchain-mcp-adapters>=0.2.1",
+    "ddgs>=9.10.0",
 ]
 
 [project.optional-dependencies]
