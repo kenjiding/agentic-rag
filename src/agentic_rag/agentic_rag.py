@@ -30,7 +30,7 @@ class AgenticRAG:
         llm: Optional[ChatOpenAI] = None,
         model_name: str = "gpt-4o-mini",
         embedding_model: str = "text-embedding-3-small",
-        max_iterations: int = 5,
+        max_iterations: int = 3,
         # 修改点 1: 设置一个默认的本地路径，确保不是 None
         persist_directory: str = "./chroma_db",
         threshold_config: Optional[ThresholdConfig] = None,

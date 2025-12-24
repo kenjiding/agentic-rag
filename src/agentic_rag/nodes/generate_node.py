@@ -69,32 +69,31 @@ def create_generate_node(
                 )
             
             print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 生成答案长度: {len(answer)} 字符{Style.RESET_ALL}")
-            print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 答案预览: {answer[:200]}...{Style.RESET_ALL}")
+            print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 答案预览: {answer[:300]}...{Style.RESET_ALL}")
             
             # 评估答案质量
             quality_threshold = threshold_config.generation.answer_quality_threshold
-            quality, meets_threshold, feedback = generator.evaluate_answer_quality(
+            quality, meets_threshold, feedback, answer_type = generator.evaluate_answer_quality(
                 question,
                 answer,
                 context,
                 threshold=quality_threshold
             )
-            
+
             print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 答案质量: {quality:.2f} (阈值: {quality_threshold:.2f}, {'通过' if meets_threshold else '未通过'}){Style.RESET_ALL}")
+            print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 答案类型: {answer_type}{Style.RESET_ALL}")
             if feedback:
                 print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 评估反馈: {feedback[:100]}...{Style.RESET_ALL}")
-            
+
             # 更新生成历史
             generation_history = state.get("generation_history", [])
             generation_history.append(answer)
-            
-            # 注意：iteration_count 应该在 decision_node 中管理，不在 generate_node 中增加
-            # 这样可以准确反映决策循环的次数，而不是每个节点执行的次数
-            
+
             return {
                 "answer": answer,
                 "generation_history": generation_history,
                 "answer_quality": quality,
+                "answer_type": answer_type,  # 新增：答案类型
                 "evaluation_feedback": feedback,
                 "error_message": ""
             }

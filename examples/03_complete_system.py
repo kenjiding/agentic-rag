@@ -24,7 +24,7 @@ def main():
     print("[步骤 1] 初始化 Agentic RAG 系统...")
     rag = AgenticRAG(
         model_name="gpt-3.5-turbo",
-        max_iterations=5,
+        max_iterations=3,
         persist_directory="./data/chroma_db/agentic_rag"
     )
     

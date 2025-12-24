@@ -46,10 +46,10 @@ class EvaluationThresholds:
     # 文本重叠度权重
     jaccard_weight: float = 0.6  # Jaccard相似度权重
     coverage_weight: float = 0.4  # 覆盖率权重
-    
+
     # 多样性奖励
     max_expected_docs: int = 4  # 最大期望文档数（用于计算多样性奖励）
-    
+
     # 文档长度评估
     short_doc_penalty: float = 0.9  # 短文档惩罚因子
     long_doc_penalty: float = 0.95  # 长文档惩罚因子
@@ -117,32 +117,28 @@ class IntentClassificationThresholds:
 
 @dataclass
 class AdaptiveRetrievalThresholds:
-    """自适应检索阈值配置 - 2025 企业级最佳实践"""
+    """自适应检索阈值配置（简化版）
+
+    只保留核心配置：
+    - 失败分析相关配置
+    - 渐进式策略相关配置
+    - 动态意图重识别相关配置
+    """
 
     # 失败分析相关
     enable_failure_analysis: bool = True  # 是否启用失败分析
     enable_llm_deep_analysis: bool = True  # 是否启用 LLM 深度分析
     redundancy_threshold: float = 0.7  # 冗余检测阈值（重叠度超过此值视为冗余）
 
-    # 查询重写相关
-    enable_adaptive_rewrite: bool = True  # 是否启用自适应查询重写
-    max_query_variants: int = 5  # 最大查询变体数量
-    rewrite_temperature: float = 0.3  # 查询重写 LLM 温度
-
     # 渐进式策略相关
     enable_progressive_strategy: bool = True  # 是否启用渐进式策略
     max_retrieval_rounds: int = 5  # 最大检索轮次
-    min_quality_for_stop: float = 0.7  # 停止检索的最低质量阈值
+    k_increment_per_round: int = 3  # 每轮 k 值增量
 
     # 动态意图重识别相关
     enable_intent_reclassification: bool = True  # 是否启用动态意图重识别
     max_reclassification_count: int = 2  # 最大重识别次数
     reclassification_trigger_round: int = 2  # 触发重识别的轮次阈值
-
-    # 策略升级参数
-    k_increment_per_round: int = 3  # 每轮 k 值增量
-    threshold_decrement_per_round: float = 0.1  # 每轮阈值降低幅度
-    min_quality_threshold: float = 0.3  # 最低质量阈值
 
 
 @dataclass
@@ -295,18 +291,12 @@ class ThresholdConfig:
                 "enable_failure_analysis": self.adaptive_retrieval.enable_failure_analysis,
                 "enable_llm_deep_analysis": self.adaptive_retrieval.enable_llm_deep_analysis,
                 "redundancy_threshold": self.adaptive_retrieval.redundancy_threshold,
-                "enable_adaptive_rewrite": self.adaptive_retrieval.enable_adaptive_rewrite,
-                "max_query_variants": self.adaptive_retrieval.max_query_variants,
-                "rewrite_temperature": self.adaptive_retrieval.rewrite_temperature,
                 "enable_progressive_strategy": self.adaptive_retrieval.enable_progressive_strategy,
                 "max_retrieval_rounds": self.adaptive_retrieval.max_retrieval_rounds,
-                "min_quality_for_stop": self.adaptive_retrieval.min_quality_for_stop,
+                "k_increment_per_round": self.adaptive_retrieval.k_increment_per_round,
                 "enable_intent_reclassification": self.adaptive_retrieval.enable_intent_reclassification,
                 "max_reclassification_count": self.adaptive_retrieval.max_reclassification_count,
                 "reclassification_trigger_round": self.adaptive_retrieval.reclassification_trigger_round,
-                "k_increment_per_round": self.adaptive_retrieval.k_increment_per_round,
-                "threshold_decrement_per_round": self.adaptive_retrieval.threshold_decrement_per_round,
-                "min_quality_threshold": self.adaptive_retrieval.min_quality_threshold,
             },
         }
 

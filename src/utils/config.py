@@ -28,7 +28,7 @@ class AgenticRAGConfig:
     answer_quality_threshold: float = 0.7
     
     # 控制流配置
-    max_iterations: int = 5
+    max_iterations: int = 3
     early_stopping: bool = True
     
     # 向量数据库配置
@@ -62,7 +62,7 @@ class AgenticRAGConfig:
             model_name=os.getenv("MODEL_NAME", "gpt-4o-mini"),
             temperature=float(os.getenv("TEMPERATURE", "0.1")),
             embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
-            max_iterations=int(os.getenv("MAX_ITERATIONS", "5")),
+            max_iterations=int(os.getenv("MAX_ITERATIONS", "3")),
             persist_directory=os.getenv("PERSIST_DIRECTORY"),
             verbose=os.getenv("VERBOSE", "true").lower() == "true"
         )

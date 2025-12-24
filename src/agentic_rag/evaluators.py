@@ -200,16 +200,16 @@ class RetrievalQualityEvaluator:
         try:
             query_embedding = self.embeddings.embed_query(query)
             doc_embedding = self.embeddings.embed_query(doc_content)
-            
+
             query_vec = np.array(query_embedding)
             doc_vec = np.array(doc_embedding)
-            
+
             # 计算点积
             dot_product = np.dot(query_vec, doc_vec)
             # 计算向量长度
             norm_query = np.linalg.norm(query_vec)
             norm_doc = np.linalg.norm(doc_vec)
-            
+
             if norm_query == 0 or norm_doc == 0:
                 return 0.0
 

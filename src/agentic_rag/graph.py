@@ -36,9 +36,9 @@ from src.agentic_rag.web_search import CorrectiveRAGHandler, WebSearchTool
 def create_agentic_rag_graph(
     vectorstore: Chroma,
     llm: ChatOpenAI = None,
-    max_iterations: int = 5,
+    max_iterations: int = 3,
     threshold_config: Optional[ThresholdConfig] = None,
-    enable_web_search: bool = False
+    enable_web_search: bool = True
 ):
     """
     创建完整的 Agentic RAG 图 - 2025 企业级最佳实践版
@@ -233,7 +233,7 @@ def create_agentic_rag_graph(
 
 def create_initial_state(
     question: str,
-    max_iterations: int = 5
+    max_iterations: int = 3
 ) -> AgenticRAGState:
     """
     创建初始状态 - 2025 企业级最佳实践版
@@ -260,10 +260,8 @@ def create_initial_state(
         "retrieval_quality": 0.0,
         "retrieval_strategy": "semantic",
 
-        # 自适应检索相关 - 2025 企业级最佳实践
-        "failure_analysis": None,  # 检索失败分析结果
-        "query_variants": [],  # 查询变体列表
-        "used_variants": [],  # 已使用过的查询变体
+        # 自适应检索相关 - 简化版
+        "failure_analysis": None,  # 检索失败分析结果（核心功能）
         "current_round_config": None,  # 当前轮次的检索配置
 
         # 生成相关

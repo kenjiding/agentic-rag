@@ -42,62 +42,6 @@ def _detect_query_language(query: str) -> tuple[str, bool]:
     return "wt-wt", False
 
 
-def _filter_irrelevant_results(results: list, query: str, is_chinese_query: bool) -> list:
-    """
-    过滤掉明显不相关的搜索结果
-    
-    Args:
-        results: 搜索结果列表
-        query: 原始查询
-        is_chinese_query: 是否为中文查询
-        
-    Returns:
-        过滤后的结果列表
-    """
-    if not results:
-        return results
-    
-    # 提取查询的核心关键词
-    query_clean = query.replace("?", "").replace("？", "").replace("!", "").replace("！", "").strip()
-    
-    if is_chinese_query:
-        # 中文：提取关键词（长度>=2的中文字符串）
-        import re
-        keywords = re.findall(r'[\u4e00-\u9fff]{2,}', query_clean)
-        # 如果关键词太少，使用整个查询作为关键词
-        if len(keywords) == 0:
-            keywords = [query_clean]
-    else:
-        # 英文：分词，过滤停用词
-        keywords = [word.lower() for word in query_clean.split() if len(word) > 2]
-    
-    if not keywords:
-        return results  # 无法提取关键词，返回所有结果
-    
-    filtered_results = []
-    for result in results:
-        title = result.get("title", "").lower()
-        body = result.get("body", "").lower()
-        text = title + " " + body
-        
-        # 检查是否包含至少一个核心关键词
-        matches = sum(1 for keyword in keywords if keyword.lower() in text)
-        
-        # 如果匹配的关键词数量 >= 关键词总数的一半，认为相关
-        relevance_ratio = matches / len(keywords) if keywords else 0
-        
-        if relevance_ratio >= 0.3:  # 至少30%的关键词匹配
-            filtered_results.append(result)
-        else:
-            print(f"[Web Search] 过滤不相关结果: '{result.get('title', '')[:50]}...' "
-                  f"(匹配度: {matches}/{len(keywords)})")
-    
-    if len(filtered_results) < len(results):
-        print(f"[Web Search] 基础相关性过滤: {len(results)} -> {len(filtered_results)} 个结果")
-    
-    return filtered_results
-
-
 def _is_result_language_match(results: list, is_chinese_query: bool) -> bool:
     """
     检查搜索结果的语言是否与查询语言匹配
@@ -222,22 +166,11 @@ class WebSearchTool:
                     max_results=k
                 ))
 
-                # 首先进行基础相关性过滤，移除明显不相关的结果
-                results = _filter_irrelevant_results(results, query, is_chinese_query)
+                # 注意：不再进行基础关键词过滤，因为：
+                # 1. DuckDuckGo 本身已经做了相关性排序
+                # 2. 后续的 refine_web_results 会用 LLM 进行精确评估
+                # 3. 简单的关键词匹配容易误过滤相关结果
                 
-                # 如果过滤后没有结果，尝试使用原始查询重新搜索（如果当前查询是优化后的）
-                if not results and query != state.get("original_query", query):
-                    print(f"[Web Search] 优化查询无相关结果，尝试原始查询")
-                    original_query = state.get("original_query", query)
-                    results = list(ddgs.text(
-                        original_query,
-                        region=search_region,
-                        safesearch=self.safesearch,
-                        timelimit=self.time_range,
-                        max_results=k
-                    ))
-                    results = _filter_irrelevant_results(results, original_query, is_chinese_query)
-
                 # 检查结果语言是否匹配
                 if not _is_result_language_match(results, is_chinese_query):
                     print(f"[Web Search] ⚠️ 结果语言不匹配，返回空结果")

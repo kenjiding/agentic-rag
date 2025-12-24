@@ -226,18 +226,19 @@ class IntelligentGenerator:
         answer: str,
         context: str,
         threshold: Optional[float] = None
-    ) -> tuple[float, bool, str]:
+    ) -> tuple[float, bool, str, str]:
         """
         评估答案质量
-        
+
         Args:
             question: 用户问题
             answer: 生成的答案
             context: 上下文
             threshold: 质量阈值（如果为None，使用配置中的阈值）
-            
+
         Returns:
-            (质量分数, 是否满足阈值, 评估反馈)
+            (质量分数, 是否满足阈值, 评估反馈, 答案类型)
+            答案类型: "found" | "not_found" | "partial"
         """
         # 使用配置的阈值（如果未提供）
         if threshold is None:
@@ -300,17 +301,18 @@ class IntelligentGenerator:
                 "context": context,
                 "answer": answer,
             })
-            
+
             # 解析响应
             score = response.score
             feedback = response.feedback
+            answer_type = response.answer_type
             meets_threshold = score >= threshold
-            
-            return score, meets_threshold, feedback
-            
+
+            return score, meets_threshold, feedback, answer_type
+
         except Exception as e:
             print(f"[评估错误] {str(e)}")
-            return 0.5, False, f"评估过程出错: {str(e)}"
+            return 0.5, False, f"评估过程出错: {str(e)}", "partial"
     
     def generate_feedback(
         self,

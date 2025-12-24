@@ -24,16 +24,15 @@ class AgenticRAGState(TypedDict):
     retrieval_quality: float  # 检索质量评分 (0-1)
     retrieval_strategy: str  # 当前使用的检索策略
 
-    # 自适应检索相关 - 2025 企业级最佳实践
-    failure_analysis: Optional[Dict[str, Any]]  # 检索失败分析结果
-    query_variants: List[Dict[str, Any]]  # 查询变体列表（用于多轮检索）
-    used_variants: List[str]  # 已使用过的查询变体（避免重复）
+    # 自适应检索相关 - 简化版
+    failure_analysis: Optional[Dict[str, Any]]  # 检索失败分析结果（核心功能）
     current_round_config: Optional[Dict[str, Any]]  # 当前轮次的检索配置
 
     # 生成相关
     answer: str  # 当前生成的答案
     generation_history: List[str]  # 生成历史
     answer_quality: float  # 答案质量评分 (0-1)
+    answer_type: Literal["found", "not_found", "partial"]  # 答案类型
     evaluation_feedback: str  # 评估反馈
 
     # 控制流

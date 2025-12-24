@@ -3,7 +3,17 @@ from typing import Literal
 
 class AnswerEvaluation(BaseModel):
     """RAG答案质量评估结果（Answer quality evaluation result for RAG）"""
-    
+
+    answer_type: Literal["found", "not_found", "partial"] = Field(
+        ...,
+        description=(
+            "答案类型（Answer type）：判断答案是否成功回答了问题。"
+            "'found'：答案成功回答了问题，提供了具体的信息或数据；"
+            "'not_found'：答案明确表示无法回答或没有找到相关信息；"
+            "'partial'：答案部分回答了问题，但有重要信息缺失。"
+        )
+    )
+
     relevance: float = Field(
         ...,
         description=(

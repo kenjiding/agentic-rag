@@ -123,7 +123,7 @@ class CorrectiveRAGHandler:
     def perform_web_search(
         self,
         query: str,
-        optimize_query: bool = True
+        optimize_query: bool = False
     ) -> List[Document]:
         """
         执行 Web 搜索（带重试机制）
@@ -144,8 +144,8 @@ class CorrectiveRAGHandler:
 
         # 第一次尝试：使用优化后的查询
         search_query = query
-        # if optimize_query:
-        #     search_query = self.optimize_query_for_web(query)
+        if optimize_query:
+            search_query = self.optimize_query_for_web(query)
 
         results = self.web_search.search(search_query, self.max_web_results)
 

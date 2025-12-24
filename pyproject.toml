@@ -29,6 +29,8 @@ dependencies = [
     "sentence-transformers>=2.2.0", # Web Search 回退
     "langchain-experimental>=0.3.0", # 语义分块
     "ddgs>=9.10.0",
+    "mcp>=1.25.0",
+    "langchain-mcp-adapters>=0.2.1",
 ]
 
 [project.optional-dependencies]
