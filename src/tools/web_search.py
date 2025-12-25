@@ -7,8 +7,9 @@
 - 支持同步和异步调用
 - 提供清晰的错误处理
 """
-from typing import List, Optional, Dict, Any
+from typing import Annotated, List, Optional, Dict, Any
 from langchain_core.tools import tool
+from pydantic import Field
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,23 @@ def create_web_search_tool() -> List:
         ddgs = DDGS()
         
         @tool
-        def web_search(query: str, max_results: int = 5) -> str:
+        def web_search(
+            query: Annotated[
+                str,
+                Field(
+                    description="搜索查询字符串",
+                    examples=["What is the capital of France?", "最新iPhone价格", "Python异步编程"]
+                )
+            ],
+            max_results: Annotated[
+                int,
+                Field(
+                    default=5,
+                    description="最大返回结果数量",
+                    examples=[5, 10, 20]
+                )
+            ] = 5
+        ) -> str:
             """
             使用 DuckDuckGo 搜索网络信息
             

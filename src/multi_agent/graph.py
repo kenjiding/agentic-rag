@@ -21,6 +21,8 @@ from src.intent import IntentClassifier
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.agents.rag_agent import RAGAgent
 from src.multi_agent.agents.chat_agent import ChatAgent
+from src.multi_agent.agents.product_agent import ProductAgent, product_agent_node
+from src.multi_agent.agents.order_agent import OrderAgent, order_agent_node
 from src.multi_agent.tools.tool_registry import ToolCategory, ToolPermission, ToolRegistry
 import logging
 from src.tools.web_search import create_web_search_tool
@@ -41,7 +43,8 @@ class MultiAgentGraph:
     - Supervisor节点：路由决策
     - RAG Agent节点：知识检索
     - Chat Agent节点：一般对话
-    - 工具调用节点（未来扩展）
+    - Product Agent节点：商品搜索
+    - Order Agent节点：订单管理（含确认机制）
     """
     
     def __init__(
@@ -52,7 +55,8 @@ class MultiAgentGraph:
         rag_persist_directory: str = "./tmp/chroma_db/agentic_rag",
         max_iterations: int = 10,
         init_web_search: bool = True,
-        enable_intent_classification: bool = True
+        enable_intent_classification: bool = True,
+        enable_business_agents: bool = True
     ):
         """
         初始化多Agent图
@@ -66,12 +70,14 @@ class MultiAgentGraph:
             init_web_search: 是否在初始化时加载web search tools（默认True）
                             如果设置为False，可以稍后调用async_init_web_search_tools()异步加载
             enable_intent_classification: 是否启用意图识别（默认True）
+            enable_business_agents: 是否启用业务Agent（商品、订单），默认True
         """
         self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
         self.tool_registry = tool_registry or ToolRegistry()
         self.max_iterations = max_iterations
         self._web_search_initialized = False
         self.enable_intent_classification = enable_intent_classification
+        self.enable_business_agents = enable_business_agents
 
         # 延迟加载web search tools，避免阻塞初始化
         # 如果初始化失败，系统仍可正常运行（只是没有web search功能）
@@ -101,13 +107,23 @@ class MultiAgentGraph:
                 persist_directory=rag_persist_directory
             )
             agents.append(rag_agent)
-            
+
             # 添加Chat Agent
             chat_agent = ChatAgent(
                 llm=self.llm,
                 tool_registry=self.tool_registry
             )
             agents.append(chat_agent)
+
+            # 添加业务 Agent
+            if self.enable_business_agents:
+                # Product Agent
+                product_agent = ProductAgent(llm=self.llm)
+                agents.append(product_agent)
+
+                # Order Agent
+                order_agent = OrderAgent(llm=self.llm)
+                agents.append(order_agent)
         
         # 注册所有Agents并自动分配工具注册表
         for agent in agents:
@@ -208,6 +224,11 @@ class MultiAgentGraph:
         graph.add_node("rag_agent", self._rag_agent_node)
         graph.add_node("chat_agent", self._chat_agent_node)
 
+        # 添加业务 Agent 节点
+        if self.enable_business_agents:
+            graph.add_node("product_agent", self._product_agent_node)
+            graph.add_node("order_agent", self._order_agent_node)
+
         # 设置入口点 - 意图识别优先
         if self.intent_classifier:
             graph.set_entry_point("intent_recognition")
@@ -217,14 +238,19 @@ class MultiAgentGraph:
             graph.set_entry_point("supervisor")
         
         # 添加条件边：Supervisor根据路由决策选择下一个节点
+        route_mapping = {
+            "rag_agent": "rag_agent",
+            "chat_agent": "chat_agent",
+            "finish": END
+        }
+        if self.enable_business_agents:
+            route_mapping["product_agent"] = "product_agent"
+            route_mapping["order_agent"] = "order_agent"
+
         graph.add_conditional_edges(
             "supervisor",
             self._route_after_supervisor,
-            {
-                "rag_agent": "rag_agent",
-                "chat_agent": "chat_agent",
-                "finish": END
-            }
+            route_mapping
         )
         
         # Agent执行后回到Supervisor（继续路由或结束）
@@ -246,6 +272,25 @@ class MultiAgentGraph:
                 "finish": END
             }
         )
+
+        # 业务 Agent 执行后的边
+        if self.enable_business_agents:
+            graph.add_conditional_edges(
+                "product_agent",
+                self._route_after_agent,
+                {
+                    "supervisor": "supervisor",
+                    "finish": END
+                }
+            )
+            graph.add_conditional_edges(
+                "order_agent",
+                self._route_after_agent,
+                {
+                    "supervisor": "supervisor",
+                    "finish": END
+                }
+            )
         
         # 编译图
         return graph.compile()
@@ -481,23 +526,106 @@ class MultiAgentGraph:
                 "next_action": "finish",
                 "error_message": f"Chat Agent错误: {str(e)}"
             }
-    
+
+    async def _product_agent_node(self, state: MultiAgentState) -> MultiAgentState:
+        """
+        Product Agent节点（商品搜索）
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态
+        """
+        try:
+            # 获取 Product Agent
+            product_agent = getattr(self, "product_agent", None)
+            if not product_agent:
+                logger.error("Product Agent未找到")
+                return {
+                    "next_action": "finish",
+                    "error_message": "Product Agent未找到"
+                }
+
+            # 执行 Product Agent（同步调用，内部处理工具）
+            result = product_agent.invoke(state)
+
+            # 更新状态
+            updated_state = {
+                "messages": result.get("messages", state.get("messages", [])),
+                "current_agent": "product_agent",
+            }
+
+            logger.info("Product Agent执行完成")
+            return updated_state
+
+        except Exception as e:
+            logger.error(f"Product Agent节点执行错误: {str(e)}", exc_info=True)
+            return {
+                "next_action": "finish",
+                "error_message": f"Product Agent错误: {str(e)}"
+            }
+
+    async def _order_agent_node(self, state: MultiAgentState) -> MultiAgentState:
+        """
+        Order Agent节点（订单管理，含确认机制）
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态
+        """
+        try:
+            # 获取 Order Agent
+            order_agent = getattr(self, "order_agent", None)
+            if not order_agent:
+                logger.error("Order Agent未找到")
+                return {
+                    "next_action": "finish",
+                    "error_message": "Order Agent未找到"
+                }
+
+            # 执行 Order Agent（同步调用，内部处理确认机制）
+            result = order_agent.invoke(state)
+
+            # 更新状态
+            updated_state = {
+                "messages": result.get("messages", state.get("messages", [])),
+                "current_agent": "order_agent",
+                "confirmation_pending": result.get("confirmation_pending"),
+            }
+
+            logger.info("Order Agent执行完成")
+            return updated_state
+
+        except Exception as e:
+            logger.error(f"Order Agent节点执行错误: {str(e)}", exc_info=True)
+            return {
+                "next_action": "finish",
+                "error_message": f"Order Agent错误: {str(e)}"
+            }
+
     def _route_after_supervisor(self, state: MultiAgentState) -> str:
         """
         Supervisor后的路由决策
-        
+
         Args:
             state: 当前状态
-            
+
         Returns:
             下一个节点名称
         """
         next_action = state.get("next_action", "finish")
-        
+
         if next_action == "rag_search":
             return "rag_agent"
         elif next_action == "chat":
             return "chat_agent"
+        elif next_action == "product_search" and self.enable_business_agents:
+            return "product_agent"
+        elif next_action == "order_management" and self.enable_business_agents:
+            return "order_agent"
         else:
             return "finish"
     

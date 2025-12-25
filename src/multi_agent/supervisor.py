@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 
 class RoutingDecision(BaseModel):
     """路由决策结构定义
-    
+
     使用Pydantic模型定义路由决策的输出结构，确保LLM输出符合预期格式。
     """
-    next_action: Literal["rag_search", "chat", "tool_call", "finish"] = Field(
+    next_action: Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "finish"] = Field(
         ...,
-        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，tool_call表示工具调用，finish表示结束"
+        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，finish表示结束"
     )
     selected_agent: Optional[str] = Field(
         None,
@@ -173,9 +173,20 @@ class SupervisorAgent:
 {agents}
 
 路由规则：
-1. 如果用户问题需要从知识库中检索信息（如事实查询、文档相关问题），选择 rag_agent，next_action设为"rag_search"
-2. 如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
-3. 如果问题无法由现有Agent处理，next_action设为"finish"
+1. 商品相关：用户询问商品、搜索产品、比价等，选择 product_agent，next_action设为"product_search"
+   - 关键词：商品、产品、手机、电脑、价格、多少钱、推荐、品牌
+   - 示例："2000元以下的手机"、"华为笔记本有哪些"、"推荐一款性价比高的手机"
+
+2. 订单相关：用户查询、取消、创建订单等，选择 order_agent，next_action设为"order_management"
+   - 关键词：订单、下单、购买、支付、取消订单、查询订单、我的订单
+   - 示例："我的订单"、"取消订单123"、"我要下单"
+
+3. 知识检索：如果用户问题需要从知识库中检索信息（如事实查询、文档相关问题），选择 rag_agent，next_action设为"rag_search"
+   - 示例："公司政策是什么"、"如何使用产品"
+
+4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
+
+5. 如果问题无法由现有Agent处理，next_action设为"finish"
 
 请仔细分析用户问题，结合意图识别信息（如果有），做出最佳路由决策。"""),
                 ("user", "用户问题: {question}\n\n{intent_context}")
@@ -289,7 +300,9 @@ class SupervisorAgent:
 {agents}
 
 规则：
-- 需要从知识库检索信息 → rag_agent (next_action: "rag_search")
+- 商品搜索 → product_agent (next_action: "product_search")
+- 订单管理 → order_agent (next_action: "order_management")
+- 知识检索 → rag_agent (next_action: "rag_search")
 - 一般对话 → chat_agent (next_action: "chat")
 - 无法处理 → finish
 

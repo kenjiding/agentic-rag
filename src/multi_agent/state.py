@@ -50,10 +50,13 @@ class MultiAgentState(TypedDict):
     max_iterations: int  # 最大迭代次数，默认10
     
     # 路由决策
-    next_action: Optional[Literal["rag_search", "chat", "tool_call", "finish"]]  # 下一步行动
+    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "finish"]]  # 下一步行动
     routing_reason: Optional[str]  # 路由决策的原因说明
 
     # 意图识别
     query_intent: Optional[Dict[str, Any]]  # 意图识别结果（QueryIntent转字典）
     original_question: Optional[str]  # 用户原始问题（用于意图识别）
+
+    # 业务功能扩展
+    confirmation_pending: Optional[Dict[str, Any]]  # 等待用户确认的操作
 
