@@ -15,6 +15,14 @@ ENV/
 dist/
 build/
 
+front-chat/node_modules/
+front-chat/build/
+front-chat/.env.local
+front-chat/.env
+front-chat/.next/
+front-chat/dist
+front-chat/.DS_Store
+
 # IDE
 .vscode/
 .idea/

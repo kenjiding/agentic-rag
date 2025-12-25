@@ -116,12 +116,24 @@ class ProductAgent:
             # 执行工具调用并构建 ToolMessage
             tool_messages = []
             tool_used_info = []
+            structured_result = None  # 存储结构化数据结果
 
             for tool_call in response.tool_calls:
                 tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
                 if tool:
                     try:
                         result = tool.invoke(tool_call["args"])
+
+                        # 尝试解析工具返回的结构化数据
+                        try:
+                            result_json = json.loads(result)
+                            if isinstance(result_json, dict):
+                                # 检查是否包含结构化数据（products/product/orders/brands/categories）
+                                if any(key in result_json for key in ["products", "product", "orders", "brands", "categories"]):
+                                    structured_result = result_json
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                         # 构建 ToolMessage
                         tool_messages.append(
                             ToolMessage(
@@ -143,15 +155,18 @@ class ProductAgent:
                             )
                         )
 
-            # 构建后续消息列表（包含 tool_calls 的 assistant 消息 + ToolMessage）
-            followup_messages = agent_messages + [response] + tool_messages
+            # 如果有结构化数据，直接使用工具的 text，不再调用 LLM
+            if structured_result and "text" in structured_result:
+                # 使用工具返回的简短文本，避免 LLM 重新生成长文本
+                final_response = AIMessage(content=structured_result["text"])
+            else:
+                # 没有结构化数据，需要调用 LLM 生成回复
+                followup_messages = agent_messages + [response] + tool_messages
+                final_response = self.llm.invoke(followup_messages)
 
-            # 再次调用 LLM 生成最终回复
-            final_response = self.llm.invoke(followup_messages)
-
-            # 返回结果（只添加新的 AIMessage，不重复添加 response）
+            # 返回结果（只添加新的 AIMessage 和 ToolMessage）
             return {
-                "messages": messages + [final_response],
+                "messages": messages + [response] + tool_messages + [final_response],
                 "current_agent": self.name,
                 "tools_used": state.get("tools_used", []) + tool_used_info,
             }

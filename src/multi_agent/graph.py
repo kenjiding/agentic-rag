@@ -804,18 +804,19 @@ class MultiAgentGraph:
         finally:
             loop.close()
     
-    async def astream(self, question: str, config: Optional[Dict[str, Any]] = None):
+    async def astream(self, question: str, config: Optional[Dict[str, Any]] = None, stream_mode: str = "updates"):
         """
         异步流式执行查询（生产环境推荐）
-        
+
         企业级最佳实践：
         - 使用异步接口充分利用异步性能优势
         - 支持高并发场景
-        
+
         Args:
             question: 用户问题
             config: 执行配置
-            
+            stream_mode: 流式模式，"updates" 返回节点更新，"values" 返回完整状态
+
         Yields:
             状态更新
         """
@@ -833,11 +834,11 @@ class MultiAgentGraph:
             "next_action": None,
             "routing_reason": None
         }
-        
+
         # 流式执行（使用异步API）
         if config is None:
             config = {"recursion_limit": self.max_iterations * 2}
-        
-        async for state_update in self.graph.astream(initial_state, config=config):
+
+        async for state_update in self.graph.astream(initial_state, config=config, stream_mode=stream_mode):
             yield state_update
 
