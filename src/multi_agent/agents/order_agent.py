@@ -8,14 +8,14 @@
 
 import json
 import logging
-import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 
 from src.tools.order_tools import get_order_tools
 from src.multi_agent.state import MultiAgentState
+from src.multi_agent.utils import clean_messages_for_llm
 from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
 
 logger = logging.getLogger(__name__)
@@ -144,84 +144,6 @@ class OrderAgent:
                 return False
 
         return None
-
-    def _clean_messages_for_llm(self, messages: list) -> list:
-        """清理消息序列，优化传递给 LLM 的上下文
-
-        【修复】分三步处理：
-        1. 只保留最近 N 条消息，控制上下文长度
-        2. 移除孤立的 ToolMessage（没有对应 AIMessage 中 tool_calls 的）
-        3. 移除孤立的 tool_calls（没有对应 ToolMessage 的 tool_calls）
-
-        避免出现以下错误：
-        - "tool_calls must be followed by tool messages"
-        - "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'"
-
-        Args:
-            messages: 原始消息列表
-
-        Returns:
-            清理后的消息列表
-        """
-        keep_recent = 10  # 保留最近10条消息（足够多轮对话）
-
-        # 步骤1：取最后 N 条消息
-        recent_messages = list(messages[-keep_recent:]) if len(messages) > keep_recent else messages.copy()
-
-        # 步骤2：收集所有有效的 tool_call_id（来自 AIMessage 的 tool_calls）
-        valid_tool_call_ids_from_ai = set()
-        for msg in recent_messages:
-            if isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc.get("id"):
-                        valid_tool_call_ids_from_ai.add(tc["id"])
-
-        # 步骤3：收集所有 ToolMessage 的 tool_call_id
-        tool_call_ids_from_tool_messages = set()
-        for msg in recent_messages:
-            if isinstance(msg, ToolMessage) and hasattr(msg, "tool_call_id"):
-                tool_call_ids_from_tool_messages.add(msg.tool_call_id)
-
-        # 步骤4：清理孤立的消息
-        cleaned_messages = []
-        orphaned_tool_calls_count = 0
-        orphaned_tool_messages_count = 0
-
-        for msg in recent_messages:
-            if isinstance(msg, ToolMessage):
-                # 检查 ToolMessage 是否有对应的 AIMessage(tool_calls)
-                if hasattr(msg, "tool_call_id") and msg.tool_call_id in valid_tool_call_ids_from_ai:
-                    cleaned_messages.append(msg)
-                else:
-                    orphaned_tool_messages_count += 1
-                    logger.debug(f"[ORDER_AGENT] 移除孤立的 ToolMessage: tool_call_id={getattr(msg, 'tool_call_id', 'N/A')}")
-            elif isinstance(msg, AIMessage) and hasattr(msg, "tool_calls") and msg.tool_calls:
-                # 检查每个 tool_call 是否有对应的 ToolMessage
-                valid_calls = [
-                    tc for tc in msg.tool_calls
-                    if tc.get("id") in tool_call_ids_from_tool_messages
-                ]
-                if valid_calls:
-                    # 有有效的 tool_calls，保留消息
-                    if len(valid_calls) != len(msg.tool_calls):
-                        orphaned_tool_calls_count += len(msg.tool_calls) - len(valid_calls)
-                    cleaned_messages.append(msg)
-                else:
-                    # 所有 tool_calls 都是孤立的，移除 tool_calls 保留消息
-                    orphaned_tool_calls_count += len(msg.tool_calls)
-                    # 创建一个没有 tool_calls 的 AIMessage 副本
-                    cleaned_messages.append(AIMessage(content=msg.content))
-            else:
-                # 其他消息类型，直接保留
-                cleaned_messages.append(msg)
-
-        if orphaned_tool_calls_count > 0:
-            logger.warning(f"[ORDER_AGENT] 移除了 {orphaned_tool_calls_count} 个孤立的 tool_calls")
-        if orphaned_tool_messages_count > 0:
-            logger.warning(f"[ORDER_AGENT] 移除了 {orphaned_tool_messages_count} 个孤立的 ToolMessage")
-
-        logger.info(f"[ORDER_AGENT] 清理消息: 原始{len(messages)}条 -> 保留{len(cleaned_messages)}条")
-        return cleaned_messages
 
     async def invoke(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行订单操作
@@ -543,7 +465,7 @@ class OrderAgent:
         # 清理消息序列，移除孤立的 ToolMessage
         # 这确保符合 OpenAI API 的格式要求：
         # "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'"
-        cleaned_messages = self._clean_messages_for_llm(messages)
+        cleaned_messages = clean_messages_for_llm(messages)
 
         # 构建 Agent 消息
         agent_messages = [
@@ -674,43 +596,3 @@ class OrderAgent:
             "messages": messages + [response],
             "current_agent": self.name,
         }
-
-    def _execute_confirm_action(self, action_type: str, action_data: dict) -> str:
-        """执行确认后的操作
-
-        Args:
-            action_type: 操作类型 (cancel_order, create_order)
-            action_data: 操作参数
-
-        Returns:
-            操作结果
-        """
-        # 查找对应的 confirm_* 工具
-        tool_name = f"confirm_{action_type}"
-        tool = next((t for t in self.tools if t.name == tool_name), None)
-
-        if not tool:
-            return f"❌ 找不到确认操作工具: {tool_name}"
-
-        try:
-            result = tool.invoke(action_data)
-            return result
-        except Exception as e:
-            return f"❌ 执行操作时出错: {str(e)}"
-
-
-# 兼容 LangGraph 节点函数
-async def order_agent_node(state: MultiAgentState, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """LangGraph 节点函数 - 订单 Agent (异步)
-
-    Args:
-        state: 当前状态
-        config: 配置（可包含 llm 实例和 session_id）
-
-    Returns:
-        状态更新
-    """
-    llm = config.get("llm") if config else None
-    session_id = config.get("session_id", "default") if config else "default"
-    agent = OrderAgent(llm=llm)
-    return await agent.invoke(state, session_id=session_id)

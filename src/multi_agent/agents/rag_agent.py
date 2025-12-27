@@ -8,18 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.state import MultiAgentState
-# 兼容不同的导入路径
-try:
-    from src.agentic_rag.agentic_rag import AgenticRAG
-except ImportError:
-    try:
-        from agentic_rag.agentic_rag import AgenticRAG
-    except ImportError:
-        # 如果都失败，尝试相对导入
-        import sys
-        from pathlib import Path
-        sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        from src.agentic_rag.agentic_rag import AgenticRAG
+from src.agentic_rag.agentic_rag import AgenticRAG
 import logging
 
 logger = logging.getLogger(__name__)

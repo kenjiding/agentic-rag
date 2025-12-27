@@ -23,10 +23,9 @@ from src.intent import IntentClassifier
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.agents.rag_agent import RAGAgent
 from src.multi_agent.agents.chat_agent import ChatAgent
-from src.multi_agent.agents.product_agent import ProductAgent, product_agent_node
-from src.multi_agent.agents.order_agent import OrderAgent, order_agent_node
+from src.multi_agent.agents.product_agent import ProductAgent
+from src.multi_agent.agents.order_agent import OrderAgent
 from src.multi_agent.tools.tool_registry import ToolCategory, ToolPermission, ToolRegistry
-from src.multi_agent.task_chain_storage import get_task_chain_storage
 import logging
 from src.tools.web_search import create_web_search_tool
 
