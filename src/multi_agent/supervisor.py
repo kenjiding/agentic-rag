@@ -18,6 +18,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.agents.base_agent import BaseAgent
+from src.multi_agent.config import get_keywords_config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -182,24 +183,19 @@ class SupervisorAgent:
                 # 检查用户消息是否是选择/确认操作
                 is_selection_response = False
                 if user_message:
+                    # 使用配置化关键词
+                    keywords_config = get_keywords_config()
+
                     # 选择操作通常包含：数字选择、关键词确认、纯数字（如"1"、"2"）
-                    selection_keywords = ["选择", "确认", "第", "1.", "2.", "3.", "4.", "5.", "1、", "2、", "3、", "4、", "5、"]
                     # 检查是否是纯数字（如 "1"、"2" 等）
                     is_pure_number = bool(re.match(r'^\d+$', user_message.strip()))
-                    is_selection_response = is_pure_number or any(kw in user_message for kw in selection_keywords)
+                    is_selection_response = is_pure_number or any(kw in user_message for kw in keywords_config.selection_keywords)
 
                     # 【关键修复】只有存在 pending_selection 且用户单独说"取消"（不是"取消订单"等）时，
                     # 才视为取消选择操作；否则"取消"可能是业务操作（如取消订单）
                     if pending_selection and not is_selection_response:
-                        # 检查是否是单独的"取消"操作（取消选择）
-                        cancel_selection_patterns = [
-                            r'^取消$',           # 只说"取消"
-                            r'^取消选择',        # 取消选择
-                            r'^不选了',          # 不选了
-                            r'^不要了',          # 不要了
-                            r'^算了$',           # 算了
-                        ]
-                        is_selection_response = any(re.search(p, user_message.strip()) for p in cancel_selection_patterns)
+                        # 检查是否是单独的"取消"操作（取消选择）- 使用配置化模式
+                        is_selection_response = any(re.search(p, user_message.strip()) for p in keywords_config.cancel_selection_patterns)
 
                 # 如果不是选择响应，检查是否是完全不相关的新问题
                 if not is_selection_response:

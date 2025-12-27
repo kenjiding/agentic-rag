@@ -24,6 +24,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from src.multi_agent.state import MultiAgentState, TaskChain, TaskStep
+from src.multi_agent.config import get_keywords_config
 from src.confirmation.selection_manager import get_selection_manager
 
 logger = logging.getLogger(__name__)
@@ -120,31 +121,29 @@ class TaskChainOrchestrator:
 
     def _fast_path_detection(self, user_message: str) -> Optional[str]:
         """快速路径：基于规则的快速检测
-        
+
         用于快速排除明显不是多步骤任务的情况。
         如果检测到明确的多步骤任务信号，直接返回结果。
+
+        使用配置化的关键词列表，支持扩展和多语言。
         """
         user_message_lower = user_message.lower()
-        
+        keywords_config = get_keywords_config()
+
         # 快速排除：已经有明确的 product_id
         if re.search(r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+", user_message_lower):
             return None
-        
-        # 快速排除：完全没有购买意图
-        order_keywords = ["下单", "购买", "买", "订购", "我要", "帮我"]
-        if not any(kw in user_message_lower for kw in order_keywords):
+
+        # 快速排除：完全没有购买意图（使用配置化关键词）
+        if not any(kw in user_message_lower for kw in keywords_config.order_intent_keywords):
             return None
-        
-        # 检测到购买意图，检查是否有商品关键词
-        product_keywords = [
-            "商品", "产品", "手机", "电脑", "笔记本", "家电", "电视", "冰箱",
-            "华为", "苹果", "小米", "西门子", "海尔", "格力", "联想", "戴尔"
-        ]
-        if any(kw in user_message_lower for kw in product_keywords):
+
+        # 检测到购买意图，检查是否有商品关键词（使用配置化关键词）
+        if any(kw.lower() in user_message_lower for kw in keywords_config.get_all_product_keywords()):
             # 明确的多步骤任务信号，直接返回
             logger.info("快速路径：检测到明确的多步骤任务信号")
             return "order_with_search"
-        
+
         return None
 
     def _llm_based_detection(self, user_message: str, state: MultiAgentState) -> Optional[str]:
@@ -232,30 +231,32 @@ class TaskChainOrchestrator:
             return self._fallback_rule_detection(user_message)
 
     def _fallback_rule_detection(self, user_message: str) -> Optional[str]:
-        """降级方案：基于规则的检测"""
+        """降级方案：基于规则的检测
+
+        使用配置化的关键词列表，支持扩展和多语言。
+        """
         user_message_lower = user_message.lower()
-        
-        # 检测购买意图
-        has_order_intent = any(kw in user_message_lower for kw in [
-            "下单", "购买", "买", "订购", "我要", "帮我"
-        ])
-        
-        # 检测商品关键词（包括品牌名）
-        has_product_keyword = any(kw in user_message_lower for kw in [
-            "商品", "产品", "手机", "电脑", "笔记本", "家电", "电视", "冰箱",
-            "华为", "苹果", "小米", "西门子", "海尔", "格力", "联想", "戴尔"
-        ])
-        
+        keywords_config = get_keywords_config()
+
+        # 检测购买意图（使用配置化关键词）
+        has_order_intent = any(kw in user_message_lower for kw in keywords_config.order_intent_keywords)
+
+        # 检测商品关键词（使用配置化关键词）
+        has_product_keyword = any(
+            kw.lower() in user_message_lower
+            for kw in keywords_config.get_all_product_keywords()
+        )
+
         # 检测是否已经有明确的 product_id
         has_product_id = bool(re.search(
             r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+",
             user_message_lower
         ))
-        
+
         if has_order_intent and has_product_keyword and not has_product_id:
-            logger.info(f"降级规则检测到多步骤任务: order_with_search")
+            logger.info("降级规则检测到多步骤任务: order_with_search")
             return "order_with_search"
-        
+
         return None
 
     def create_task_chain(

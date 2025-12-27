@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, Tool
 from src.tools.order_tools import get_order_tools
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
+from src.multi_agent.config import get_keywords_config
 from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
 
 logger = logging.getLogger(__name__)
@@ -69,12 +70,8 @@ ORDER_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 订单�
 """
 
 
-# 确认相关的关键词
-CONFIRM_YES = ["确认", "是", "好的", "可以", "同意", "下单", "执行", "继续"]
-CONFIRM_NO = ["不", "否", "取消", "不要", "算了"]
-
-# 取消订单意图关键词
-CANCEL_ORDER_KEYWORDS = ["取消订单", "取消这个订单", "取消该订单", "不想要了", "帮我取消"]
+# 注意：确认关键词已移至 src/multi_agent/config.py 中的 KeywordsConfig
+# 使用 get_keywords_config() 获取配置化的关键词列表
 
 
 class OrderAgent:
@@ -123,6 +120,8 @@ class OrderAgent:
     def _check_confirmation(self, user_input: str) -> bool | None:
         """检查用户输入是否为确认
 
+        使用配置化的关键词列表，支持扩展和多语言。
+
         Args:
             user_input: 用户输入文本
 
@@ -132,15 +131,16 @@ class OrderAgent:
             None: 无法判断（非确认相关输入）
         """
         user_input_lower = user_input.strip().lower()
+        keywords_config = get_keywords_config()
 
-        # 检查确认
-        for keyword in CONFIRM_YES:
-            if keyword in user_input_lower:
+        # 检查确认（使用配置化关键词）
+        for keyword in keywords_config.confirm_yes_keywords:
+            if keyword.lower() in user_input_lower:
                 return True
 
-        # 检查否认
-        for keyword in CONFIRM_NO:
-            if keyword in user_input_lower:
+        # 检查否认（使用配置化关键词）
+        for keyword in keywords_config.confirm_no_keywords:
+            if keyword.lower() in user_input_lower:
                 return False
 
         return None
