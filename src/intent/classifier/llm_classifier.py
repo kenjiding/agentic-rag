@@ -3,12 +3,12 @@
 Core implementation of intent classification using LLM with structured output.
 Based on 2025-2026 best practices for unified information extraction and query decomposition.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.intent.classifier.base import BaseIntentClassifier
-from src.intent.models.query_intent import QueryIntent, SubQuery
+from src.intent.models.query_intent import QueryIntent, SubQuery, Entities
 from src.intent.models.types import PipelineOption, DecompositionType, IntentType, ComplexityLevel
 from src.intent.config.settings import IntentConfig
 
@@ -194,7 +194,12 @@ sub_queries: []
 3. **自主判断是否需要分解**（needs_decomposition）
 4. 如需分解，指定分解类型（decomposition_type）和原因（decomposition_reason）
 5. 生成子查询列表（sub_queries），每个子查询包含完整信息
-6. 提取关键实体和时间点
+6. **提取所有实体**，统一存放在 entities 字典中：
+   - general_entities: List[str] - 通用实体（人名、地名、组织等）
+   - time_points: List[str] - 时间点（年份、日期等）
+   - user_phone: Optional[str] - 用户手机号（11位，1开头）
+   - quantity: Optional[int] - 购买数量
+   - search_keyword: Optional[str] - 搜索关键词（商品名称）
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
 
 输出JSON："""
@@ -259,16 +264,53 @@ sub_queries: []
             time_points.extend(re.findall(pattern, query, re.IGNORECASE))
         time_points = list(set([str(tp).strip() for tp in time_points]))
 
-        # Entity detection with general entity patterns
+        # ==================== Entity Extraction ====================
+        # 统一实体模型，包含通用实体和业务实体
+        # Extract general entities (通用实体)
         entity_patterns = [
             r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b',  # Capitalized words (English)
             r'"[^"]+"',  # Content in double quotes
             r"'[^']+'",  # Content in single quotes
         ]
-        entities: List[str] = []
+        general_entities: List[str] = []
         for pattern in entity_patterns:
-            entities.extend(re.findall(pattern, query))
-        entities = list(set([e.strip('"\'') for e in entities]))[:10]
+            general_entities.extend(re.findall(pattern, query))
+        general_entities = list(set([e.strip('"\'') for e in general_entities]))[:10]
+
+        # Extract business entities (业务实体)
+        # Extract phone number (11 digits, starting with 1)
+        phone_pattern = re.compile(r'1[3-9]\d{9}')
+        phone_match = phone_pattern.search(query)
+        user_phone: Optional[str] = phone_match.group(0) if phone_match else None
+
+        # Extract quantity (numbers followed by 件/个)
+        quantity_pattern = re.compile(r'(\d+)\s*[件个]')
+        quantity_match = quantity_pattern.search(query)
+        quantity: Optional[int] = None
+        if quantity_match:
+            try:
+                quantity = int(quantity_match.group(1))
+            except ValueError:
+                pass
+
+        # Extract search keyword (simplified: remove common words)
+        keywords_to_remove = ["下单", "购买", "买", "我要", "件", "个", "商品", "产品", "手机号", "是", "的"]
+        search_keyword = query
+        for keyword in keywords_to_remove:
+            search_keyword = search_keyword.replace(keyword, "")
+        search_keyword = phone_pattern.sub("", search_keyword)  # Remove phone number
+        search_keyword = re.sub(r'\d+', "", search_keyword)  # Remove numbers
+        search_keyword = re.sub(r'[，。、；：？！,.;:?!]', "", search_keyword).strip()
+        search_keyword_value: Optional[str] = search_keyword if search_keyword and len(search_keyword) >= 2 else None
+
+        # Create Entities model instance
+        entities = Entities(
+            general_entities=general_entities,
+            time_points=time_points,
+            user_phone=user_phone,
+            quantity=quantity,
+            search_keyword=search_keyword_value
+        )
 
         # ==================== Universal Query Decomposition ====================
         sub_queries: List[SubQuery] = []
@@ -324,7 +366,7 @@ sub_queries: []
                         ))
 
             # Case 2: Object comparison - generate query for each detected entity
-            elif len(entities) >= 2 and has_comparison_pattern:
+            elif len(general_entities) >= 2 and has_comparison_pattern:
                 decomposition_type = "comparison"
                 # Try to extract attribute keywords from query
                 attribute_keywords = []
@@ -338,7 +380,7 @@ sub_queries: []
 
                 attribute = attribute_keywords[0] if attribute_keywords else "情况"
 
-                for entity in entities[:4]:  # Handle at most 4 entities
+                for entity in general_entities[:4]:  # Handle at most 4 entities
                     sub_queries.append(SubQuery(
                         query=f"{entity}的{attribute}是什么？",
                         purpose=f"获取{entity}的{attribute}信息",
@@ -372,8 +414,7 @@ sub_queries: []
             decomposition_type=decomposition_type,
             decomposition_reason=decomposition_reason,
             sub_queries=sub_queries,
-            entities=entities,
-            time_points=time_points,
+            entities=entities,  # 统一实体模型，包含通用实体和业务实体
             recommended_retrieval_strategy=["hybrid"] if needs_decomposition else ["semantic"],
             recommended_k=10 if needs_decomposition else (5 if complexity == "simple" else 7),
             needs_multi_round_retrieval=complexity == "complex",

@@ -160,20 +160,22 @@ def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
 
 def get_order_by_id(db: Session, order_id: int) -> Optional[Order]:
     """根据 ID 获取订单"""
+    # SQLAlchemy 2.0+: 使用 joinedload 加载集合关系时需要调用 unique() 去重
     return db.execute(
         select(Order)
         .options(joinedload(Order.order_items))
         .where(Order.id == order_id)
-    ).scalar_one_or_none()
+    ).unique().scalar_one_or_none()
 
 
 def get_order_by_number(db: Session, order_number: str) -> Optional[Order]:
     """根据订单号获取订单"""
+    # SQLAlchemy 2.0+: 使用 joinedload 加载集合关系时需要调用 unique() 去重
     return db.execute(
         select(Order)
         .options(joinedload(Order.order_items))
         .where(Order.order_id == order_number)
-    ).scalar_one_or_none()
+    ).unique().scalar_one_or_none()
 
 
 def get_user_orders(
@@ -194,7 +196,7 @@ def get_user_orders(
         订单列表
     """
     query = select(Order).options(
-        joinedload(Order.order_items),
+        joinedload(Order.order_items).joinedload(OrderItem.product),
     ).where(Order.user_id == user_phone)
 
     if status:
@@ -202,7 +204,8 @@ def get_user_orders(
 
     query = query.order_by(Order.created_at.desc()).limit(limit)
 
-    result = db.execute(query).scalars().all()
+    # 使用 unique() 去重，因为 joinedload 会产生重复行
+    result = db.execute(query).unique().scalars().all()
     return list(result)
 
 

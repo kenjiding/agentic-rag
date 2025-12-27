@@ -164,7 +164,7 @@ class OrderDisplay(BaseModel):
         """从数据库模型转换"""
         return cls(
             id=order.id,
-            order_number=order.order_number,
+            order_number=order.order_id,  # 修复: Order模型字段是order_id不是order_number
             status=order.status,
             total_amount=float(order.total_amount),
             created_at=order.created_at.strftime("%Y-%m-%d %H:%M:%S") if order.created_at else "",

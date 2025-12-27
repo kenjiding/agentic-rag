@@ -290,15 +290,15 @@ class TaskChainOrchestrator:
         Returns:
             TaskChain 对象
         """
-        # 提取用户消息
-        user_message = None
-        for msg in reversed(state["messages"]):
-            if isinstance(msg, HumanMessage):
-                user_message = msg.content
-                break
+        # 从 state["entities"] 读取实体信息（2025最佳实践：统一实体管理）
+        entities = state.get("entities", {})
+        context_data = {
+            "user_phone": entities.get("user_phone"),
+            "quantity": entities.get("quantity", 1),
+            "search_keyword": entities.get("search_keyword"),
+        }
 
-        # 提取关键信息（商品关键词、数量、手机号等）
-        context_data = self._extract_context_from_message(user_message or "")
+        logger.info(f"从 entities 读取任务链上下文: {context_data}")
 
         task_chain: TaskChain = {
             "chain_id": str(uuid.uuid4()),
@@ -341,51 +341,6 @@ class TaskChainOrchestrator:
         )
 
         return task_chain
-
-    def _extract_context_from_message(self, message: str) -> Dict[str, Any]:
-        """从用户消息中提取上下文信息
-
-        Args:
-            message: 用户消息
-
-        Returns:
-            上下文数据字典
-        """
-        context: Dict[str, Any] = {}
-
-        # 提取手机号
-        phone_pattern = r"1[3-9]\d{9}"
-        phone_match = re.search(phone_pattern, message)
-        if phone_match:
-            context["user_phone"] = phone_match.group(0)
-
-        # 提取数量
-        quantity_pattern = r"(\d+)\s*件"
-        quantity_match = re.search(quantity_pattern, message)
-        if quantity_match:
-            context["quantity"] = int(quantity_match.group(1))
-        else:
-            context["quantity"] = 1  # 默认1件
-
-        # 提取商品关键词（去除"下单"、"购买"等意图词）
-        keywords_to_remove = ["下单", "购买", "买", "我要", "件", "商品", "产品", "手机号", "是"]
-        search_keyword = message
-        for keyword in keywords_to_remove:
-            search_keyword = search_keyword.replace(keyword, "")
-
-        # 移除手机号和数字
-        search_keyword = re.sub(r"1[3-9]\d{9}", "", search_keyword)
-        search_keyword = re.sub(r"\d+", "", search_keyword)
-
-        # 清理空格和标点
-        search_keyword = search_keyword.strip()
-        search_keyword = re.sub(r"[，。、；：？！,.;:?!]", "", search_keyword)
-
-        if search_keyword:
-            context["search_keyword"] = search_keyword
-
-        logger.info(f"提取上下文: {context}")
-        return context
 
     async def execute_current_step(
         self,

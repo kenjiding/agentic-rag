@@ -13,6 +13,7 @@
 import asyncio
 from typing import Dict, Any, Optional, List
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -141,7 +142,15 @@ class MultiAgentGraph:
                 if hasattr(agent, 'refresh_tools'):
                     agent.refresh_tools()
                 logger.info(f"已为Agent {agent.get_name()} 分配工具注册表")
-        
+
+        # 初始化 Checkpointer（2025最佳实践：使用 LangGraph 内置状态持久化）
+        self.checkpointer = MemorySaver()
+        # 生产环境可以使用：
+        # from langgraph.checkpoint.sqlite import SqliteSaver
+        # self.checkpointer = SqliteSaver.from_conn_string("checkpoints.db")
+        logger.info("已初始化 MemorySaver checkpointer，支持跨会话状态持久化")
+
+
         # 构建图
         self.graph = self._build_graph()
     
@@ -224,8 +233,8 @@ class MultiAgentGraph:
         graph = StateGraph(MultiAgentState)
 
         # 添加节点
-        if self.intent_classifier:
-            graph.add_node("intent_recognition", self._intent_recognition_node)
+        # 意图识别节点（2025最佳实践：同时完成意图识别和实体提取，Joint Intent Detection and Slot Filling）
+        graph.add_node("intent_recognition", self._intent_recognition_node)
         graph.add_node("supervisor", self._supervisor_node)
         graph.add_node("task_orchestrator", self._task_orchestrator_node)  # 新增：任务编排节点
         graph.add_node("rag_agent", self._rag_agent_node)
@@ -236,13 +245,10 @@ class MultiAgentGraph:
             graph.add_node("product_agent", self._product_agent_node)
             graph.add_node("order_agent", self._order_agent_node)
 
-        # 设置入口点 - 意图识别优先
-        if self.intent_classifier:
-            graph.set_entry_point("intent_recognition")
-            # 意图识别后进入Supervisor
-            graph.add_edge("intent_recognition", "supervisor")
-        else:
-            graph.set_entry_point("supervisor")
+        # 设置入口点（2025最佳实践：意图识别节点已包含实体提取）
+        # 即使没有意图分类器，该节点也会提取实体
+        graph.set_entry_point("intent_recognition")
+        graph.add_edge("intent_recognition", "supervisor")
         
         # 添加条件边：Supervisor根据路由决策选择下一个节点
         route_mapping = {
@@ -311,58 +317,77 @@ class MultiAgentGraph:
                 {
                     "task_orchestrator": "task_orchestrator",  # 新增：任务链模式
                     "supervisor": "supervisor",
-                    "finish": END
+                    "finish": END,  # 等待确认时也结束（confirmation_pending 保存在 checkpointer 中）
+                    "wait_for_confirmation": END  # 新增：等待确认，暂停 graph
                 }
             )
         
-        # 编译图
-        return graph.compile()
-    
+        # 编译图（传入 checkpointer 实现状态持久化）
+        return graph.compile(checkpointer=self.checkpointer)
+
     async def _intent_recognition_node(self, state: MultiAgentState) -> MultiAgentState:
         """
-        意图识别节点 - 分析用户查询意图
+        意图识别节点 - 分析用户查询意图（2025最佳实践：Joint Intent Detection and Slot Filling）
 
         在进入Supervisor之前先进行意图识别，这样可以：
         1. 拆分复杂问题为子查询
         2. 为Supervisor提供更多上下文信息
         3. 优化路由决策
+        4. **同时提取业务实体**（避免重复LLM调用）
 
         Args:
             state: 当前状态
 
         Returns:
-            更新后的状态（包含query_intent）
+            更新后的状态（包含query_intent和entities）
         """
         try:
             # 提取用户问题
             question = state.get("original_question")
             if not question or not isinstance(question, str):
-                # 从messages中获取
-                for msg in state.get("messages", []):
+                # 【关键修复】从messages中获取最后一条 HumanMessage（用户最新输入）
+                # 必须倒序遍历，因为 checkpointer 恢复的状态包含历史消息
+                for msg in reversed(state.get("messages", [])):
                     if isinstance(msg, HumanMessage):
                         question = msg.content
                         break
 
             if not question:
                 logger.warning("未找到用户问题，跳过意图识别")
-                # 只返回更新的字段，LangGraph会自动合并
                 return {
                     "query_intent": None,
                     "original_question": question
                 }
 
-            logger.info(f"🎯【意图识别】分析查询: {question}")
-
-            # 检查intent_classifier是否可用
-            if self.intent_classifier is None:
-                logger.warning("意图分类器未初始化，跳过意图识别")
+            # 跳过系统消息（如 __TASK_CHAIN_CONTINUE__）
+            if question.startswith("__") and question.endswith("__"):
+                logger.info(f"跳过系统消息的意图识别: {question}")
                 return {
                     "query_intent": None,
                     "original_question": question
                 }
 
-            # 执行意图识别
+            logger.info(f"🎯【意图识别+实体提取】分析查询: {question}")
+
+            # ========== 2025最佳实践：一次LLM调用完成意图识别和实体提取 ==========
+            # 执行意图识别（Joint Intent Detection and Slot Filling）
+            # 意图识别结果中已包含业务实体（user_phone, quantity, search_keyword）
             intent = self.intent_classifier.classify(question)
+
+            # 从意图识别结果中提取实体（2025最佳实践：减少LLM调用）
+            # 所有实体统一存放在 intent.entities 模型中，转换为字典合并到 state["entities"]
+            existing_entities = state.get("entities", {})
+            entities = {**existing_entities}
+            
+            # 从 intent.entities 模型中提取所有实体并合并到 state["entities"]
+            if intent.entities:
+                # intent.entities 是 Entities 模型，转换为字典格式
+                entities_dict = intent.entities.model_dump(exclude_none=True)
+                for key, value in entities_dict.items():
+                    if value is not None:
+                        entities[key] = value
+
+            logger.info(f"📦【实体提取】实体: {entities}")
 
             # 转换为字典格式存储到状态
             intent_dict = intent.model_dump()
@@ -375,14 +400,14 @@ class MultiAgentGraph:
                 for sq in intent.sub_queries[:3]:
                     logger.info(f"  - {sq.query[:50]}...")
 
-            # 更新状态 - 只返回需要更新的字段
-            # 注意：intent_dict 已经通过 model_dump() 包含了所有字段，包括 sub_queries
+            # 更新状态 - 同时包含意图识别结果和实体提取结果
             updated_state = {
                 "query_intent": intent_dict,
-                "original_question": question
+                "original_question": question,
+                "entities": entities  # 所有实体统一存放在 state["entities"] 中
             }
 
-            logger.info(f"🎯【意图识别】完成，置信度: {intent.confidence:.2f}")
+            logger.info(f"🎯【意图识别+实体提取】完成，置信度: {intent.confidence:.2f}")
             return updated_state
 
         except Exception as e:
@@ -435,12 +460,9 @@ class MultiAgentGraph:
             if "task_chain" in routing_decision:
                 updated_state["task_chain"] = routing_decision["task_chain"]
 
-                # 保存任务链到存储，以便用户选择后可以继续执行
-                if config and config.get("configurable", {}).get("session_id"):
-                    session_id = config["configurable"]["session_id"]
-                    storage = get_task_chain_storage()
-                    storage.save(session_id, routing_decision["task_chain"])
-                    logger.info(f"已保存任务链到存储: session={session_id}")
+                # 任务链会通过 checkpointer 自动持久化到 state 中（2025最佳实践）
+                # 不再需要手动保存到 task_chain_storage
+                logger.info("任务链已添加到 state，checkpointer 将自动持久化")
 
             logger.info(f"Supervisor决策: {routing_decision}")
             return updated_state
@@ -658,11 +680,17 @@ class MultiAgentGraph:
             if task_chain:
                 current_index = task_chain["current_step_index"]
                 steps = task_chain["steps"]
-                
+
                 if current_index < len(steps):
                     if result.get("confirmation_pending"):
+                        # 有待确认操作，保持任务链为 in_progress，并设置 next_action
                         steps[current_index]["status"] = "in_progress"
+                        updated_state["task_chain"] = task_chain
+                        # 重要：设置 next_action 为 wait_for_confirmation，让 graph 暂停
+                        updated_state["next_action"] = "wait_for_confirmation"
+                        logger.info("订单创建需要确认，暂停任务链执行")
                     else:
+                        # 没有待确认操作，标记步骤完成并移动到下一步
                         from src.multi_agent.task_orchestrator import get_task_orchestrator
                         steps[current_index].update({
                             "status": "completed",
@@ -670,11 +698,13 @@ class MultiAgentGraph:
                         })
                         task_chain = get_task_orchestrator().move_to_next_step(task_chain)
                         updated_state["task_chain"] = task_chain
-                        
+
                         if task_chain["current_step_index"] < len(task_chain["steps"]):
                             updated_state["next_action"] = "execute_task_chain"
                         else:
+                            # 任务链完成
                             updated_state["task_chain"] = None
+                            logger.info("任务链已完成")
 
             return updated_state
         except Exception as e:
@@ -727,11 +757,9 @@ class MultiAgentGraph:
             if context_data:
                 updated_state["context_data"] = context_data
 
-            # 如果 task_chain 被更新，保存到存储
+            # 任务链更新会通过 checkpointer 自动持久化（2025最佳实践）
             if updated_state.get("task_chain"):
-                storage = get_task_chain_storage()
-                storage.save(session_id, updated_state["task_chain"])
-                logger.info(f"已更新任务链到存储: session={session_id}")
+                logger.info(f"任务链已更新，checkpointer 将自动持久化")
 
             logger.info(f"Task Orchestrator执行完成: next_action={result.get('next_action')}")
             return updated_state
@@ -777,24 +805,29 @@ class MultiAgentGraph:
         """Agent执行后的路由决策"""
         if state.get("error_message") or state.get("iteration_count", 0) >= self.max_iterations:
             return "finish"
-        
+
+        # 检查是否需要等待确认（优先级最高）
+        if state.get("next_action") == "wait_for_confirmation":
+            logger.info("需要等待用户确认，暂停 graph 执行")
+            return "wait_for_confirmation"
+
         # 任务链模式：继续执行任务链
         if state.get("task_chain") and state.get("next_action") == "execute_task_chain":
             if state.get("current_agent") in ["product_agent", "order_agent"]:
                 return "task_orchestrator"
-        
+
         # RAG降级：答案质量低时切换到Chat Agent
         current_agent = state.get("current_agent")
         if current_agent == "rag_agent":
             rag_result = state.get("agent_results", {}).get("rag_agent")
             if rag_result:
                 answer = rag_result.get("answer", "")
-                if (rag_result.get("answer_quality", 0.0) < 0.5 or 
+                if (rag_result.get("answer_quality", 0.0) < 0.5 or
                     not answer or "无法从知识库中找到" in answer):
                     agent_names = [r.get("agent") for r in state.get("agent_history", [])]
                     if "chat_agent" not in agent_names:
                         return "chat_agent"
-        
+
         return "finish"
 
     def _route_after_orchestrator(self, state: MultiAgentState) -> str:
@@ -897,6 +930,7 @@ class MultiAgentGraph:
         config.setdefault("recursion_limit", self.max_iterations * 2)
         config.setdefault("configurable", {})
         config["configurable"]["session_id"] = session_id
+        config["configurable"]["thread_id"] = session_id  # checkpointer 使用 thread_id 识别会话
 
         final_state = await self.graph.ainvoke(initial_state, config=config)
         return final_state
@@ -996,22 +1030,36 @@ class MultiAgentGraph:
             "context_data": {}
         }
 
-        # 尝试从存储中加载已有的任务链（用于继续多步骤任务）
-        storage = get_task_chain_storage()
-        existing_task_chain = storage.get(session_id)
-        if existing_task_chain:
-            logger.info(f"从存储中加载任务链: session={session_id}, chain_id={existing_task_chain.get('chain_id')}")
-            initial_state["task_chain"] = existing_task_chain
-            initial_state["context_data"] = existing_task_chain.get("context_data", {})
-
-        # 流式执行（使用异步API）
+        # 配置 checkpointer 和执行参数
         if config is None:
             config = {}
 
-        # 设置 recursion_limit 和 session_id
+        # 设置 recursion_limit、session_id 和 thread_id（checkpointer 需要）
         config.setdefault("recursion_limit", self.max_iterations * 2)
         config.setdefault("configurable", {})
         config["configurable"]["session_id"] = session_id
+        config["configurable"]["thread_id"] = session_id  # checkpointer 使用 thread_id 识别会话
+
+        # 尝试从 checkpointer 获取现有状态（2025最佳实践：多轮对话支持）
+        try:
+            # get_state 是同步方法，不需要 await
+            existing_snapshot = self.graph.get_state(config)
+            if existing_snapshot and existing_snapshot.values:
+                # 有现有状态，使用它作为基础
+                logger.info(f"从 checkpointer 恢复状态: session_id={session_id}, task_chain={existing_snapshot.values.get('task_chain') is not None}")
+                # 将新消息添加到现有状态
+                existing_state = existing_snapshot.values.copy()  # 复制以避免修改原始状态
+                if "messages" not in existing_state:
+                    existing_state["messages"] = []
+                existing_state["messages"].append(HumanMessage(content=question))
+                # 使用现有状态作为初始状态（保留 task_chain 等关键数据）
+                initial_state = existing_state
+            else:
+                # 没有现有状态，使用新创建的初始状态
+                logger.info(f"未找到现有状态，创建新状态: session_id={session_id}")
+        except Exception as e:
+            logger.warning(f"从 checkpointer 获取状态失败: {e}，使用新状态")
+            # 使用新创建的初始状态
 
         async for state_update in self.graph.astream(initial_state, config=config, stream_mode=stream_mode):
             yield state_update

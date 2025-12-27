@@ -10,6 +10,7 @@ Supervisor负责分析用户意图，决定调用哪个Agent或工具。
 - 错误处理和降级策略
 - 使用with_structured_output确保输出格式正确
 """
+import re
 from typing import Dict, Any, Optional, List, Literal
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -148,17 +149,124 @@ class SupervisorAgent:
         try:
             # === 新增：多步骤任务编排支持 ===
 
-            # 1. 检查是否有活跃的任务链
-            task_chain = state.get("task_chain")
-            if task_chain:
-                logger.info(f"检测到活跃任务链: {task_chain.get('chain_id')}")
-                # 路由到任务编排器继续执行任务链
+            # 提取用户消息（提前提取，用于检查特殊消息）
+            user_message = None
+            for msg in reversed(state["messages"]):
+                if isinstance(msg, HumanMessage):
+                    user_message = msg.content
+                    break
+
+            # 0. 检查是否是任务链继续消息（优先级最高）
+            if user_message and "__TASK_CHAIN_CONTINUE__" in user_message:
+                logger.info("检测到任务链继续消息，直接路由到任务编排器")
                 return {
                     "next_action": "execute_task_chain",
                     "selected_agent": None,
-                    "routing_reason": "继续执行活跃的任务链",
+                    "routing_reason": "任务链继续执行",
                     "confidence": 1.0
                 }
+
+            # 1. 检查是否有活跃的任务链或待选择状态
+            task_chain = state.get("task_chain")
+            pending_selection = state.get("pending_selection")
+            # 标记是否需要清理（用于在最终返回时携带清理状态）
+            needs_cleanup = False
+
+            if task_chain or pending_selection:
+                logger.info(f"检测到活跃任务链或待选择状态: task_chain={task_chain is not None}, pending_selection={pending_selection is not None}")
+
+                # === 核心逻辑：检测用户新输入是否与任务链/选择相关 ===
+                should_clear_task_chain = False
+                clear_reason = ""
+
+                # 检查用户消息是否是选择/确认操作
+                is_selection_response = False
+                if user_message:
+                    # 选择操作通常包含：数字选择、关键词确认、纯数字（如"1"、"2"）
+                    selection_keywords = ["选择", "确认", "第", "1.", "2.", "3.", "4.", "5.", "1、", "2、", "3、", "4、", "5、"]
+                    # 检查是否是纯数字（如 "1"、"2" 等）
+                    is_pure_number = bool(re.match(r'^\d+$', user_message.strip()))
+                    is_selection_response = is_pure_number or any(kw in user_message for kw in selection_keywords)
+
+                    # 【关键修复】只有存在 pending_selection 且用户单独说"取消"（不是"取消订单"等）时，
+                    # 才视为取消选择操作；否则"取消"可能是业务操作（如取消订单）
+                    if pending_selection and not is_selection_response:
+                        # 检查是否是单独的"取消"操作（取消选择）
+                        cancel_selection_patterns = [
+                            r'^取消$',           # 只说"取消"
+                            r'^取消选择',        # 取消选择
+                            r'^不选了',          # 不选了
+                            r'^不要了',          # 不要了
+                            r'^算了$',           # 算了
+                        ]
+                        is_selection_response = any(re.search(p, user_message.strip()) for p in cancel_selection_patterns)
+
+                # 如果不是选择响应，检查是否是完全不相关的新问题
+                if not is_selection_response:
+                    # 【关键改进】检查用户意图是否与任务链匹配
+                    query_intent = state.get("query_intent")
+                    if query_intent:
+                        intent_type = query_intent.get("intent_type", "")
+
+                        # 如果用户意图是明确的订单查询/管理，且任务链是购买流程，清除任务链
+                        is_order_query_intent = any(keyword in intent_type.lower() for keyword in ["order", "订单", "factual"])
+                        is_purchase_task_chain = task_chain and task_chain.get("chain_type") == "order_with_search"
+
+                        if is_order_query_intent and is_purchase_task_chain:
+                            should_clear_task_chain = True
+                            clear_reason = f"用户意图变化（{intent_type}），与购买流程不匹配"
+
+                    # 检查任务链当前步骤
+                    if task_chain and not should_clear_task_chain:
+                        current_step_index = task_chain.get("current_step_index", 0)
+                        steps = task_chain.get("steps", [])
+                        if current_step_index < len(steps):
+                            current_step = steps[current_step_index]
+                            step_type = current_step.get("step_type")
+                            step_status = current_step.get("status")
+
+                            # 【关键修复】如果任务链在等待用户选择（pending 或 in_progress），
+                            # 但用户的新输入不是选择操作，清除任务链
+                            if step_type == "user_selection" and step_status in ["pending", "in_progress"]:
+                                should_clear_task_chain = True
+                                clear_reason = "用户跳过商品选择，发起新问题"
+
+                    # 如果有 pending_selection 但用户不是在选择，也清除
+                    if pending_selection and not should_clear_task_chain:
+                        should_clear_task_chain = True
+                        clear_reason = "用户跳过选择，发起新问题"
+
+                # 执行清理
+                if should_clear_task_chain:
+                    logger.info(f"🧹 自动清理任务链和待选择状态: {clear_reason}")
+
+                    # 清理 pending_selection（如果存在）
+                    if pending_selection:
+                        from src.confirmation.selection_manager import get_selection_manager
+                        selection_manager = get_selection_manager()
+                        try:
+                            await selection_manager.cancel_selection(pending_selection.get("selection_id", ""))
+                        except Exception as e:
+                            logger.warning(f"清理 pending_selection 失败: {e}")
+
+                    # 【关键改进】清理后不要直接返回 finish，而是继续执行后续路由逻辑
+                    # 将 task_chain 和 pending_selection 设置为 None，然后让代码继续执行下去
+                    # 这样用户的新问题会被正常路由到合适的 agent
+                    logger.info("任务链已清理，继续执行正常路由流程")
+                    # 标记需要清理，以便在最终返回时携带
+                    needs_cleanup = True
+                    task_chain = None  # 标记为清理
+                    pending_selection = None  # 标记为清理
+
+                else:
+                    # 意图匹配，继续执行任务链
+                    logger.info("用户输入与任务链匹配，继续执行任务链")
+                    return {
+                        "next_action": "execute_task_chain",
+                        "selected_agent": None,
+                        "routing_reason": "继续执行活跃的任务链",
+                        "confidence": 1.0
+                    }
 
             # 2. 检测是否需要创建新的任务链
             from src.multi_agent.task_orchestrator import get_task_orchestrator
@@ -178,13 +286,8 @@ class SupervisorAgent:
                 }
 
             # === 原有单步路由逻辑 ===
-            # 提取用户消息
-            user_message = None
-            for msg in reversed(state["messages"]):
-                if isinstance(msg, HumanMessage):
-                    user_message = msg.content
-                    break
 
+            # 检查是否有用户消息（user_message 已在前面提取）
             if not user_message:
                 return {
                     "next_action": "finish",
@@ -258,6 +361,12 @@ class SupervisorAgent:
                     "routing_reason": routing_decision.routing_reason,
                     "confidence": routing_decision.confidence
                 }
+
+                # 如果需要清理任务链/待选择状态，添加到结果中
+                if needs_cleanup:
+                    result["task_chain"] = None
+                    result["pending_selection"] = None
+                    result["routing_reason"] = f"[清理旧任务链后] {result['routing_reason']}"
 
                 logger.info(f"Supervisor路由决策: {result}")
                 return result

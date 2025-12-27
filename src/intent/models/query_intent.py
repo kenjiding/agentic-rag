@@ -2,10 +2,40 @@
 
 General-purpose models for representing query intent and decomposition.
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 from src.intent.models.types import PipelineOption, DecompositionType, IntentType, ComplexityLevel
+
+
+class Entities(BaseModel):
+    """实体信息模型 - 统一存放所有实体
+    
+    用于从用户消息中提取结构化的实体信息。
+    使用 Pydantic 模型确保类型安全和 OpenAI structured output 兼容性。
+    """
+    general_entities: List[str] = Field(
+        default_factory=list,
+        description="通用实体（人名、地名、时间、组织等）"
+    )
+    time_points: List[str] = Field(
+        default_factory=list,
+        description="时间点（年份、日期等）"
+    )
+    user_phone: Optional[str] = Field(
+        default=None,
+        description="用户手机号（11位，1开头）",
+        pattern=r"^1[3-9]\d{9}$"
+    )
+    quantity: Optional[int] = Field(
+        default=None,
+        description="购买数量，如果查询中包含数量信息则提取（如：买2件、要3个）",
+        ge=1
+    )
+    search_keyword: Optional[str] = Field(
+        default=None,
+        description="搜索关键词（商品名称），如果查询中包含商品名称则提取"
+    )
 
 
 class SubQuery(BaseModel):
@@ -108,16 +138,11 @@ class QueryIntent(BaseModel):
 
     # ==================== Slot Filling Information ====================
 
-    # Extracted key information (slots)
-    entities: List[str] = Field(
-        default_factory=list,
-        description="查询中提到的关键实体（人名、地名、时间、组织等）"
-    )
-
-    # Time information
-    time_points: List[str] = Field(
-        default_factory=list,
-        description="查询中提到的具体时间点（年份、日期等）"
+    # Extracted key information (slots) - 统一实体模型
+    # 包含通用实体和业务实体，统一存放在 entities 模型中
+    entities: Entities = Field(
+        default_factory=Entities,
+        description="提取的实体信息，包含通用实体和业务实体，与 state['entities'] 结构一致"
     )
 
     # ==================== Retrieval Strategy Recommendations ====================

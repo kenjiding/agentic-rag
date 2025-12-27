@@ -104,3 +104,6 @@ class MultiAgentState(TypedDict):
     pending_selection: Optional[PendingSelection]  # 等待用户选择的操作
     context_data: Dict[str, Any]  # 跨Agent共享的上下文数据
 
+    # 实体信息（2025最佳实践：使用 LangGraph checkpointer 持久化）
+    entities: Dict[str, Any]  # 提取的实体信息：{"user_phone": "138...", "quantity": 2, "search_keyword": "西门子", ...}
+

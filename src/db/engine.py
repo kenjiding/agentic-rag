@@ -65,14 +65,22 @@ def get_db_session() -> Generator[Session, None, None]:
         with get_db_session() as db:
             products = db.query(Product).all()
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     db = SessionLocal()
+    session_id = id(db)
     try:
+        logger.info(f"📊 [DB_SESSION] 开启会话: {session_id}")
         yield db
+        logger.info(f"✅ [DB_SESSION] 提交事务: {session_id}")
         db.commit()
-    except Exception:
+    except Exception as e:
+        logger.error(f"❌ [DB_SESSION] 回滚事务: {session_id}, 错误: {e}")
         db.rollback()
         raise
     finally:
+        logger.info(f"🔒 [DB_SESSION] 关闭会话: {session_id}")
         db.close()
 
 

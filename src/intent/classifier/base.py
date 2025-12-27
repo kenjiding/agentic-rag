@@ -27,7 +27,7 @@ class BaseIntentClassifier(ABC):
             - complexity: Query complexity level
             - needs_decomposition: Whether the query should be split
             - sub_queries: List of sub-queries if decomposition is needed
-            - entities, time_points: Extracted key information
+            - entities: Dict[str, Any] - 统一实体字典（包含通用实体和业务实体）
             - recommended_retrieval_strategy: Suggested retrieval approach
             - confidence: Confidence score (0-1)
             - reasoning: Explanation of the classification

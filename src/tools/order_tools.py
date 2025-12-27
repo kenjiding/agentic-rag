@@ -58,20 +58,39 @@ def query_user_orders(
 
     返回 JSON 格式，包含人类可读文本和结构化订单数据。
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
+        # 添加调试日志
+        logger.info(f"🔍 [ORDER_QUERY] 开始查询订单")
+        logger.info(f"🔍 [ORDER_QUERY] 手机号参数: '{user_phone}' (类型: {type(user_phone).__name__}, 长度: {len(user_phone)})")
+        logger.info(f"🔍 [ORDER_QUERY] 状态筛选: {status}, 限制数量: {limit}")
+
         with get_db_session() as db:
+            # 先查询所有订单看看数据库中有什么
+            from src.db.models import Order as OrderModel
+            all_orders = db.query(OrderModel).limit(20).all()
+            logger.info(f"🔍 [ORDER_QUERY] 数据库中最近20个订单:")
+            for order in all_orders:
+                logger.info(f"  - 订单ID: {order.id}, 手机号: '{order.user_id}', 订单号: {order.order_id}, 状态: {order.status}")
+
+            # 执行用户订单查询
             orders = get_user_orders(db, user_phone, status=status, limit=limit)
+
+            # 添加调试日志
+            logger.info(f"🔍 [ORDER_QUERY] 查询结果: 找到 {len(orders)} 个订单")
 
             # 构建结构化订单数据
             orders_data = []
             for order in orders:
                 order_items = [
                     {
-                        "product_name": item.product_name,
+                        "product_name": item.product.name if item.product else "未知商品",
                         "quantity": item.quantity,
-                        "subtotal": float(item.subtotal),
+                        "subtotal": float(item.price * item.quantity),
                     }
-                    for item in order.items
+                    for item in order.order_items  # 修复：items -> order_items
                 ]
                 orders_data.append({
                     "id": order.id,
@@ -149,7 +168,7 @@ def query_order_detail(
                 {
                     "product_name": item.product_name,
                     "quantity": item.quantity,
-                    "subtotal": float(item.subtotal),
+                    "subtotal": float(item.price * item.quantity),
                 }
                 for item in order.items
             ]
@@ -449,8 +468,17 @@ def confirm_create_order(
     ] = None,
 ) -> str:
     """确认创建订单 - 执行实际的创建操作（JSON格式）"""
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         items_data = json.loads(items)
+
+        # 添加调试日志
+        logger.info(f"✅ [ORDER_CREATE] 开始创建订单")
+        logger.info(f"✅ [ORDER_CREATE] 手机号参数: '{user_phone}' (类型: {type(user_phone).__name__}, 长度: {len(user_phone)})")
+        logger.info(f"✅ [ORDER_CREATE] 商品列表: {items}")
+        logger.info(f"✅ [ORDER_CREATE] 备注: {notes}")
 
         with get_db_session() as db:
             order = create_order_db(
@@ -459,6 +487,14 @@ def confirm_create_order(
                 items=items_data,
                 notes=notes,
             )
+
+            # 添加调试日志
+            logger.info(f"✅ [ORDER_CREATE] 订单创建成功!")
+            logger.info(f"  - 订单ID: {order.id}")
+            logger.info(f"  - 订单号: {order.order_id}")
+            logger.info(f"  - 保存的手机号: '{order.user_id}'")
+            logger.info(f"  - 总金额: {order.total_amount}")
+            logger.info(f"  - 状态: {order.status}")
 
             return json.dumps({
                 "text": f"订单创建成功！订单号: {order.order_id}, 金额: ¥{float(order.total_amount):.2f}",
