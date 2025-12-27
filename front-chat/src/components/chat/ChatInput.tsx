@@ -2,7 +2,6 @@ import { useState, KeyboardEvent } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Send, StopCircle } from "lucide-react"
-import { cn } from "@/lib/utils"
 
 interface ChatInputProps {
   onSend: (message: string) => void
@@ -29,7 +28,7 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
   }
 
   return (
-    <div className="border-t bg-background p-4">
+    <div className="border-t bg-background p-3 sm:p-4">
       <div className="flex gap-2">
         <Input
           value={input}
@@ -37,14 +36,14 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
           onKeyDown={handleKeyDown}
           placeholder="输入消息..."
           disabled={disabled || isLoading}
-          className="flex-1"
+          className="flex-1 text-sm sm:text-base"
         />
         {isLoading && onStop ? (
           <Button
             variant="outline"
             size="icon"
             onClick={onStop}
-            className="shrink-0"
+            className="shrink-0 h-9 w-9 sm:h-10 sm:w-10"
           >
             <StopCircle className="h-4 w-4" />
           </Button>
@@ -53,13 +52,13 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
             onClick={handleSend}
             disabled={disabled || isLoading || !input.trim()}
             size="icon"
-            className="shrink-0"
+            className="shrink-0 h-9 w-9 sm:h-10 sm:w-10"
           >
             <Send className="h-4 w-4" />
           </Button>
         )}
       </div>
-      <p className="text-xs text-muted-foreground mt-2 text-center">
+      <p className="text-[10px] sm:text-xs text-muted-foreground mt-1.5 sm:mt-2 text-center hidden sm:block">
         按 Enter 发送，Shift + Enter 换行
       </p>
     </div>

@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, List
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.supervisor import SupervisorAgent
 from src.intent import IntentClassifier
@@ -24,6 +25,7 @@ from src.multi_agent.agents.chat_agent import ChatAgent
 from src.multi_agent.agents.product_agent import ProductAgent, product_agent_node
 from src.multi_agent.agents.order_agent import OrderAgent, order_agent_node
 from src.multi_agent.tools.tool_registry import ToolCategory, ToolPermission, ToolRegistry
+from src.multi_agent.task_chain_storage import get_task_chain_storage
 import logging
 from src.tools.web_search import create_web_search_tool
 
@@ -209,7 +211,11 @@ class MultiAgentGraph:
         """
         构建LangGraph工作流
 
-        流程: intent_recognition -> supervisor -> agents -> finish
+        流程: intent_recognition -> supervisor -> [agents | task_orchestrator] -> finish
+
+        新增任务编排支持：
+        - task_orchestrator：多步骤任务编排节点
+        - 支持复杂的多步骤交互流程（如商品搜索→用户选择→订单创建）
 
         Returns:
             编译后的图
@@ -221,6 +227,7 @@ class MultiAgentGraph:
         if self.intent_classifier:
             graph.add_node("intent_recognition", self._intent_recognition_node)
         graph.add_node("supervisor", self._supervisor_node)
+        graph.add_node("task_orchestrator", self._task_orchestrator_node)  # 新增：任务编排节点
         graph.add_node("rag_agent", self._rag_agent_node)
         graph.add_node("chat_agent", self._chat_agent_node)
 
@@ -241,6 +248,7 @@ class MultiAgentGraph:
         route_mapping = {
             "rag_agent": "rag_agent",
             "chat_agent": "chat_agent",
+            "task_orchestrator": "task_orchestrator",  # 新增：任务编排
             "finish": END
         }
         if self.enable_business_agents:
@@ -251,6 +259,19 @@ class MultiAgentGraph:
             "supervisor",
             self._route_after_supervisor,
             route_mapping
+        )
+
+        # 新增：Task Orchestrator 条件路由
+        orchestrator_route_mapping = {
+            "product_agent": "product_agent",
+            "order_agent": "order_agent",
+            "wait_for_selection": END,  # 暂停，等待用户选择
+            "finish": END
+        }
+        graph.add_conditional_edges(
+            "task_orchestrator",
+            self._route_after_orchestrator,
+            orchestrator_route_mapping
         )
         
         # Agent执行后回到Supervisor（继续路由或结束）
@@ -279,6 +300,7 @@ class MultiAgentGraph:
                 "product_agent",
                 self._route_after_agent,
                 {
+                    "task_orchestrator": "task_orchestrator",  # 新增：任务链模式
                     "supervisor": "supervisor",
                     "finish": END
                 }
@@ -287,6 +309,7 @@ class MultiAgentGraph:
                 "order_agent",
                 self._route_after_agent,
                 {
+                    "task_orchestrator": "task_orchestrator",  # 新增：任务链模式
                     "supervisor": "supervisor",
                     "finish": END
                 }
@@ -369,18 +392,19 @@ class MultiAgentGraph:
                 "error_message": f"意图识别错误: {str(e)}"
             }
 
-    async def _supervisor_node(self, state: MultiAgentState) -> MultiAgentState:
+    async def _supervisor_node(self, state: MultiAgentState, config: Optional[RunnableConfig] = None) -> MultiAgentState:
         """
         Supervisor节点 - 路由决策（生产环境异步版本）
-        
+
         企业级最佳实践：
         - 使用异步函数提高并发性能
         - 直接使用await调用异步方法，避免事件循环管理
         - LangGraph完全支持异步节点
-        
+
         Args:
             state: 当前状态
-            
+            config: 执行配置，包含 session_id
+
         Returns:
             更新后的状态
         """
@@ -394,10 +418,10 @@ class MultiAgentGraph:
                     "next_action": "finish",
                     "routing_reason": f"达到最大迭代次数 {self.max_iterations}"
                 }
-            
+
             # 调用Supervisor进行路由决策（生产环境：直接使用await）
             routing_decision = await self.supervisor.route(state)
-            
+
             # 更新状态
             # LangGraph会自动合并状态，只需返回需要更新的字段
             updated_state = {
@@ -406,10 +430,21 @@ class MultiAgentGraph:
                 "routing_reason": routing_decision.get("routing_reason", ""),
                 "iteration_count": iteration_count + 1
             }
-            
+
+            # 如果有 task_chain，也需要添加到状态中，并保存到存储
+            if "task_chain" in routing_decision:
+                updated_state["task_chain"] = routing_decision["task_chain"]
+
+                # 保存任务链到存储，以便用户选择后可以继续执行
+                if config and config.get("configurable", {}).get("session_id"):
+                    session_id = config["configurable"]["session_id"]
+                    storage = get_task_chain_storage()
+                    storage.save(session_id, routing_decision["task_chain"])
+                    logger.info(f"已保存任务链到存储: session={session_id}")
+
             logger.info(f"Supervisor决策: {routing_decision}")
             return updated_state
-            
+
         except Exception as e:
             logger.error(f"Supervisor节点执行错误: {str(e)}", exc_info=True)
             # LangGraph会自动合并状态，只需返回需要更新的字段
@@ -528,87 +563,194 @@ class MultiAgentGraph:
             }
 
     async def _product_agent_node(self, state: MultiAgentState) -> MultiAgentState:
-        """
-        Product Agent节点（商品搜索）
-
-        Args:
-            state: 当前状态
-
-        Returns:
-            更新后的状态
-        """
+        """Product Agent节点（商品搜索）"""
         try:
-            # 获取 Product Agent
             product_agent = getattr(self, "product_agent", None)
             if not product_agent:
                 logger.error("Product Agent未找到")
-                return {
-                    "next_action": "finish",
-                    "error_message": "Product Agent未找到"
-                }
+                return {"next_action": "finish", "error_message": "Product Agent未找到"}
 
-            # 执行 Product Agent（同步调用，内部处理工具）
             result = product_agent.invoke(state)
-
-            # 更新状态
             updated_state = {
                 "messages": result.get("messages", state.get("messages", [])),
                 "current_agent": "product_agent",
+                "tools_used": result.get("tools_used", state.get("tools_used", []))
             }
 
-            logger.info("Product Agent执行完成")
-            return updated_state
+            # 保留context_data
+            if state.get("context_data"):
+                updated_state["context_data"] = state["context_data"]
 
+            # 任务链模式：保存结果并继续执行
+            task_chain = state.get("task_chain")
+            if task_chain:
+                from src.multi_agent.task_orchestrator import get_task_orchestrator
+                products = self._extract_products_from_result(result, state)
+
+                orchestrator = get_task_orchestrator()
+                current_index = task_chain["current_step_index"]
+                steps = task_chain["steps"]
+
+                if current_index < len(steps):
+                    steps[current_index].update({
+                        "result_data": {"products": products or []},
+                        "status": "completed"
+                    })
+                    task_chain = orchestrator.move_to_next_step(task_chain)
+                    updated_state.update({
+                        "task_chain": task_chain,
+                        "next_action": "execute_task_chain"
+                    })
+                    logger.info(f"产品搜索完成，找到 {len(products) if products else 0} 个产品")
+
+            return updated_state
         except Exception as e:
             logger.error(f"Product Agent节点执行错误: {str(e)}", exc_info=True)
-            return {
-                "next_action": "finish",
-                "error_message": f"Product Agent错误: {str(e)}"
-            }
+            return {"next_action": "finish", "error_message": f"Product Agent错误: {str(e)}"}
 
-    async def _order_agent_node(self, state: MultiAgentState) -> MultiAgentState:
-        """
-        Order Agent节点（订单管理，含确认机制）
+    def _extract_products_from_result(self, result: Dict[str, Any], state: MultiAgentState) -> list:
+        """从结果中提取产品列表"""
+        import json
+        from langchain_core.messages import ToolMessage
+        
+        # 从 ToolMessage 中提取
+        for msg in result.get("messages", []):
+            if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
+                try:
+                    data = json.loads(msg.content)
+                    if isinstance(data, dict) and "products" in data:
+                        return data["products"]
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        
+        # 从 agent_results 中提取
+        product_result = state.get("agent_results", {}).get("product_agent", {})
+        if isinstance(product_result, dict) and "products" in product_result:
+            return product_result["products"]
+        
+        return []
 
-        Args:
-            state: 当前状态
-
-        Returns:
-            更新后的状态
-        """
+    async def _order_agent_node(self, state: MultiAgentState, config: Optional[RunnableConfig] = None) -> MultiAgentState:
+        """Order Agent节点（订单管理，含确认机制）"""
         try:
-            # 获取 Order Agent
             order_agent = getattr(self, "order_agent", None)
             if not order_agent:
                 logger.error("Order Agent未找到")
-                return {
-                    "next_action": "finish",
-                    "error_message": "Order Agent未找到"
-                }
+                return {"next_action": "finish", "error_message": "Order Agent未找到"}
 
-            # 执行 Order Agent（同步调用，内部处理确认机制）
-            result = order_agent.invoke(state)
+            session_id = "default"
+            if config and "configurable" in config:
+                session_id = config["configurable"].get("session_id", "default")
 
-            # 更新状态
+            result = await order_agent.invoke(state, session_id=session_id)
             updated_state = {
                 "messages": result.get("messages", state.get("messages", [])),
                 "current_agent": "order_agent",
                 "confirmation_pending": result.get("confirmation_pending"),
             }
 
-            logger.info("Order Agent执行完成")
+            # 保留context_data
+            if state.get("context_data"):
+                updated_state["context_data"] = state["context_data"]
+
+            # 任务链模式：处理任务链状态
+            task_chain = state.get("task_chain")
+            if task_chain:
+                current_index = task_chain["current_step_index"]
+                steps = task_chain["steps"]
+                
+                if current_index < len(steps):
+                    if result.get("confirmation_pending"):
+                        steps[current_index]["status"] = "in_progress"
+                    else:
+                        from src.multi_agent.task_orchestrator import get_task_orchestrator
+                        steps[current_index].update({
+                            "status": "completed",
+                            "result_data": {"message": result.get("messages", [])[-1].content if result.get("messages") else ""}
+                        })
+                        task_chain = get_task_orchestrator().move_to_next_step(task_chain)
+                        updated_state["task_chain"] = task_chain
+                        
+                        if task_chain["current_step_index"] < len(task_chain["steps"]):
+                            updated_state["next_action"] = "execute_task_chain"
+                        else:
+                            updated_state["task_chain"] = None
+
+            return updated_state
+        except Exception as e:
+            logger.error(f"Order Agent节点执行错误: {str(e)}", exc_info=True)
+            return {"next_action": "finish", "error_message": f"Order Agent错误: {str(e)}"}
+
+    async def _task_orchestrator_node(
+        self,
+        state: MultiAgentState,
+        config: Optional[RunnableConfig] = None
+    ) -> MultiAgentState:
+        """
+        Task Orchestrator节点 - 任务编排器
+
+        负责执行多步骤任务链的当前步骤，协调多个Agent的执行。
+
+        Args:
+            state: 当前状态
+            config: 配置信息，包含 session_id
+
+        Returns:
+            更新后的状态
+        """
+        try:
+            from src.multi_agent.task_orchestrator import get_task_orchestrator
+
+            # 获取任务编排器
+            orchestrator = get_task_orchestrator()
+
+            # 从 config 获取 session_id
+            session_id = "default"
+            if config and "configurable" in config:
+                session_id = config["configurable"].get("session_id", "default")
+
+            # 执行当前步骤
+            result = await orchestrator.execute_current_step(state, session_id)
+
+            # 更新状态
+            updated_state = {
+                "task_chain": result.get("task_chain", state.get("task_chain")),
+                "pending_selection": result.get("pending_selection"),
+                "next_action": result.get("next_action"),
+                "selected_agent": result.get("selected_agent"),
+            }
+            
+            # 传递 context_data（优先使用 result 中的）
+            context_data = result.get("context_data") or state.get("context_data")
+            if not context_data and result.get("task_chain"):
+                context_data = result["task_chain"].get("context_data")
+            if context_data:
+                updated_state["context_data"] = context_data
+
+            # 如果 task_chain 被更新，保存到存储
+            if updated_state.get("task_chain"):
+                storage = get_task_chain_storage()
+                storage.save(session_id, updated_state["task_chain"])
+                logger.info(f"已更新任务链到存储: session={session_id}")
+
+            logger.info(f"Task Orchestrator执行完成: next_action={result.get('next_action')}")
             return updated_state
 
         except Exception as e:
-            logger.error(f"Order Agent节点执行错误: {str(e)}", exc_info=True)
+            logger.error(f"Task Orchestrator节点执行错误: {str(e)}", exc_info=True)
             return {
                 "next_action": "finish",
-                "error_message": f"Order Agent错误: {str(e)}"
+                "error_message": f"Task Orchestrator错误: {str(e)}",
+                "task_chain": None  # 清除任务链
             }
 
     def _route_after_supervisor(self, state: MultiAgentState) -> str:
         """
         Supervisor后的路由决策
+
+        根据Supervisor的决策，路由到相应的Agent、任务编排器或结束。
+
+        新增：支持路由到 task_orchestrator 处理多步骤任务
 
         Args:
             state: 当前状态
@@ -618,7 +760,9 @@ class MultiAgentGraph:
         """
         next_action = state.get("next_action", "finish")
 
-        if next_action == "rag_search":
+        if next_action == "execute_task_chain":
+            return "task_orchestrator"  # 新增：路由到任务编排器
+        elif next_action == "rag_search":
             return "rag_agent"
         elif next_action == "chat":
             return "chat_agent"
@@ -630,67 +774,63 @@ class MultiAgentGraph:
             return "finish"
     
     def _route_after_agent(self, state: MultiAgentState) -> str:
+        """Agent执行后的路由决策"""
+        if state.get("error_message") or state.get("iteration_count", 0) >= self.max_iterations:
+            return "finish"
+        
+        # 任务链模式：继续执行任务链
+        if state.get("task_chain") and state.get("next_action") == "execute_task_chain":
+            if state.get("current_agent") in ["product_agent", "order_agent"]:
+                return "task_orchestrator"
+        
+        # RAG降级：答案质量低时切换到Chat Agent
+        current_agent = state.get("current_agent")
+        if current_agent == "rag_agent":
+            rag_result = state.get("agent_results", {}).get("rag_agent")
+            if rag_result:
+                answer = rag_result.get("answer", "")
+                if (rag_result.get("answer_quality", 0.0) < 0.5 or 
+                    not answer or "无法从知识库中找到" in answer):
+                    agent_names = [r.get("agent") for r in state.get("agent_history", [])]
+                    if "chat_agent" not in agent_names:
+                        return "chat_agent"
+        
+        return "finish"
+
+    def _route_after_orchestrator(self, state: MultiAgentState) -> str:
         """
-        Agent执行后的路由决策
-        
-        决定是继续执行（回到Supervisor或切换到其他Agent）还是结束。
-        
-        企业级最佳实践：
-        - 检查RAG结果质量，如果低则切换到Chat Agent使用web search
-        - 支持多Agent协作和降级策略
-        
+        Task Orchestrator后的路由决策
+
+        根据任务编排器的执行结果，路由到下一个Agent或暂停/结束。
+
         Args:
             state: 当前状态
-            
+
         Returns:
             下一个节点名称
         """
-        # 检查是否有错误
-        if state.get("error_message"):
+        next_action = state.get("next_action", "finish")
+
+        # 如果需要等待用户选择，暂停graph
+        if next_action == "wait_for_selection":
+            logger.info("等待用户选择，暂停graph")
+            return "wait_for_selection"
+
+        # 路由到product_agent
+        elif next_action == "product_search" and self.enable_business_agents:
+            logger.info("任务链路由到 product_agent")
+            return "product_agent"
+
+        # 路由到order_agent
+        elif next_action == "order_management" and self.enable_business_agents:
+            logger.info("任务链路由到 order_agent")
+            return "order_agent"
+
+        # 默认结束
+        else:
+            logger.info(f"任务链结束: next_action={next_action}")
             return "finish"
-        
-        # 检查迭代次数
-        iteration_count = state.get("iteration_count", 0)
-        if iteration_count >= self.max_iterations:
-            return "finish"
-        
-        # 检查RAG Agent的执行结果，如果答案质量低则切换到Chat Agent使用web search
-        current_agent = state.get("current_agent")
-        agent_history = state.get("agent_history", [])
-        agent_names = [record.get("agent") for record in agent_history]
-        
-        if current_agent == "rag_agent":
-            # 获取RAG Agent的执行结果
-            rag_result = state.get("agent_results", {}).get("rag_agent")
-            if rag_result:
-                answer_quality = rag_result.get("answer_quality", 0.0)
-                answer = rag_result.get("answer", "")
-                
-                # 判断是否需要使用web search
-                # 条件：答案质量低（< 0.5）或答案为空/默认提示
-                needs_web_search = (
-                    answer_quality < 0.5 or
-                    not answer or
-                    "无法从知识库中找到" in answer or
-                    "抱歉" in answer or
-                    answer.strip() == "抱歉，我无法从知识库中找到相关信息。"
-                )
-                
-                if needs_web_search and "chat_agent" not in agent_names:
-                    logger.info(
-                        f"RAG答案质量低（质量: {answer_quality:.2f}），"
-                        f"切换到Chat Agent使用web search工具"
-                    )
-                    # 直接路由到chat_agent，让它使用web search工具
-                    return "chat_agent"
-        
-        # 如果Chat Agent已经执行过，结束
-        if current_agent == "chat_agent":
-            return "finish"
-        
-        # 默认结束执行
-        return "finish"
-    
+
     def invoke(self, question: str, config: Optional[Dict[str, Any]] = None) -> MultiAgentState:
         """
         执行查询（同步接口，内部使用异步执行）
@@ -712,19 +852,25 @@ class MultiAgentGraph:
         # 在同步方法中运行异步代码
         return asyncio.run(self.ainvoke(question, config))
     
-    async def ainvoke(self, question: str, config: Optional[Dict[str, Any]] = None) -> MultiAgentState:
+    async def ainvoke(
+        self,
+        question: str,
+        config: Optional[Dict[str, Any]] = None,
+        session_id: str = "default"
+    ) -> MultiAgentState:
         """
         异步执行查询（生产环境推荐）
-        
+
         企业级最佳实践：
         - 使用异步接口充分利用异步性能优势
         - 支持高并发场景
         - 避免事件循环管理问题
-        
+
         Args:
             question: 用户问题
             config: 执行配置
-            
+            session_id: 用户会话 ID，用于确认机制
+
         Returns:
             最终状态
         """
@@ -742,11 +888,16 @@ class MultiAgentGraph:
             "next_action": None,
             "routing_reason": None
         }
-        
+
         # 执行图（使用异步API）
         if config is None:
-            config = {"recursion_limit": self.max_iterations * 2}
-        
+            config = {}
+
+        # 设置 recursion_limit 和 session_id
+        config.setdefault("recursion_limit", self.max_iterations * 2)
+        config.setdefault("configurable", {})
+        config["configurable"]["session_id"] = session_id
+
         final_state = await self.graph.ainvoke(initial_state, config=config)
         return final_state
     
@@ -804,7 +955,13 @@ class MultiAgentGraph:
         finally:
             loop.close()
     
-    async def astream(self, question: str, config: Optional[Dict[str, Any]] = None, stream_mode: str = "updates"):
+    async def astream(
+        self,
+        question: str,
+        config: Optional[Dict[str, Any]] = None,
+        stream_mode: str = "updates",
+        session_id: str = "default"
+    ):
         """
         异步流式执行查询（生产环境推荐）
 
@@ -816,6 +973,7 @@ class MultiAgentGraph:
             question: 用户问题
             config: 执行配置
             stream_mode: 流式模式，"updates" 返回节点更新，"values" 返回完整状态
+            session_id: 用户会话 ID，用于确认机制
 
         Yields:
             状态更新
@@ -832,12 +990,28 @@ class MultiAgentGraph:
             "iteration_count": 0,
             "max_iterations": self.max_iterations,
             "next_action": None,
-            "routing_reason": None
+            "routing_reason": None,
+            "task_chain": None,
+            "pending_selection": None,
+            "context_data": {}
         }
+
+        # 尝试从存储中加载已有的任务链（用于继续多步骤任务）
+        storage = get_task_chain_storage()
+        existing_task_chain = storage.get(session_id)
+        if existing_task_chain:
+            logger.info(f"从存储中加载任务链: session={session_id}, chain_id={existing_task_chain.get('chain_id')}")
+            initial_state["task_chain"] = existing_task_chain
+            initial_state["context_data"] = existing_task_chain.get("context_data", {})
 
         # 流式执行（使用异步API）
         if config is None:
-            config = {"recursion_limit": self.max_iterations * 2}
+            config = {}
+
+        # 设置 recursion_limit 和 session_id
+        config.setdefault("recursion_limit", self.max_iterations * 2)
+        config.setdefault("configurable", {})
+        config["configurable"]["session_id"] = session_id
 
         async for state_update in self.graph.astream(initial_state, config=config, stream_mode=stream_mode):
             yield state_update

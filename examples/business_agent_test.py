@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from src.multi_agent.graph import MultiAgentGraph
 from src.db.engine import test_connection
+from src.confirmation import get_confirmation_manager, reset_confirmation_manager
 
 
 def print_separator(title: str = ""):
@@ -175,9 +176,17 @@ def test_order_cancel_with_confirmation():
             break
 
 
-def test_order_create_with_confirmation():
-    """测试订单创建（含确认机制）"""
+async def test_order_create_with_confirmation_async():
+    """测试订单创建（含确认机制）- 使用 ConfirmationManager"""
     print_separator("CASE 4: 订单创建（含确认）")
+
+    # 重置确认管理器（确保干净的测试环境）
+    reset_confirmation_manager()
+    manager = get_confirmation_manager()
+
+    # 注册执行器
+    from src.api.server import _register_confirmation_executors
+    _register_confirmation_executors(manager)
 
     graph = MultiAgentGraph(
         enable_business_agents=True,
@@ -185,40 +194,74 @@ def test_order_create_with_confirmation():
         max_iterations=10,
     )
 
-    # 模拟两轮对话
-    conversation = [
-        "我要下单，购买 1 号商品 2 件，我的手机号是 13800138000",
-        "确认",
-    ]
+    session_id = "test-session-order-create"
 
-    state = None
-    for i, user_input in enumerate(conversation, 1):
-        print(f"\n🔍 用户问题 (第{i}轮): {user_input}")
-        print("-" * 40)
+    # 第一轮：发起订单创建
+    print("\n🔍 用户问题 (第1轮): 我要下单，购买 1 号商品 2 件，我的手机号是 13800138000")
+    print("-" * 40)
 
-        try:
-            if state is None:
-                result = asyncio.run(graph.ainvoke(user_input))
+    try:
+        result1 = await graph.ainvoke(
+            "我要下单，购买 1 号商品 2 件，我的手机号是 13800138000",
+            session_id=session_id
+        )
+
+        # 打印第一��回复
+        messages = result1.get("messages", [])
+        for msg in messages:
+            if isinstance(msg, AIMessage) and msg.content:
+                print(f"\n🤖 Agent回复:\n{msg.content}")
+                break
+
+        # 检查确认状态
+        confirmation_pending = result1.get("confirmation_pending")
+        if confirmation_pending:
+            print(f"\n⚠️ 等待确认: {confirmation_pending}")
+
+        # 验证确认请求已创建
+        pending = await manager.get_pending_confirmation(session_id)
+        if pending:
+            print(f"\n✅ 确认请求已创建: {pending.confirmation_id}")
+            print(f"   操作类型: {pending.action_type}")
+            print(f"   显示消息: {pending.display_message}")
+
+            # 第二轮：用户确认
+            print("\n🔍 用户问题 (第2轮): 确认")
+            print("-" * 40)
+
+            # 解析确认
+            resolve_result = await manager.resolve_confirmation(
+                pending.confirmation_id,
+                confirmed=True
+            )
+
+            print(f"\n✅ 确认解析结果:")
+            print(f"   状态: {resolve_result.status}")
+            print(f"   执行结果: {resolve_result.execution_result}")
+
+            if resolve_result.error:
+                print(f"   错误: {resolve_result.error}")
             else:
-                result = asyncio.run(graph.ainvoke(user_input))
+                print("\n✅ 订单创建确认流程测试通过!")
 
-            # 打印最终回复
-            messages = result.get("messages", [])
-            for msg in messages:
-                if isinstance(msg, AIMessage) and msg.content:
-                    print(f"\n🤖 Agent回复:\n{msg.content}")
-                    break
+            # 验证没有更多待确认操作
+            pending_after = await manager.get_pending_confirmation(session_id)
+            if pending_after is None:
+                print("✅ 确认状态已正确清除")
+            else:
+                print(f"⚠️ 仍有待确认操作: {pending_after}")
+        else:
+            print("\n⚠️ 未找到待确认操作（可能工具未调用 prepare_create_order）")
 
-            # 检查确认状态
-            confirmation = result.get("confirmation_pending")
-            if confirmation:
-                print(f"\n⚠️ 等待确认: {confirmation}")
+    except Exception as e:
+        print(f"❌ 执行出错: {e}")
+        import traceback
+        traceback.print_exc()
 
-            state = result
 
-        except Exception as e:
-            print(f"❌ 执行出错: {e}")
-            break
+def test_order_create_with_confirmation():
+    """测试订单创建（含确认机制）- 同步包装"""
+    asyncio.run(test_order_create_with_confirmation_async())
 
 
 def test_supervisor_routing():
@@ -298,4 +341,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    test_order_create_with_confirmation()

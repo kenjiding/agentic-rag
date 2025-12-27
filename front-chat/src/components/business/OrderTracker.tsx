@@ -2,7 +2,7 @@ import { Order } from "@/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { CheckCircle2, Clock, Package, Truck, XCircle } from "lucide-react"
+import { CheckCircle2, Clock, Truck, XCircle } from "lucide-react"
 import { motion } from "framer-motion"
 
 interface OrderTrackerProps {

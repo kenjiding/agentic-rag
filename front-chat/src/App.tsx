@@ -2,8 +2,20 @@ import { ChatLayout } from "@/components/chat/ChatLayout"
 import { useStreamingChat } from "@/hooks/useStreamingChat"
 
 function App() {
-  const { messages, isLoading, error, sendMessage, stop, clearMessages } =
-    useStreamingChat()
+  const {
+    messages,
+    isLoading,
+    error,
+    sendMessage,
+    stop,
+    clearMessages,
+    confirmAction,
+    cancelConfirmation,
+    isProcessingConfirmation,
+    selectProduct,
+    cancelSelection,
+    isProcessingSelection,
+  } = useStreamingChat()
 
   return (
     <ChatLayout
@@ -13,6 +25,12 @@ function App() {
       onClear={clearMessages}
       isLoading={isLoading}
       error={error}
+      onConfirm={confirmAction}
+      onCancel={cancelConfirmation}
+      isProcessingConfirmation={isProcessingConfirmation}
+      onSelectProduct={selectProduct}
+      onCancelSelection={cancelSelection}
+      isProcessingSelection={isProcessingSelection}
     />
   )
 }

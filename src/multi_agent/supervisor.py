@@ -27,9 +27,9 @@ class RoutingDecision(BaseModel):
 
     使用Pydantic模型定义路由决策的输出结构，确保LLM输出符合预期格式。
     """
-    next_action: Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "finish"] = Field(
+    next_action: Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "finish"] = Field(
         ...,
-        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，finish表示结束"
+        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，execute_task_chain表示执行任务链，finish表示结束"
     )
     selected_agent: Optional[str] = Field(
         None,
@@ -129,17 +129,55 @@ class SupervisorAgent:
         使用LLM分析用户意图，选择最合适的Agent。
         如果状态中包含意图识别结果，会利用这些信息做更智能的路由。
 
+        新增多步骤任务编排支持：
+        - 检测任务链：如果状态中有活跃的任务链，路由到任务编排器
+        - 创建任务链：检测是否需要创建多步骤任务链
+        - 单步路由：原有的单步路由逻辑
+
         Args:
             state: 当前的多Agent系统状态
 
         Returns:
             包含以下字段的字典：
-            - next_action: 下一步行动（"rag_search", "chat", "tool_call", "finish"）
+            - next_action: 下一步行动（"rag_search", "chat", "tool_call", "execute_task_chain", "finish"）
             - selected_agent: 选中的Agent名称（如果有）
             - routing_reason: 路由决策的原因说明
             - confidence: 决策置信度（0-1）
+            - task_chain: 任务链（如果创建）
         """
         try:
+            # === 新增：多步骤任务编排支持 ===
+
+            # 1. 检查是否有活跃的任务链
+            task_chain = state.get("task_chain")
+            if task_chain:
+                logger.info(f"检测到活跃任务链: {task_chain.get('chain_id')}")
+                # 路由到任务编排器继续执行任务链
+                return {
+                    "next_action": "execute_task_chain",
+                    "selected_agent": None,
+                    "routing_reason": "继续执行活跃的任务链",
+                    "confidence": 1.0
+                }
+
+            # 2. 检测是否需要创建新的任务链
+            from src.multi_agent.task_orchestrator import get_task_orchestrator
+            orchestrator = get_task_orchestrator()
+            task_type = orchestrator.detect_multi_step_task(state)
+
+            if task_type:
+                logger.info(f"检测到多步骤任务: {task_type}")
+                # 创建任务链
+                new_task_chain = orchestrator.create_task_chain(task_type, state)
+                return {
+                    "next_action": "execute_task_chain",
+                    "selected_agent": None,
+                    "routing_reason": f"创建多步骤任务链: {task_type}",
+                    "confidence": 0.9,
+                    "task_chain": new_task_chain
+                }
+
+            # === 原有单步路由逻辑 ===
             # 提取用户消息
             user_message = None
             for msg in reversed(state["messages"]):
@@ -169,6 +207,8 @@ class SupervisorAgent:
             routing_prompt = ChatPromptTemplate.from_messages([
                 ("system", """你是一个智能路由系统，负责分析用户意图并决定调用哪个Agent。
 
+**重要提示**：如果用户想要购买商品但没有提供具体的 product_id（如"我要下单，购买XX商品"），这应该由任务链系统处理，不要直接路由到 order_agent。
+
 可用Agent列表：
 {agents}
 
@@ -177,11 +217,14 @@ class SupervisorAgent:
    - 关键词：商品、产品、手机、电脑、价格、多少钱、推荐、品牌
    - 示例："2000元以下的手机"、"华为笔记本有哪些"、"推荐一款性价比高的手机"
 
-2. 订单相关：用户查询、取消、创建订单等，选择 order_agent，next_action设为"order_management"
-   - 关键词：订单、下单、购买、支付、取消订单、查询订单、我的订单
-   - 示例："我的订单"、"取消订单123"、"我要下单"
+2. 订单相关：
+   - **查询/取消订单**：选择 order_agent，next_action设为"order_management"
+     - 示例："我的订单"、"取消订单123"
+   - **创建订单**：
+     * 如果用户提供了明确的 product_id，选择 order_agent
+     * 如果用户只说"我要下单，购买XX商品"（没有 product_id），这应该由任务链处理，但任务链系统已经处理过了，这里不应该出现
 
-3. 知识检索：如果用户问题需要从知识库中检索信息（如事实查询、文档相关问题），选择 rag_agent，next_action设为"rag_search"
+3. 知识检索：如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"
    - 示例："公司政策是什么"、"如何使用产品"
 
 4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"

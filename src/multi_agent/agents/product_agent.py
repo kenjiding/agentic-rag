@@ -7,6 +7,7 @@
 """
 
 import json
+import logging
 from typing import Any, Dict
 
 from langchain_openai import ChatOpenAI
@@ -14,6 +15,8 @@ from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, Tool
 
 from src.tools.product_tools import get_product_tools
 from src.multi_agent.state import MultiAgentState
+
+logger = logging.getLogger(__name__)
 
 
 # System Prompt
@@ -103,6 +106,56 @@ class ProductAgent:
                 ],
                 "current_agent": self.name,
             }
+
+        # 检查是否在任务链模式中
+        task_chain = state.get("task_chain")
+        context_data = state.get("context_data", {})
+
+        # 如果在任务链模式且有搜索关键词，直接执行搜索
+        if task_chain and context_data.get("search_keyword"):
+            search_keyword = context_data["search_keyword"]
+            logger.info(f"任务链模式：自动搜索商品 '{search_keyword}'")
+
+            # 直接调用搜索工具
+            search_tool = next((t for t in self.tools if t.name == "search_products_tool"), None)
+            if search_tool:
+                try:
+                    # 使用搜索关键词作为name参数
+                    result = search_tool.invoke({"name": search_keyword})
+
+                    # 解析结果
+                    try:
+                        result_json = json.loads(result) if isinstance(result, str) else result
+                    except (json.JSONDecodeError, TypeError):
+                        result_json = {}
+
+                    # 构造简短的回复消息
+                    if result_json.get("products"):
+                        products = result_json["products"]
+                        reply_msg = f"为您找到{len(products)}款{search_keyword}相关商品，请选择您想要购买的商品："
+                    else:
+                        reply_msg = f"抱歉，未找到{search_keyword}相关商品，请更换关键词重试。"
+
+                    # 创建ToolMessage
+                    tool_message = ToolMessage(
+                        content=str(result),
+                        tool_call_id="auto-search-1"
+                    )
+
+                    # 返回结果
+                    return {
+                        "messages": messages + [tool_message, AIMessage(content=reply_msg)],
+                        "current_agent": self.name,
+                        "tools_used": state.get("tools_used", []) + [{
+                            "agent": self.name,
+                            "tool": "search_products_tool",
+                            "args": {"name": search_keyword}
+                        }]
+                    }
+                except Exception as e:
+                    logger.error(f"自动搜索失败: {e}", exc_info=True)
+                    # 失败了就走正常LLM流程
+                    pass
 
         # 构建 Agent 消息
         agent_messages = [SystemMessage(content=PRODUCT_AGENT_SYSTEM_PROMPT)]

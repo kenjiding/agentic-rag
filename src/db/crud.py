@@ -251,11 +251,16 @@ def create_order(
         )
 
     # 创建订单
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+
     order = Order(
         order_id=order_number,
         user_id=user_phone,
         total_amount=total_amount,
         status="pending",
+        created_at=now,
+        updated_at=now,
         order_items=order_items,
     )
     db.add(order)

@@ -8,13 +8,14 @@
 
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 
 from src.tools.order_tools import get_order_tools
 from src.multi_agent.state import MultiAgentState
+from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
 
 
 # System Prompt
@@ -74,21 +75,25 @@ class OrderAgent:
     """订单管理 Agent
 
     实现确认机制：
-    1. prepare_* 操作后，进入"等待确认"状态
-    2. 用户回复后，判断是否确认
+    1. prepare_* 操作后，通过 ConfirmationManager 创建待确认操作
+    2. 用户回复后，ConfirmationManager 判断是否确认
     3. 确认后执行 confirm_* 操作
+
+    确认机制支持跨请求持久化，用户可通过文本或 UI 按钮进行确认
     """
 
     def __init__(
         self,
         llm: ChatOpenAI | None = None,
         tools: list | None = None,
+        confirmation_manager: ConfirmationManager | None = None,
     ):
         """初始化 Order Agent
 
         Args:
             llm: LangChain LLM 实例
             tools: 订单工具列表，默认使用内置工具
+            confirmation_manager: 确认管理器，默认使用全局单例
         """
         self.llm = llm or ChatOpenAI(
             model="gpt-4o-mini",
@@ -96,6 +101,7 @@ class OrderAgent:
         )
         self.tools = tools or get_order_tools()
         self.name = "order_agent"
+        self.confirmation_manager = confirmation_manager or get_confirmation_manager()
 
         # 绑定工具到 LLM
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -157,11 +163,12 @@ class OrderAgent:
         # 从 state metadata 中查找
         return None
 
-    def invoke(self, state: MultiAgentState) -> Dict[str, Any]:
+    async def invoke(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行订单操作
 
         Args:
             state: 当前多 Agent 状态
+            session_id: 用户会话 ID，用于确认机制
 
         Returns:
             更新后的状态片段
@@ -178,44 +185,82 @@ class OrderAgent:
         # 获取最新消息
         latest_message = messages[-1]
 
-        # 检查是否在等待确认
-        awaiting_confirmation = state.get("confirmation_pending")
-        if awaiting_confirmation:
-            # 检查用户确认
+        # 首先检查是否有待确认操作（通过 ConfirmationManager）
+        pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
+        if pending_confirmation and pending_confirmation.agent_name == self.name:
+            # 有待确认操作，检查用户输入是否为确认响应
             if hasattr(latest_message, "content"):
                 user_input = latest_message.content
-                confirmation = self._check_confirmation(user_input)
+                result = await self.confirmation_manager.check_and_resolve_from_text(
+                    session_id, user_input
+                )
 
-                if confirmation is True:
-                    # 用户确认，执行确认操作
-                    action_type = awaiting_confirmation.get("action_type")
-                    action_data = awaiting_confirmation.get("data", {})
+                if result:
+                    if result.status == ConfirmationStatus.CONFIRMED:
+                        # 用户确认，操作已执行
+                        exec_result = result.execution_result or {}
+                        message = exec_result.get("text", "操作已完成")
+                        if result.error:
+                            message = f"操作执行失败: {result.error}"
+                        return {
+                            "messages": messages + [AIMessage(content=message)],
+                            "current_agent": self.name,
+                            "confirmation_pending": None,
+                        }
+                    elif result.status == ConfirmationStatus.CANCELLED:
+                        # 用户取消
+                        return {
+                            "messages": messages + [
+                                AIMessage(content="👌 已取消操作，请问还有其他需要帮助的吗？")
+                            ],
+                            "current_agent": self.name,
+                            "confirmation_pending": None,
+                        }
+                # result 为 None 表示用户输入不是确认响应，继续正常处理
 
-                    result = self._execute_confirm_action(action_type, action_data)
+        # === 优先从 context_data 获取上下文信息（任务链模式）===
+        context_data = state.get("context_data", {})
 
-                    return {
-                        "messages": messages + [AIMessage(content=result)],
-                        "current_agent": self.name,
-                        "confirmation_pending": None,
-                    }
-                elif confirmation is False:
-                    # 用户取消
-                    return {
-                        "messages": messages + [
-                            AIMessage(content="👌 已取消操作，请问还有其他需要帮助的吗？")
-                        ],
-                        "current_agent": self.name,
-                        "confirmation_pending": None,
-                    }
-                # 无法判断，继续正常处理
+        # 优先从context_data获取手机号（任务链传递的），其次从messages中提取
+        user_phone = context_data.get("user_phone") or self._extract_user_phone(messages)
 
-        # 构建提取用户手机号的提示
-        user_phone = self._extract_user_phone(messages)
+        selected_product_id = context_data.get("selected_product_id")
+        selected_quantity = context_data.get("quantity", 1)
+
+        # 构建手机号提示
         phone_hint = f"\n用户手机号: {user_phone}" if user_phone else "\n注意: 需要用户提供手机号才能查询订单"
+
+        # 如果有选中的商品（任务链模式），添加明确的上下文提示
+        product_hint = ""
+        if selected_product_id and user_phone:
+            # 任务链模式：已有完整信息，直接创建订单
+            product_hint = f"""
+
+=== 任务链上下文（重要）===
+用户已通过多步骤流程选择商品并提供了必要信息：
+- 商品 ID: {selected_product_id}
+- 购买数量: {selected_quantity}
+- 用户手机号: {user_phone}
+
+所有必要信息已齐全，请立即使用 prepare_create_order 工具创建订单。
+必须使用的参数：
+  user_phone: "{user_phone}"
+  items: [{{"product_id": {selected_product_id}, "quantity": {selected_quantity}}}]
+
+不要再询问用户提供手机号或其他信息，直接执行即可。
+"""
+        elif selected_product_id and not user_phone:
+            # 有商品但缺少手机号
+            product_hint = f"""
+
+=== 任务链上下文 ===
+用户已选择商品（ID: {selected_product_id}，数量: {selected_quantity}），但缺少手机号。
+请向用户索要手机号以完成订单创建。
+"""
 
         # 构建 Agent 消息
         agent_messages = [
-            SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + phone_hint)
+            SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + phone_hint + product_hint)
         ]
         agent_messages.extend(messages)
 
@@ -236,20 +281,33 @@ class OrderAgent:
                 tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
                 if tool:
                     try:
-                        result = tool.invoke(tool_call["args"])
+                        tool_result = tool.invoke(tool_call["args"])
 
                         # 检查是否需要确认
                         if tool_call["name"] in ["prepare_cancel_order", "prepare_create_order"]:
                             needs_confirmation = True
+
+                            # 解析工具结果以获取展示信息
+                            try:
+                                parsed_result = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+                            except:
+                                parsed_result = {}
+
                             confirmation_data = {
                                 "action_type": tool_call["name"].replace("prepare_", ""),
-                                "data": tool_call["args"],
+                                "action_data": tool_call["args"],
+                                "display_message": parsed_result.get("text", "请确认操作"),
+                                "display_data": {
+                                    "items": parsed_result.get("items"),
+                                    "total_amount": parsed_result.get("total_amount"),
+                                    "order": parsed_result.get("order"),
+                                },
                             }
 
                         # 构建 ToolMessage
                         tool_messages.append(
                             ToolMessage(
-                                content=str(result),
+                                content=str(tool_result),
                                 tool_call_id=tool_call["id"],
                             )
                         )
@@ -280,9 +338,24 @@ class OrderAgent:
                 "tools_used": state.get("tools_used", []) + tool_used_info,
             }
 
-            # 如果需要确认，设置确认状态
+            # 如果需要确认，通过 ConfirmationManager 创建确认请求
             if needs_confirmation and confirmation_data:
-                result["confirmation_pending"] = confirmation_data
+                confirmation = await self.confirmation_manager.request_confirmation(
+                    session_id=session_id,
+                    action_type=confirmation_data["action_type"],
+                    action_data=confirmation_data["action_data"],
+                    agent_name=self.name,
+                    display_message=confirmation_data["display_message"],
+                    display_data=confirmation_data["display_data"],
+                )
+
+                # 在返回中包含确认信息供前端使用
+                result["confirmation_pending"] = {
+                    "confirmation_id": confirmation.confirmation_id,
+                    "action_type": confirmation.action_type,
+                    "display_message": confirmation.display_message,
+                    "display_data": confirmation.display_data,
+                }
 
             return result
 
@@ -317,16 +390,17 @@ class OrderAgent:
 
 
 # 兼容 LangGraph 节点函数
-def order_agent_node(state: MultiAgentState, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """LangGraph 节点函数 - 订单 Agent
+async def order_agent_node(state: MultiAgentState, config: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    """LangGraph 节点函数 - 订单 Agent (异步)
 
     Args:
         state: 当前状态
-        config: 配置（可包含 llm 实例）
+        config: 配置（可包含 llm 实例和 session_id）
 
     Returns:
         状态更新
     """
     llm = config.get("llm") if config else None
+    session_id = config.get("session_id", "default") if config else "default"
     agent = OrderAgent(llm=llm)
-    return agent.invoke(state)
+    return await agent.invoke(state, session_id=session_id)

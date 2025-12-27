@@ -43,6 +43,41 @@ export interface ResponseData {
   [key: string]: any;
 }
 
+/** 待确认操作数据（用于 UI 展示） */
+export interface ConfirmationDisplayData {
+  items?: Array<{
+    name: string;
+    quantity: number;
+    price?: number;
+    subtotal: number;
+  }>;
+  total_amount?: number;
+  order?: Order;
+  [key: string]: any;
+}
+
+/** 待确认操作 */
+export interface ConfirmationPending {
+  confirmation_id: string;
+  action_type: string;
+  display_message: string;
+  display_data?: ConfirmationDisplayData;
+  expires_at?: string;
+}
+
+/** 待选择操作 */
+export interface PendingSelection {
+  selection_id: string;
+  selection_type: string;  // "product", "address", etc.
+  options: Product[];  // 可选项列表（产品选择时为 Product[]）
+  display_message: string;
+  metadata?: {
+    task_chain_id?: string;
+    [key: string]: any;
+  };
+  expires_at?: string;
+}
+
 /** 聊天消息 */
 export interface ChatMessage {
   id: string;
@@ -50,6 +85,8 @@ export interface ChatMessage {
   content: string;  // AI 生成的文本描述
   responseType: ResponseType;  // 响应类型
   responseData?: ResponseData;  // 结构化数据
+  confirmationPending?: ConfirmationPending;  // 待确认操作
+  pendingSelection?: PendingSelection;  // 待选择操作（新增）
   metadata?: {
     current_agent?: string;
     tools_used?: Array<{
@@ -74,7 +111,7 @@ export interface ExecutionStepDetail {
 
 /** 流式响应事件 */
 export interface StreamEvent {
-  type: "state_update" | "done" | "error";
+  type: "state_update" | "done" | "error" | "selection_resolved" | "confirmation_resolved";
   data?: {
     content?: string;
     role?: string;
@@ -84,7 +121,42 @@ export interface StreamEvent {
     tools_used?: any[];
     execution_steps?: string[];
     step_details?: ExecutionStepDetail[];
+    confirmation_pending?: ConfirmationPending;  // 待确认操作
+    pending_selection?: PendingSelection;  // 待选择操作（新增）
   };
+  message?: string;  // 用于 selection_resolved 和 confirmation_resolved 等事件
+  error?: string;
+}
+
+/** 确认解析请求 */
+export interface ConfirmationResolveRequest {
+  confirmation_id: string;
+  confirmed: boolean;
+}
+
+/** 确认解析响应 */
+export interface ConfirmationResolveResponse {
+  success: boolean;
+  status: string;
+  action_type: string;
+  message: string;
+  data?: any;
+  error?: string;
+}
+
+/** 选择解析请求 */
+export interface SelectionResolveRequest {
+  selection_id: string;
+  selected_option_id: string;
+}
+
+/** 选择解析响应 */
+export interface SelectionResolveResponse {
+  success: boolean;
+  status: string;
+  selection_type: string;
+  selected_option?: Product | any;
+  message?: string;
   error?: string;
 }
 
