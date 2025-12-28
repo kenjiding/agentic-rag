@@ -206,8 +206,16 @@ class OrderItem(Base):
         """转换为字典格式"""
         # 获取商品名称（通过 product 关系）
         product_name = None
+        product_images = []
         if self.product:
             product_name = self.product.name
+            # 处理images字段：如果是list就直接用，如果是dict则提取值
+            if self.product.images:
+                if isinstance(self.product.images, list):
+                    product_images = self.product.images
+                elif isinstance(self.product.images, dict):
+                    # 如果是dict，尝试提取所有值
+                    product_images = [v for v in self.product.images.values() if isinstance(v, str)]
 
         return {
             "id": self.id,
@@ -217,4 +225,5 @@ class OrderItem(Base):
             "quantity": self.quantity,
             "price": float(self.price),
             "subtotal": float(self.price * self.quantity),
+            "product_images": product_images,
         }

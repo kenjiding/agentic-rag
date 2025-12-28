@@ -158,14 +158,28 @@ def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
 
 # ============== Order CRUD ==============
 
-def get_order_by_id(db: Session, order_id: int) -> Optional[Order]:
-    """根据 ID 获取订单"""
+def get_order_by_id(db: Session, order_id: int, refresh: bool = False) -> Optional[Order]:
+    """根据 ID 获取订单
+    
+    Args:
+        db: 数据库会话
+        order_id: 订单 ID
+        refresh: 是否强制从数据库刷新对象（用于确保获取最新状态）
+    """
     # SQLAlchemy 2.0+: 使用 joinedload 加载集合关系时需要调用 unique() 去重
-    return db.execute(
+    order = db.execute(
         select(Order)
-        .options(joinedload(Order.order_items))
+        .options(joinedload(Order.order_items).joinedload(OrderItem.product))
         .where(Order.id == order_id)
     ).unique().scalar_one_or_none()
+    
+    # 如果需要强制刷新（例如在状态更新后查询）
+    if order and refresh:
+        # 先过期对象，然后刷新，确保从数据库重新加载
+        db.expire(order)
+        db.refresh(order)
+    
+    return order
 
 
 def get_order_by_number(db: Session, order_number: str) -> Optional[Order]:
@@ -290,8 +304,16 @@ def cancel_order(db: Session, order_id: int) -> Optional[Order]:
     if order.status != "pending":
         raise ValueError(f"Cannot cancel order with status {order.status}")
 
+    # 更新状态和更新时间
+    from datetime import datetime, timezone
     order.status = "cancelled"
+    order.updated_at = datetime.now(timezone.utc)
+    
+    # flush 确保更改被保存到当前会话
     db.flush()
+    # refresh 确保对象状态与数据库同步
+    db.refresh(order)
+    
     return order
 
 

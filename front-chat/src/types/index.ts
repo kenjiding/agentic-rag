@@ -17,6 +17,7 @@ export interface Product {
   rating: number;
   special: boolean;
   description?: string;
+  images?: string[];
 }
 
 /** 订单信息 */
@@ -34,6 +35,7 @@ export interface OrderItem {
   product_name: string;
   quantity: number;
   subtotal: number;
+  product_images?: string[];
 }
 
 /** 结构化响应数据 */
@@ -50,6 +52,7 @@ export interface ConfirmationDisplayData {
     quantity: number;
     price?: number;
     subtotal: number;
+    product_images?: string[];
   }>;
   total_amount?: number;
   order?: Order;

@@ -73,6 +73,16 @@ class KeywordsConfig:
         "no", "cancel", "abort", "stop", "never mind",
     ])
 
+    # 取消订单意图关键词（用于检测用户想要取消订单）
+    cancel_order_keywords: List[str] = field(default_factory=lambda: [
+        # 中文
+        "取消订单", "退订", "撤销订单", "不要订单", "取消这个订单",
+        "订单取消", "删除订单", "订单退订",
+        # 英文
+        "cancel order", "cancel the order", "cancel my order",
+        "cancel this order", "delete order", "refund order",
+    ])
+
     # 选择相关关键词
     selection_keywords: List[str] = field(default_factory=lambda: [
         "选择", "确认", "第", "选",

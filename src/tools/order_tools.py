@@ -80,18 +80,28 @@ def query_user_orders(
 
             # 添加调试日志
             logger.info(f"🔍 [ORDER_QUERY] 查询结果: 找到 {len(orders)} 个订单")
+            for order in orders:
+                logger.info(f"  - 订单ID: {order.id}, 订单号: {order.order_id}, 状态: {order.status}")
 
             # 构建结构化订单数据
             orders_data = []
             for order in orders:
-                order_items = [
-                    {
+                order_items = []
+                for item in order.order_items:
+                    # 处理产品图片
+                    product_images = []
+                    if item.product and item.product.images:
+                        if isinstance(item.product.images, list):
+                            product_images = item.product.images
+                        elif isinstance(item.product.images, dict):
+                            product_images = [v for v in item.product.images.values() if isinstance(v, str)]
+                    
+                    order_items.append({
                         "product_name": item.product.name if item.product else "未知商品",
                         "quantity": item.quantity,
                         "subtotal": float(item.price * item.quantity),
-                    }
-                    for item in order.order_items  # 修复：items -> order_items
-                ]
+                        "product_images": product_images,
+                    })
                 orders_data.append({
                     "id": order.id,
                     "order_number": order.order_id,
@@ -151,7 +161,8 @@ def query_order_detail(
         with get_db_session() as db:
             order = None
             if order_id:
-                order = get_order_by_id(db, order_id)
+                # 使用 refresh=True 确保获取最新状态
+                order = get_order_by_id(db, order_id, refresh=True)
             elif order_number:
                 order = get_order_by_number(db, order_number)
 
@@ -164,14 +175,22 @@ def query_order_detail(
             display = OrderDisplay.from_db(order)
 
             # 构建结构化订单数据
-            order_items = [
-                {
-                    "product_name": item.product_name,
+            order_items = []
+            for item in order.order_items:
+                # 处理产品图片
+                product_images = []
+                if item.product and item.product.images:
+                    if isinstance(item.product.images, list):
+                        product_images = item.product.images
+                    elif isinstance(item.product.images, dict):
+                        product_images = [v for v in item.product.images.values() if isinstance(v, str)]
+                
+                order_items.append({
+                    "product_name": item.product.name if item.product else "未知商品",
                     "quantity": item.quantity,
                     "subtotal": float(item.price * item.quantity),
-                }
-                for item in order.items
-            ]
+                    "product_images": product_images,
+                })
 
             order_data = {
                 "id": order.id,
@@ -329,10 +348,21 @@ def confirm_cancel_order(
                 }, ensure_ascii=False)
 
             order = cancel_order_db(db, order_id)
+            if not order:
+                return json.dumps({
+                    "text": f"无法取消订单 {order_id}",
+                    "success": False
+                }, ensure_ascii=False)
+            
+            # 上下文管理器会自动提交事务
+            # 为了确保获取最新状态，在提交后重新查询（使用新的查询会从数据库读取最新数据）
+            # 由于事务会在退出 with 块时提交，这里返回的对象状态应该是正确的
+            
             return json.dumps({
                 "text": f"订单 {order.order_id} 已成功取消",
                 "success": True,
-                "order_id": order.id
+                "order_id": order.id,
+                "order_status": order.status  # 明确返回状态，用于前端显示
             }, ensure_ascii=False)
 
     except ValueError as e:
@@ -406,12 +436,21 @@ def prepare_create_order(
                 subtotal = price * item["quantity"]
                 total_amount += subtotal
 
+                # 处理产品图片
+                product_images = []
+                if product.images:
+                    if isinstance(product.images, list):
+                        product_images = product.images
+                    elif isinstance(product.images, dict):
+                        product_images = [v for v in product.images.values() if isinstance(v, str)]
+
                 items_preview.append({
                     "product_id": product.id,
                     "name": product.name,
                     "quantity": item["quantity"],
                     "price": float(price),
                     "subtotal": float(subtotal),
+                    "product_images": product_images,
                 })
 
             text_lines = [

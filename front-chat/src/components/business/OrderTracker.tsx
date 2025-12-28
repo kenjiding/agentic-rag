@@ -2,7 +2,7 @@ import { Order } from "@/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { CheckCircle2, Clock, Truck, XCircle } from "lucide-react"
+import { CheckCircle2, Clock, Truck, XCircle, Package } from "lucide-react"
 import { motion } from "framer-motion"
 
 interface OrderTrackerProps {
@@ -26,7 +26,7 @@ const statusConfig = {
     label: "已发货",
     icon: Truck,
     variant: "default" as const,
-    color: "text-blue-600",
+    color: "text-orange-600",
   },
   delivered: {
     label: "已收货",
@@ -141,12 +141,41 @@ export function OrderTracker({ order }: OrderTrackerProps) {
             {order.items.map((item, index) => (
               <div
                 key={index}
-                className="flex justify-between text-sm py-2 border-b last:border-0"
+                className="flex items-center gap-3 py-2 border-b last:border-0"
               >
-                <span className="text-muted-foreground">
-                  {item.product_name} × {item.quantity}
-                </span>
-                <span className="font-medium">¥{item.subtotal.toFixed(2)}</span>
+                {/* 产品图片 - 小而美的设计 */}
+                {item.product_images && item.product_images.length > 0 ? (
+                  <div className="relative w-12 h-12 shrink-0 rounded-md overflow-hidden bg-gradient-to-br from-muted/40 to-muted/20 border border-border/50 shadow-sm">
+                    <img
+                      src={item.product_images[0]}
+                      alt={item.product_name}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none'
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent pointer-events-none" />
+                  </div>
+                ) : (
+                  <div className="w-12 h-12 shrink-0 rounded-md bg-gradient-to-br from-muted/40 to-muted/20 border border-border/50 flex items-center justify-center shadow-sm">
+                    <Package className="w-5 h-5 text-muted-foreground/50" />
+                  </div>
+                )}
+                
+                {/* 产品信息 */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">
+                    {item.product_name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    数量: {item.quantity}
+                  </p>
+                </div>
+                
+                {/* 价格 */}
+                <div className="text-right shrink-0">
+                  <span className="text-sm font-semibold text-foreground">¥{item.subtotal.toFixed(2)}</span>
+                </div>
               </div>
             ))}
           </div>

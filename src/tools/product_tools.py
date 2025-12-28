@@ -149,6 +149,7 @@ def search_products_tool(
                     "rating": float(product.rating) if product.rating else 0.0,
                     "special": product.special,
                     "description": product.description,
+                    "images": product.images if product.images else [],
                 })
 
             # 生成人类可读的文本
@@ -228,6 +229,7 @@ def get_product_detail(
                 "rating": float(product.rating) if product.rating else 0.0,
                 "special": product.special,
                 "description": product.description,
+                "images": product.images if product.images else [],
             }
 
             # 生成人类可读文本

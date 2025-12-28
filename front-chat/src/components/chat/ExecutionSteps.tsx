@@ -22,17 +22,26 @@ export function ExecutionSteps({ steps, stepDetails, isActive }: ExecutionStepsP
   }))
 
   return (
-    <div className="mt-3 space-y-2 border-t pt-3">
-      <div className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-2">
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      transition={{ duration: 0.3 }}
+      className="mt-4 space-y-2 border-t border-border/50 pt-4"
+    >
+      <div className="text-xs font-semibold text-muted-foreground mb-3 flex items-center gap-2">
         <span>AI Agent 执行流程</span>
         {isActive && (
-          <span className="flex items-center gap-1 text-primary">
+          <motion.span
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex items-center gap-1.5 text-primary"
+          >
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
             </span>
-            <span className="text-[10px]">执行中</span>
-          </span>
+            <span className="text-[10px] font-medium">执行中</span>
+          </motion.span>
         )}
       </div>
       <div className="space-y-1.5">
@@ -50,9 +59,10 @@ export function ExecutionSteps({ steps, stepDetails, isActive }: ExecutionStepsP
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2, delay: Math.min(index * 0.05, 0.3) }}
                 className={cn(
-                  "flex items-start gap-2 text-xs p-1.5 rounded-md transition-colors",
-                  isRunning && "bg-primary/5",
-                  isError && "bg-destructive/5"
+                  "flex items-start gap-2.5 text-xs p-2.5 rounded-lg transition-all duration-200",
+                  isRunning && "bg-primary/5 border border-primary/10",
+                  isError && "bg-destructive/5 border border-destructive/10",
+                  !isRunning && !isError && "bg-muted/30"
                 )}
               >
                 {/* 状态图标 */}
@@ -92,14 +102,19 @@ export function ExecutionSteps({ steps, stepDetails, isActive }: ExecutionStepsP
       {/* 执行中的提示 */}
       {isActive && details.length > 0 && details[details.length - 1].status === "running" && (
         <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="text-[10px] text-muted-foreground italic pl-6"
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="text-[10px] text-muted-foreground italic pl-6 flex items-center gap-1.5"
         >
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+            className="w-2 h-2 border border-primary/30 border-t-primary rounded-full"
+          />
           正在处理，请稍候...
         </motion.div>
       )}
-    </div>
+    </motion.div>
   )
 }
 

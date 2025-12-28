@@ -68,14 +68,43 @@ export function ConfirmationDialog({
                 {confirmation.display_data.items.map((item, index) => (
                   <div
                     key={index}
-                    className="flex justify-between text-sm py-1"
+                    className="flex items-center gap-3 py-2"
                   >
-                    <span className="text-gray-600 dark:text-gray-400">
-                      {item.name} x {item.quantity}
-                    </span>
-                    <span className="font-medium text-gray-800 dark:text-gray-200">
-                      ¥{item.subtotal.toFixed(2)}
-                    </span>
+                    {/* 产品图片 - 小而美的设计 */}
+                    {item.product_images && item.product_images.length > 0 ? (
+                      <div className="relative w-10 h-10 shrink-0 rounded-md overflow-hidden bg-gradient-to-br from-muted/40 to-muted/20 border border-border/50 shadow-sm">
+                        <img
+                          src={item.product_images[0]}
+                          alt={item.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none'
+                          }}
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent pointer-events-none" />
+                      </div>
+                    ) : (
+                      <div className="w-10 h-10 shrink-0 rounded-md bg-gradient-to-br from-muted/40 to-muted/20 border border-border/50 flex items-center justify-center shadow-sm">
+                        <ShoppingCart className="w-4 h-4 text-muted-foreground/50" />
+                      </div>
+                    )}
+                    
+                    {/* 产品信息 */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">
+                        {item.name}
+                      </p>
+                      <p className="text-xs text-gray-600 dark:text-gray-400">
+                        数量: {item.quantity}
+                      </p>
+                    </div>
+                    
+                    {/* 价格 */}
+                    <div className="text-right shrink-0">
+                      <span className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                        ¥{item.subtotal.toFixed(2)}
+                      </span>
+                    </div>
                   </div>
                 ))}
                 {confirmation.display_data.total_amount && (

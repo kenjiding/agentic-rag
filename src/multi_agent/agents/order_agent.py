@@ -206,7 +206,8 @@ class OrderAgent:
 
         # === 【关键修复】检测取消订单意图，强制使用 prepare_cancel_order ===
         latest_content = latest_message.content if hasattr(latest_message, "content") else ""
-        is_cancel_intent = any(kw in latest_content for kw in CANCEL_ORDER_KEYWORDS)
+        keywords_config = get_keywords_config()
+        is_cancel_intent = any(kw in latest_content for kw in keywords_config.cancel_order_keywords)
 
         if is_cancel_intent:
             logger.info(f"🔍 [ORDER_AGENT] 检测到取消订单意图: {latest_content[:50]}...")

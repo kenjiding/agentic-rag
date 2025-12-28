@@ -82,10 +82,20 @@ class ProductDisplay(BaseModel):
     rating: float = 0.0
     special: bool = False
     description: Optional[str] = None
+    images: Optional[List[str]] = None
 
     @classmethod
     def from_db(cls, product: Any) -> "ProductDisplay":
         """从数据库模型转换"""
+        # 处理images字段：如果是list就直接用，如果是dict则提取值
+        images_list = []
+        if product.images:
+            if isinstance(product.images, list):
+                images_list = product.images
+            elif isinstance(product.images, dict):
+                # 如果是dict，尝试提取所有值
+                images_list = [v for v in product.images.values() if isinstance(v, str)]
+        
         return cls(
             id=product.id,
             name=product.name,
@@ -98,6 +108,7 @@ class ProductDisplay(BaseModel):
             rating=product.rating,
             special=product.special,
             description=product.description,
+            images=images_list if images_list else None,
         )
 
     def format_text(self) -> str:

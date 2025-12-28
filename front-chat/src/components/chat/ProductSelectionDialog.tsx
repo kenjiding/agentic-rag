@@ -28,23 +28,23 @@ export function ProductSelectionDialog({
       transition={{ duration: 0.2 }}
       className="my-4"
     >
-      <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-950/20">
+      <Card className="border-orange-200 bg-orange-50/50 dark:border-orange-800 dark:bg-orange-950/20">
         <CardHeader className="pb-3">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-full bg-blue-100 dark:bg-blue-900/30">
-              <ShoppingBag className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            <div className="p-2 rounded-full bg-orange-100 dark:bg-orange-900/30">
+              <ShoppingBag className="h-5 w-5 text-orange-600 dark:text-orange-400" />
             </div>
-            <CardTitle className="text-lg text-blue-800 dark:text-blue-200">
+            <CardTitle className="text-lg text-orange-800 dark:text-orange-200">
               {selection.display_message}
             </CardTitle>
           </div>
         </CardHeader>
 
         <CardContent className="space-y-3">
-          <Separator className="bg-blue-200 dark:bg-blue-800" />
+          <Separator className="bg-orange-200 dark:bg-orange-800" />
 
-          {/* 产品网格 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* 产品网格 - 响应式布局，移动端强制2列 */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1.5 sm:gap-2 md:gap-2.5">
             {selection.options.map((product) => (
               <SelectableProductCard
                 key={product.id}
@@ -91,36 +91,61 @@ function SelectableProductCard({ product, onSelect, disabled }: SelectableProduc
       <Card
         className={cn(
           "h-full flex flex-col cursor-pointer transition-all duration-200",
-          "hover:border-blue-500 hover:shadow-lg",
+          "hover:border-orange-500 hover:shadow-lg",
           disabled && "opacity-60 cursor-not-allowed"
         )}
         onClick={() => !disabled && onSelect()}
       >
-        <CardHeader className="pb-2 pt-3 px-3">
-          <div className="flex items-start justify-between gap-2">
-            <h4 className="text-sm font-semibold leading-tight line-clamp-2 flex-1">
+        {/* 产品图片区域 - 超紧凑设计 */}
+        {product.images && product.images.length > 0 && (
+          <div className="relative w-full aspect-[3/2] sm:aspect-[4/3] overflow-hidden bg-gradient-to-br from-muted/40 to-muted/20 border-b border-border/50">
+            <img
+              src={product.images[0]}
+              alt={product.name}
+              className="w-full h-full object-cover transition-transform duration-300 hover:scale-105"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'
+              }}
+            />
+            {product.special && (
+              <Badge 
+                variant="destructive" 
+                className="absolute top-1 right-1 text-[8px] px-0.5 py-0 shadow-sm backdrop-blur-sm bg-destructive/90"
+              >
+                <TrendingUp className="w-1.5 h-1.5 mr-0.5" />
+                特
+              </Badge>
+            )}
+            {/* 渐变遮罩 */}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/5 to-transparent pointer-events-none" />
+          </div>
+        )}
+        
+        <CardHeader className="pb-1 pt-1.5 px-2 sm:px-3">
+          <div className="flex items-start justify-between gap-1 mb-0.5">
+            <h4 className="text-[10px] sm:text-xs font-semibold leading-tight line-clamp-2 flex-1">
               {product.name}
             </h4>
-            {product.special && (
-              <Badge variant="destructive" className="shrink-0 text-[10px] px-1.5 py-0.5">
-                <TrendingUp className="w-2.5 h-2.5 mr-0.5" />
-                特价
+            {product.special && (!product.images || product.images.length === 0) && (
+              <Badge variant="destructive" className="shrink-0 text-[8px] px-0.5 py-0">
+                <TrendingUp className="w-1.5 h-1.5 mr-0.5" />
+                特
               </Badge>
             )}
           </div>
         </CardHeader>
 
-        <CardContent className="flex-1 space-y-2 px-3 pb-2">
-          {/* 品牌和分类 */}
+        <CardContent className="flex-1 space-y-1 px-2 sm:px-3 pb-1.5">
+          {/* 品牌和分类 - 移动端隐藏 */}
           {(product.brand || product.main_category) && (
-            <div className="flex flex-wrap gap-1">
+            <div className="hidden sm:flex flex-wrap gap-0.5">
               {product.brand && (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0.5">
+                <Badge variant="secondary" className="text-[8px] px-1 py-0">
                   {product.brand}
                 </Badge>
               )}
               {product.main_category && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0.5">
+                <Badge variant="outline" className="text-[8px] px-1 py-0">
                   {product.main_category}
                 </Badge>
               )}
@@ -128,17 +153,16 @@ function SelectableProductCard({ product, onSelect, disabled }: SelectableProduc
           )}
 
           {/* 价格和评分 */}
-          <div className="flex items-center justify-between pt-1 border-t border-border/50">
+          <div className="flex items-center justify-between pt-1 pb-1 border-t border-border/50">
             <div className="flex flex-col">
-              <span className="text-[10px] text-muted-foreground">价格</span>
-              <div className="text-lg font-bold text-primary">
+              <div className="text-sm sm:text-base font-bold text-primary leading-none">
                 {priceDisplay}
               </div>
             </div>
             {product.rating > 0 && (
-              <div className="flex items-center gap-1 bg-yellow-50 dark:bg-yellow-950/20 px-1.5 py-0.5 rounded-full">
-                <Star className="w-3 h-3 fill-yellow-400 text-yellow-400" />
-                <span className="font-semibold text-xs text-yellow-600 dark:text-yellow-400">
+              <div className="hidden sm:flex items-center gap-0.5 bg-yellow-50 dark:bg-yellow-950/20 px-1 py-0.5 rounded-full">
+                <Star className="w-2 h-2 fill-yellow-400 text-yellow-400" />
+                <span className="font-semibold text-[9px] text-yellow-600 dark:text-yellow-400">
                   {product.rating.toFixed(1)}
                 </span>
               </div>
@@ -146,36 +170,36 @@ function SelectableProductCard({ product, onSelect, disabled }: SelectableProduc
           </div>
 
           {/* 库存 */}
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-0.5">
             <Package
               className={cn(
-                "w-3 h-3",
+                "w-2.5 h-2.5",
                 isInStock ? "text-green-500" : "text-red-500"
               )}
             />
             <span
               className={cn(
-                "text-xs font-medium",
+                "text-[9px] font-medium",
                 isInStock ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"
               )}
             >
-              {isInStock ? `库存: ${product.stock}件` : "暂时缺货"}
+              {isInStock ? `${product.stock}` : "缺货"}
             </span>
           </div>
 
-          {/* 描述 */}
+          {/* 描述 - 仅在大屏显示 */}
           {product.description && (
-            <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
+            <p className="text-[9px] text-muted-foreground line-clamp-1 leading-tight hidden lg:block pt-0.5">
               {product.description}
             </p>
           )}
         </CardContent>
 
-        <CardFooter className="pt-2 px-3 pb-3 bg-blue-50/50 dark:bg-blue-950/30 border-t">
+        <CardFooter className="pt-1 px-2 sm:px-3 pb-2 sm:pb-2.5 bg-orange-50/50 dark:bg-orange-950/30 border-t">
           <Button
             variant="default"
             size="sm"
-            className="w-full text-xs h-7 bg-blue-600 hover:bg-blue-700"
+            className="w-full text-[9px] sm:text-[10px] h-6 sm:h-7 bg-orange-600 hover:bg-orange-700"
             disabled={!isInStock || disabled}
           >
             {disabled ? (
