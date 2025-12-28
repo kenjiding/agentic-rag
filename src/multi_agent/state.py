@@ -17,7 +17,7 @@ class TaskStep(TypedDict):
     用于任务链中的单个步骤，支持多步骤任务编排。
     """
     step_id: str  # 步骤唯一标识
-    step_type: Literal["product_search", "user_selection", "order_creation", "confirmation"]  # 步骤类型
+    step_type: Literal["product_search", "user_selection", "order_creation", "confirmation", "web_search", "rag_search"]  # 步骤类型（支持动态扩展）
     status: Literal["pending", "in_progress", "completed", "skipped"]  # 步骤状态
     agent_name: Optional[str]  # 执行该步骤的Agent名称（如果需要）
     result_data: Optional[Dict[str, Any]]  # 步骤执行结果数据

@@ -70,8 +70,6 @@ ORDER_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 订单�
 """
 
 
-# 注意：确认关键词已移至 src/multi_agent/config.py 中的 KeywordsConfig
-# 使用 get_keywords_config() 获取配置化的关键词列表
 
 
 class OrderAgent:
@@ -145,6 +143,576 @@ class OrderAgent:
 
         return None
 
+    def _get_entity(self, state: MultiAgentState, key: str, default: Any = None) -> Any:
+        """从 state 中获取实体值（优先从 entities，其次从 context_data）
+
+        Args:
+            state: 多Agent状态
+            key: 实体键名
+            default: 默认值
+
+        Returns:
+            实体值
+        """
+        entities = state.get("entities", {})
+        context_data = state.get("context_data", {})
+        return entities.get(key) or context_data.get(key) or default
+
+    def _find_order_id_from_context(self, state: MultiAgentState, messages: list) -> int | None:
+        """从上下文中查找订单ID
+
+        查找顺序：
+        1. entities/context_data 中的 order_id
+        2. agent_results 中的单一订单
+        3. 消息历史中的 ToolMessage 中的单一订单
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+
+        Returns:
+            订单ID，如果未找到返回 None
+        """
+        # 首先从 entities/context_data 中获取
+        order_id = self._get_entity(state, "order_id")
+        if order_id:
+            return int(order_id)
+
+        # 从 agent_results 中查找
+        order_result = state.get("agent_results", {}).get("order_agent", {})
+        if isinstance(order_result, dict) and "orders" in order_result:
+            orders = order_result.get("orders", [])
+            if orders and len(orders) == 1:
+                order_id = orders[0].get("id")
+                logger.info(f"从 agent_results 获取到单一订单: id={order_id}")
+                return order_id
+
+        # 从消息历史中的 ToolMessage 查找
+        for msg in reversed(messages):
+            if isinstance(msg, ToolMessage):
+                try:
+                    tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    if isinstance(tool_result, dict) and "orders" in tool_result:
+                        orders = tool_result.get("orders", [])
+                        if orders and len(orders) == 1:
+                            order_id = orders[0].get("id")
+                            logger.info(f"从历史消息获取到单一订单: id={order_id}")
+                            return order_id
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+        return None
+
+    def _find_order_info_from_messages(self, messages: list, order_id: int) -> Dict[str, Any] | None:
+        """从消息历史中查找指定订单的完整信息
+
+        Args:
+            messages: 消息列表
+            order_id: 订单ID
+
+        Returns:
+            订单信息字典，如果未找到返回 None
+        """
+        for msg in reversed(messages):
+            if isinstance(msg, ToolMessage):
+                try:
+                    tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    if isinstance(tool_result, dict) and "orders" in tool_result:
+                        orders = tool_result.get("orders", [])
+                        for order in orders:
+                            if order.get("id") == order_id or order.get("id") == int(order_id):
+                                return order
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return None
+
+    def _parse_tool_result(self, result: str | Dict[str, Any]) -> Dict[str, Any]:
+        """解析工具执行结果
+
+        Args:
+            result: 工具执行结果（可能是字符串或字典）
+
+        Returns:
+            解析后的字典
+        """
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                return {"text": result}
+        return result if isinstance(result, dict) else {}
+
+    def _get_tool(self, tool_name: str):
+        """获取指定名称的工具
+
+        Args:
+            tool_name: 工具名称
+
+        Returns:
+            工具实例，如果未找到返回 None
+        """
+        return next((t for t in self.tools if t.name == tool_name), None)
+
+    def _format_order_status_emoji(self, status: str) -> str:
+        """格式化订单状态为带emoji的文本
+
+        Args:
+            status: 订单状态
+
+        Returns:
+            格式化后的状态文本
+        """
+        status_map = {
+            "pending": "⏳ 待支付",
+            "paid": "💰 已支付",
+            "shipped": "🚚 已发货",
+            "delivered": "✅ 已收货",
+            "cancelled": "❌ 已取消",
+        }
+        return status_map.get(status, status)
+
+    def _build_order_list_text(self, orders: list) -> str:
+        """构建订单列表的文本描述
+
+        Args:
+            orders: 订单列表
+
+        Returns:
+            格式化的订单列表文本
+        """
+        if not orders:
+            return "暂无订单"
+
+        text = f"找到 {len(orders)} 个订单：\n"
+        for order in orders:
+            status_emoji = self._format_order_status_emoji(order.get("status", ""))
+            text += f"\n订单号: {order.get('order_number')} - {status_emoji} - ¥{order.get('total_amount', 0):.2f}"
+        return text
+
+    def _detect_intent(self, content: str) -> Dict[str, bool]:
+        """检测用户意图
+
+        Args:
+            content: 用户输入内容
+
+        Returns:
+            包含意图检测结果的字典
+        """
+        keywords_config = get_keywords_config()
+        return {
+            "is_query": any(kw in content for kw in keywords_config.query_order_keywords),
+            "is_cancel": any(kw in content for kw in keywords_config.cancel_order_keywords),
+        }
+
+    async def _handle_query_intent(
+        self, state: MultiAgentState, messages: list, content: str
+    ) -> Dict[str, Any] | None:
+        """处理查询订单意图
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+            content: 用户输入内容
+
+        Returns:
+            如果成功处理返回结果字典，否则返回 None
+        """
+        logger.info(f"检测到查询订单意图: {content[:50]}...")
+
+        user_phone = self._get_entity(state, "user_phone")
+        if not user_phone:
+            logger.info("查询意图但缺少手机号，继续正常处理")
+            return None
+
+        query_tool = self._get_tool("query_user_orders")
+        if not query_tool:
+            logger.warning("未找到 query_user_orders 工具")
+            return None
+
+        try:
+            query_result = query_tool.invoke({
+                "user_phone": user_phone,
+                "status": None,
+                "limit": 20
+            })
+
+            result_data = self._parse_tool_result(query_result)
+            orders = result_data.get("orders", [])
+
+            # 构建消息序列
+            tool_call_id = f"call_query_{user_phone}_{hash(content) % 100000}"
+            ai_message_with_tool = AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": tool_call_id,
+                    "name": "query_user_orders",
+                    "args": {"user_phone": user_phone, "status": None, "limit": 20}
+                }]
+            )
+
+            tool_message = ToolMessage(content=query_result, tool_call_id=tool_call_id)
+            order_text = self._build_order_list_text(orders)
+            final_ai_message = AIMessage(content=order_text)
+
+            logger.info(f"查询完成: 找到{len(orders)}个订单")
+            for order in orders:
+                logger.info(f"  - 订单ID: {order.get('id')}, 订单号: {order.get('order_number')}, 状态: {order.get('status')}")
+
+            return {
+                "messages": messages + [ai_message_with_tool] + [tool_message] + [final_ai_message],
+                "current_agent": self.name,
+                "tools_used": state.get("tools_used", []) + [{
+                    "agent": self.name,
+                    "tool": "query_user_orders",
+                    "args": {"user_phone": user_phone}
+                }]
+            }
+        except Exception as e:
+            logger.error(f"查询订单失败: {e}", exc_info=True)
+            return None
+
+    async def _handle_cancel_intent(
+        self, state: MultiAgentState, messages: list, session_id: str, content: str
+    ) -> Dict[str, Any] | None:
+        """处理取消订单意图
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+            session_id: 会话ID
+            content: 用户输入内容
+
+        Returns:
+            如果成功处理返回结果字典，否则返回 None
+        """
+        logger.info(f"检测到取消订单意图: {content[:50]}...")
+
+        order_id = self._find_order_id_from_context(state, messages)
+        user_phone = self._get_entity(state, "user_phone")
+
+        if not order_id or not user_phone:
+            logger.info(f"取消意图但缺少信息: order_id={order_id}, user_phone={user_phone}，使用 LLM 处理")
+            return None
+
+        logger.info(f"调用 prepare_cancel_order: order_id={order_id}, phone={user_phone}")
+
+        order_info = self._find_order_info_from_messages(messages, order_id)
+        prepare_tool = self._get_tool("prepare_cancel_order")
+
+        if not prepare_tool:
+            logger.warning("未找到 prepare_cancel_order 工具")
+            return None
+
+        try:
+            prepare_result = prepare_tool.invoke({
+                "order_id": int(order_id),
+                "user_phone": user_phone,
+                "reason": "用户请求取消"
+            })
+
+            result_data = self._parse_tool_result(prepare_result)
+
+            if not result_data.get("can_cancel", False):
+                return {
+                    "messages": messages + [AIMessage(content=result_data.get("text", "无法取消订单"))],
+                    "current_agent": self.name,
+                }
+
+            display_message = result_data.get("text", "请确认是否取消订单")
+            display_data = {
+                "order_id": order_id,
+                "order": order_info
+            }
+
+            confirmation = await self.confirmation_manager.request_confirmation(
+                session_id=session_id,
+                action_type="cancel_order",
+                action_data={"order_id": int(order_id), "user_phone": user_phone},
+                agent_name=self.name,
+                display_message=display_message,
+                display_data=display_data
+            )
+
+            logger.info(f"创建取消订单确认: confirmation_id={confirmation.confirmation_id}")
+
+            return {
+                "messages": messages + [AIMessage(content=display_message)],
+                "current_agent": self.name,
+                "confirmation_pending": {
+                    "confirmation_id": confirmation.confirmation_id,
+                    "action_type": "cancel_order",
+                    "display_message": display_message,
+                    "display_data": display_data
+                },
+                "tools_used": state.get("tools_used", []) + [{
+                    "agent": self.name,
+                    "tool": "prepare_cancel_order",
+                    "args": {"order_id": order_id, "user_phone": user_phone}
+                }]
+            }
+        except Exception as e:
+            logger.error(f"prepare_cancel_order 失败: {e}", exc_info=True)
+            return None
+
+    async def _handle_task_chain_order_creation(
+        self, state: MultiAgentState, messages: list
+    ) -> Dict[str, Any] | None:
+        """处理任务链模式下的订单创建
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+
+        Returns:
+            如果成功处理返回结果字典，否则返回 None
+        """
+        task_chain = state.get("task_chain")
+        if not task_chain:
+            return None
+
+        current_index = task_chain.get("current_step_index", 0)
+        steps = task_chain.get("steps", [])
+        if current_index >= len(steps):
+            return None
+
+        current_step = steps[current_index]
+        if current_step.get("step_type") != "order_creation":
+            return None
+
+        selected_product_id = self._get_entity(state, "selected_product_id")
+        selected_quantity = self._get_entity(state, "quantity", 1)
+        user_phone = self._get_entity(state, "user_phone")
+
+        if not (selected_product_id and user_phone):
+            return None
+
+        logger.info(
+            f"任务链模式：调用 prepare_create_order，"
+            f"product_id={selected_product_id}, quantity={selected_quantity}, phone={user_phone}"
+        )
+
+        prepare_tool = self._get_tool("prepare_create_order")
+        if not prepare_tool:
+            return {
+                "messages": messages + [AIMessage(content="❌ 订单创建工具未找到，请联系管理员")],
+                "current_agent": self.name,
+            }
+
+        try:
+            items_list = [{"product_id": int(selected_product_id), "quantity": int(selected_quantity)}]
+            items_json = json.dumps(items_list, ensure_ascii=False)
+            prepare_result = prepare_tool.invoke({
+                "user_phone": user_phone,
+                "items": items_json,
+                "notes": None
+            })
+
+            result_data = self._parse_tool_result(prepare_result)
+
+            logger.info("任务链模式：订单信息已准备，等待后续 confirmation 步骤确认")
+
+            order_info = {
+                "user_phone": user_phone,
+                "items": items_json,
+                "items_data": result_data.get("items"),
+                "total_amount": result_data.get("total_amount"),
+                "text": result_data.get("text", "订单信息已准备"),
+                "can_create": result_data.get("can_create", True)
+            }
+
+            return {
+                "messages": messages + [AIMessage(content=f"订单信息已准备：\n{result_data.get('text', '')}")],
+                "current_agent": self.name,
+                "task_chain": task_chain,
+                "tools_used": state.get("tools_used", []) + [{
+                    "agent": self.name,
+                    "tool": "prepare_create_order",
+                    "args": {"user_phone": user_phone, "items": items_json}
+                }],
+                "order_info": order_info
+            }
+        except Exception as e:
+            logger.error(f"任务链模式准备订单失败: {e}", exc_info=True)
+            return {
+                "messages": messages + [AIMessage(content=f"❌ 准备订单失败: {str(e)}")],
+                "current_agent": self.name,
+            }
+
+    def _build_system_prompt_hints(
+        self, user_phone: str, selected_product_id: str | None, selected_quantity: int
+    ) -> str:
+        """构建系统提示的上下文信息
+
+        Args:
+            user_phone: 用户手机号
+            selected_product_id: 选中的商品ID
+            selected_quantity: 选中的数量
+
+        Returns:
+            提示文本
+        """
+        phone_hint = f"\n用户手机号: {user_phone}" if user_phone else "\n注意: 需要用户提供手机号才能查询订单"
+
+        product_hint = ""
+        if selected_product_id and user_phone:
+            product_hint = f"""
+
+=== 任务链上下文（重要）===
+用户已通过多步骤流程选择商品并提供了必要信息：
+- 商品 ID: {selected_product_id}
+- 购买数量: {selected_quantity}
+- 用户手机号: {user_phone}
+
+所有必要信息已齐全，请立即使用 prepare_create_order 工具创建订单。
+必须使用的参数：
+  user_phone: "{user_phone}"
+  items: [{{"product_id": {selected_product_id}, "quantity": {selected_quantity}}}]
+
+不要再询问用户提供手机号或其他信息，直接执行即可。
+"""
+        elif selected_product_id and not user_phone:
+            product_hint = f"""
+
+=== 任务链上下文 ===
+用户已选择商品（ID: {selected_product_id}，数量: {selected_quantity}），但缺少手机号。
+请向用户索要手机号以完成订单创建。
+"""
+
+        return phone_hint + product_hint
+
+    async def _handle_with_llm(
+        self,
+        state: MultiAgentState,
+        messages: list,
+        session_id: str,
+        user_phone: str | None,
+        selected_product_id: str | None,
+        selected_quantity: int
+    ) -> Dict[str, Any]:
+        """使用 LLM 处理请求
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+            session_id: 会话ID
+            user_phone: 用户手机号
+            selected_product_id: 选中的商品ID
+            selected_quantity: 选中的数量
+
+        Returns:
+            处理结果
+        """
+        hints = self._build_system_prompt_hints(user_phone, selected_product_id, selected_quantity)
+        cleaned_messages = clean_messages_for_llm(messages)
+
+        agent_messages = [
+            SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + hints)
+        ]
+        agent_messages.extend(cleaned_messages)
+
+        logger.info(f"准备调用 LLM，用户手机号: {user_phone}，消息数量: {len(cleaned_messages)}")
+
+        response = self.llm_with_tools.invoke(agent_messages)
+
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            return await self._handle_llm_tool_calls(
+                state, messages, session_id, agent_messages, response
+            )
+
+        return {
+            "messages": messages + [response],
+            "current_agent": self.name,
+        }
+
+    async def _handle_llm_tool_calls(
+        self,
+        state: MultiAgentState,
+        messages: list,
+        session_id: str,
+        agent_messages: list,
+        response: AIMessage
+    ) -> Dict[str, Any]:
+        """处理 LLM 返回的工具调用
+
+        Args:
+            state: 多Agent状态
+            messages: 消息列表
+            session_id: 会话ID
+            agent_messages: Agent消息列表
+            response: LLM响应（包含工具调用）
+
+        Returns:
+            处理结果
+        """
+        needs_confirmation = False
+        confirmation_data = None
+        tool_messages = []
+        tool_used_info = []
+
+        for tool_call in response.tool_calls:
+            tool = self._get_tool(tool_call["name"])
+            if not tool:
+                continue
+
+            try:
+                tool_result = tool.invoke(tool_call["args"])
+
+                # 检查是否需要确认
+                if tool_call["name"] in ["prepare_cancel_order", "prepare_create_order"]:
+                    needs_confirmation = True
+                    parsed_result = self._parse_tool_result(tool_result)
+                    confirmation_data = {
+                        "action_type": tool_call["name"].replace("prepare_", ""),
+                        "action_data": tool_call["args"],
+                        "display_message": parsed_result.get("text", "请确认操作"),
+                        "display_data": {
+                            "items": parsed_result.get("items"),
+                            "total_amount": parsed_result.get("total_amount"),
+                            "order": parsed_result.get("order"),
+                        },
+                    }
+
+                tool_messages.append(
+                    ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
+                )
+                tool_used_info.append({
+                    "agent": self.name,
+                    "tool": tool_call["name"],
+                    "args": tool_call["args"],
+                })
+            except Exception as e:
+                tool_messages.append(
+                    ToolMessage(content=f"错误: {str(e)}", tool_call_id=tool_call["id"])
+                )
+
+        followup_messages = agent_messages + [response] + tool_messages
+        final_response = self.llm.invoke(followup_messages)
+
+        result = {
+            "messages": messages + [response] + tool_messages + [final_response],
+            "current_agent": self.name,
+            "tools_used": state.get("tools_used", []) + tool_used_info,
+        }
+
+        if needs_confirmation and confirmation_data:
+            confirmation = await self.confirmation_manager.request_confirmation(
+                session_id=session_id,
+                action_type=confirmation_data["action_type"],
+                action_data=confirmation_data["action_data"],
+                agent_name=self.name,
+                display_message=confirmation_data["display_message"],
+                display_data=confirmation_data["display_data"],
+            )
+
+            result["confirmation_pending"] = {
+                "confirmation_id": confirmation.confirmation_id,
+                "action_type": confirmation.action_type,
+                "display_message": confirmation.display_message,
+                "display_data": confirmation.display_data,
+            }
+
+        return result
+
     async def invoke(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行订单操作
 
@@ -184,6 +752,11 @@ class OrderAgent:
                         message = exec_result.get("text", "操作已完成")
                         if result.error:
                             message = f"操作执行失败: {result.error}"
+
+                        logger.info(f"用户确认操作: action_type={result.action_type}, success={exec_result.get('success')}")
+                        if result.action_type == "cancel_order":
+                            logger.info(f"取消订单结果: order_id={result.action_data.get('order_id')}, status={exec_result.get('order_status')}")
+                        
                         return {
                             "messages": messages + [AIMessage(content=message)],
                             "current_agent": self.name,
@@ -200,400 +773,31 @@ class OrderAgent:
                         }
                 # result 为 None 表示用户输入不是确认响应，继续正常处理
 
-        # === 从 state["entities"] 获取实体信息（2025最佳实践）===
-        entities = state.get("entities", {})
-        context_data = state.get("context_data", {})
-
-        # === 【关键修复】检测取消订单意图，强制使用 prepare_cancel_order ===
+        # 获取用户输入内容
         latest_content = latest_message.content if hasattr(latest_message, "content") else ""
-        keywords_config = get_keywords_config()
-        is_cancel_intent = any(kw in latest_content for kw in keywords_config.cancel_order_keywords)
 
-        if is_cancel_intent:
-            logger.info(f"🔍 [ORDER_AGENT] 检测到取消订单意图: {latest_content[:50]}...")
+        # 检测用户意图
+        intent = self._detect_intent(latest_content)
 
-            # 尝试从上下文中获取订单信息
-            order_id = entities.get("order_id") or context_data.get("order_id")
-            user_phone = entities.get("user_phone") or context_data.get("user_phone")
+        # 处理查询订单意图
+        if intent["is_query"]:
+            result = await self._handle_query_intent(state, messages, latest_content)
+            if result:
+                return result
 
-            # 如果没有在 entities 中，尝试从之前的消息中查找订单信息
-            if not order_id:
-                # 从 agent_results 中查找订单信息
-                order_result = state.get("agent_results", {}).get("order_agent", {})
-                if isinstance(order_result, dict) and "orders" in order_result:
-                    orders = order_result.get("orders", [])
-                    if orders and len(orders) == 1:
-                        # 如果只有一个订单，自动选择
-                        order_id = orders[0].get("id")
-                        logger.info(f"🔍 [ORDER_AGENT] 从 agent_results 获取到单一订单: id={order_id}")
+        # 处理取消订单意图
+        if intent["is_cancel"]:
+            result = await self._handle_cancel_intent(state, messages, session_id, latest_content)
+            if result:
+                return result
 
-                # 如果还没有，从消息历史中的 ToolMessage 查找
-                if not order_id:
-                    for msg in reversed(messages):
-                        if isinstance(msg, ToolMessage):
-                            try:
-                                tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-                                if isinstance(tool_result, dict) and "orders" in tool_result:
-                                    orders = tool_result.get("orders", [])
-                                    if orders and len(orders) == 1:
-                                        order_id = orders[0].get("id")
-                                        logger.info(f"🔍 [ORDER_AGENT] 从历史消息获取到单一订单: id={order_id}")
-                                        break
-                            except (json.JSONDecodeError, TypeError):
-                                continue
-
-            # 如果有订单 ID 和用户手机号，直接调用 prepare_cancel_order
-            if order_id and user_phone:
-                logger.info(f"🔍 [ORDER_AGENT] 强制调用 prepare_cancel_order: order_id={order_id}, phone={user_phone}")
-
-                # 先获取完整的订单信息用于前端展示
-                order_info = None
-                for msg in reversed(messages):
-                    if isinstance(msg, ToolMessage):
-                        try:
-                            tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-                            if isinstance(tool_result, dict) and "orders" in tool_result:
-                                orders = tool_result.get("orders", [])
-                                for o in orders:
-                                    if o.get("id") == order_id or o.get("id") == int(order_id):
-                                        order_info = o
-                                        break
-                                if order_info:
-                                    break
-                        except (json.JSONDecodeError, TypeError):
-                            continue
-
-                prepare_tool = next((t for t in self.tools if t.name == "prepare_cancel_order"), None)
-                if prepare_tool:
-                    try:
-                        prepare_result = prepare_tool.invoke({
-                            "order_id": int(order_id),
-                            "user_phone": user_phone,
-                            "reason": "用户请求取消"
-                        })
-
-                        # 解析结果
-                        result_data = json.loads(prepare_result) if isinstance(prepare_result, str) else prepare_result
-
-                        if result_data.get("can_cancel", False):
-                            # 创建 confirmation_pending
-                            display_message = result_data.get("text", "请确认是否取消订单")
-
-                            # 构建完整的展示数据（包含订单信息）
-                            display_data = {
-                                "order_id": order_id,
-                                "order": order_info  # 包含订单详情，供前端渲染
-                            }
-
-                            confirmation = await self.confirmation_manager.request_confirmation(
-                                session_id=session_id,
-                                action_type="cancel_order",
-                                action_data={
-                                    "order_id": int(order_id),
-                                    "user_phone": user_phone
-                                },
-                                agent_name=self.name,
-                                display_message=display_message,
-                                display_data=display_data
-                            )
-
-                            logger.info(f"✅ [ORDER_AGENT] 创建取消订单确认: confirmation_id={confirmation.confirmation_id}")
-
-                            return {
-                                "messages": messages + [AIMessage(content=display_message)],
-                                "current_agent": self.name,
-                                "confirmation_pending": {
-                                    "confirmation_id": confirmation.confirmation_id,
-                                    "action_type": "cancel_order",
-                                    "display_message": display_message,
-                                    "display_data": display_data
-                                },
-                                "tools_used": state.get("tools_used", []) + [{
-                                    "agent": self.name,
-                                    "tool": "prepare_cancel_order",
-                                    "args": {"order_id": order_id, "user_phone": user_phone}
-                                }]
-                            }
-                        else:
-                            # 无法取消，返回原因
-                            return {
-                                "messages": messages + [AIMessage(content=result_data.get("text", "无法取消订单"))],
-                                "current_agent": self.name,
-                            }
-                    except Exception as e:
-                        logger.error(f"❌ [ORDER_AGENT] prepare_cancel_order 失败: {e}", exc_info=True)
-
-            # 如果没有足够的信息，记录日志但继续使用 LLM 处理
-            if not order_id or not user_phone:
-                logger.info(f"🔍 [ORDER_AGENT] 取消意图但缺少信息: order_id={order_id}, user_phone={user_phone}，使用 LLM 处理")
-
-        # 优先从 entities 读取，其次从 context_data 读取（向后兼容任务链）
-        user_phone = entities.get("user_phone") or context_data.get("user_phone")
-        selected_product_id = entities.get("selected_product_id") or context_data.get("selected_product_id")
-        selected_quantity = entities.get("quantity") or context_data.get("quantity", 1)
-
-        # === 任务链模式：强制调用 prepare_create_order（跳过 LLM 判断）===
-        # 检查是否在任务链模式下且有完整信息
-        task_chain = state.get("task_chain")
-        is_task_chain_mode = False
-
-        if task_chain:
-            current_index = task_chain.get("current_step_index", 0)
-            steps = task_chain.get("steps", [])
-            if current_index < len(steps):
-                current_step = steps[current_index]
-                if current_step.get("step_type") == "order_creation":
-                    is_task_chain_mode = True
-
-        # 任务链模式 + 完整信息：强制调用 prepare_create_order
-        if is_task_chain_mode and selected_product_id and user_phone:
-            logger.info(
-                f"任务链模式：强制调用 prepare_create_order，"
-                f"product_id={selected_product_id}, quantity={selected_quantity}, phone={user_phone}"
-            )
-
-            # 直接调用 prepare_create_order
-            prepare_tool = next((t for t in self.tools if t.name == "prepare_create_order"), None)
-            if not prepare_tool:
-                return {
-                    "messages": messages + [
-                        AIMessage(content="❌ 订单创建工具未找到，请联系管理员")
-                    ],
-                    "current_agent": self.name,
-                }
-
-            try:
-                # 调用 prepare_create_order
-                # 注意：prepare_create_order 期望 items 是 JSON 字符串，不是列表
-                items_list = [{"product_id": int(selected_product_id), "quantity": int(selected_quantity)}]
-                items_json = json.dumps(items_list, ensure_ascii=False)
-                prepare_result = prepare_tool.invoke({
-                    "user_phone": user_phone,
-                    "items": items_json,
-                    "notes": None
-                })
-
-                # 解析结果
-                if isinstance(prepare_result, str):
-                    try:
-                        result_data = json.loads(prepare_result)
-                    except:
-                        result_data = {"text": prepare_result}
-                else:
-                    result_data = prepare_result
-
-                # 构建友好消息
-                result_message = result_data.get("text", "订单信息已确认")
-                display_message = f"请确认订单信息：\n{result_message}"
-
-                # 创建 confirmation_pending
-                # action_data 中保存原始列表格式，供 confirm_create_order 使用
-                confirmation = await self.confirmation_manager.request_confirmation(
-                    session_id=session_id,
-                    action_type="create_order",
-                    action_data={
-                        "user_phone": user_phone,
-                        "items": items_json,  # 保存 JSON 字符串格式，与工具期望的格式一致
-                        "notes": None
-                    },
-                    agent_name=self.name,
-                    display_message=display_message,
-                    display_data={
-                        "items": result_data.get("items"),
-                        "total_amount": result_data.get("total_amount"),
-                    },
-                )
-
-                logger.info(f"任务链模式：已创建订单确认请求，confirmation_id={confirmation.confirmation_id}")
-
-                # 返回确认信息
-                return {
-                    "messages": messages + [AIMessage(content=display_message)],
-                    "current_agent": self.name,
-                    "confirmation_pending": {
-                        "confirmation_id": confirmation.confirmation_id,
-                        "action_type": confirmation.action_type,
-                        "display_message": confirmation.display_message,
-                        "display_data": confirmation.display_data,
-                    },
-                    "tools_used": state.get("tools_used", []) + [{
-                        "agent": self.name,
-                        "tool": "prepare_create_order",
-                        "args": {"user_phone": user_phone, "items": items_json}
-                    }]
-                }
-            except Exception as e:
-                logger.error(f"任务链模式准备订单失败: {e}", exc_info=True)
-                return {
-                    "messages": messages + [
-                        AIMessage(content=f"❌ 准备订单失败: {str(e)}")
-                    ],
-                    "current_agent": self.name,
-                }
-
-        # === 正常模式：使用 LLM 处理 ===
-        # 构建手机号提示
-        phone_hint = f"\n用户手机号: {user_phone}" if user_phone else "\n注意: 需要用户提供手机号才能查询订单"
-
-        # 如果有选中的商品（任务链模式），添加明确的上下文提示
-        product_hint = ""
-        if selected_product_id and user_phone:
-            # 任务链模式：已有完整信息，直接创建订单
-            product_hint = f"""
-
-=== 任务链上下文（重要）===
-用户已通过多步骤流程选择商品并提供了必要信息：
-- 商品 ID: {selected_product_id}
-- 购买数量: {selected_quantity}
-- 用户手机号: {user_phone}
-
-所有必要信息已齐全，请立即使用 prepare_create_order 工具创建订单。
-必须使用的参数：
-  user_phone: "{user_phone}"
-  items: [{{"product_id": {selected_product_id}, "quantity": {selected_quantity}}}]
-
-不要再询问用户提供手机号或其他信息，直接执行即可。
-"""
-        elif selected_product_id and not user_phone:
-            # 有商品但缺少手机号
-            product_hint = f"""
-
-=== 任务链上下文 ===
-用户已选择商品（ID: {selected_product_id}，数量: {selected_quantity}），但缺少手机号。
-请向用户索要手机号以完成订单创建。
-"""
-
-        # 清理消息序列，移除孤立的 ToolMessage
-        # 这确保符合 OpenAI API 的格式要求：
-        # "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'"
-        cleaned_messages = clean_messages_for_llm(messages)
-
-        # 构建 Agent 消息
-        agent_messages = [
-            SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + phone_hint + product_hint)
-        ]
-        agent_messages.extend(cleaned_messages)
-
-        # 添加调试日志
-        logger.info(f"🤖 [ORDER_AGENT] 准备调用 LLM")
-        logger.info(f"🤖 [ORDER_AGENT] 提取的用户手机号: {user_phone}")
-        logger.info(f"🤖 [ORDER_AGENT] 消息数量: {len(cleaned_messages)}")
-        if cleaned_messages:
-            latest_msg = cleaned_messages[-1]
-            logger.info(f"🤖 [ORDER_AGENT] 最新消息类型: {type(latest_msg).__name__}")
-            logger.info(f"🤖 [ORDER_AGENT] 最新消息内容: {latest_msg.content[:100] if hasattr(latest_msg, 'content') else 'N/A'}...")
-
-        # 调用 LLM
-        response = self.llm_with_tools.invoke(agent_messages)
-
-        # 添加调试日志
-        logger.info(f"🤖 [ORDER_AGENT] LLM 响应类型: {type(response).__name__}")
-        logger.info(f"🤖 [ORDER_AGENT] 是否有工具调用: {hasattr(response, 'tool_calls') and bool(response.tool_calls)}")
-        if hasattr(response, "tool_calls") and response.tool_calls:
-            logger.info(f"🤖 [ORDER_AGENT] 工具调用数量: {len(response.tool_calls)}")
-            for tc in response.tool_calls:
-                logger.info(f"  - 工具名称: {tc.get('name', 'N/A')}")
-                logger.info(f"    参数: {tc.get('args', {})}")
-
-        # 处理工具调用
-        if hasattr(response, "tool_calls") and response.tool_calls:
-            # 检查是否是 prepare_* 操作（需要确认）
-            needs_confirmation = False
-            confirmation_data = None
-
-            # 执行工具调用并构建 ToolMessage
-            tool_messages = []
-            tool_used_info = []
-
-            for tool_call in response.tool_calls:
-                tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
-                if tool:
-                    try:
-                        tool_result = tool.invoke(tool_call["args"])
-
-                        # 检查是否需要确认
-                        if tool_call["name"] in ["prepare_cancel_order", "prepare_create_order"]:
-                            needs_confirmation = True
-
-                            # 解析工具结果以获取展示信息
-                            try:
-                                parsed_result = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
-                            except:
-                                parsed_result = {}
-
-                            confirmation_data = {
-                                "action_type": tool_call["name"].replace("prepare_", ""),
-                                "action_data": tool_call["args"],
-                                "display_message": parsed_result.get("text", "请确认操作"),
-                                "display_data": {
-                                    "items": parsed_result.get("items"),
-                                    "total_amount": parsed_result.get("total_amount"),
-                                    "order": parsed_result.get("order"),
-                                },
-                            }
-
-                        # 构建 ToolMessage
-                        tool_messages.append(
-                            ToolMessage(
-                                content=str(tool_result),
-                                tool_call_id=tool_call["id"],
-                            )
-                        )
-                        tool_used_info.append({
-                            "agent": self.name,
-                            "tool": tool_call["name"],
-                            "args": tool_call["args"],
-                        })
-                    except Exception as e:
-                        # 工具调用失败，也需要返回 ToolMessage
-                        tool_messages.append(
-                            ToolMessage(
-                                content=f"错误: {str(e)}",
-                                tool_call_id=tool_call["id"],
-                            )
-                        )
-
-            # 构建后续消息列表（包含 tool_calls 的 assistant 消息 + ToolMessage）
-            followup_messages = agent_messages + [response] + tool_messages
-
-            # 再次调用 LLM 生成最终回复
-            final_response = self.llm.invoke(followup_messages)
-
-            # 构建返回 - 重要：必须包含完整的消息序列
-            # 包括：1. response (包含 tool_calls 的 AIMessage)
-            #      2. tool_messages (ToolMessage 列表)
-            #      3. final_response (最终回复)
-            # 这样可以确保 OpenAI API 的消息格式要求：
-            # "messages with role 'tool' must be a response to a preceeding message with 'tool_calls'"
-            result = {
-                "messages": messages + [response] + tool_messages + [final_response],
-                "current_agent": self.name,
-                "tools_used": state.get("tools_used", []) + tool_used_info,
-            }
-
-            # 如果需要确认，通过 ConfirmationManager 创建确认请求
-            if needs_confirmation and confirmation_data:
-                confirmation = await self.confirmation_manager.request_confirmation(
-                    session_id=session_id,
-                    action_type=confirmation_data["action_type"],
-                    action_data=confirmation_data["action_data"],
-                    agent_name=self.name,
-                    display_message=confirmation_data["display_message"],
-                    display_data=confirmation_data["display_data"],
-                )
-
-                # 在返回中包含确认信息供前端使用
-                result["confirmation_pending"] = {
-                    "confirmation_id": confirmation.confirmation_id,
-                    "action_type": confirmation.action_type,
-                    "display_message": confirmation.display_message,
-                    "display_data": confirmation.display_data,
-                }
-
+        # 处理任务链模式下的订单创建
+        result = await self._handle_task_chain_order_creation(state, messages)
+        if result:
             return result
 
-        # 无工具调用，直接返回响应
-        return {
-            "messages": messages + [response],
-            "current_agent": self.name,
-        }
+        # 使用 LLM 处理
+        user_phone = self._get_entity(state, "user_phone")
+        selected_product_id = self._get_entity(state, "selected_product_id")
+        selected_quantity = self._get_entity(state, "quantity", 1)
+        return await self._handle_with_llm(state, messages, session_id, user_phone, selected_product_id, selected_quantity)

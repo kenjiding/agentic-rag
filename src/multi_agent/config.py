@@ -83,6 +83,17 @@ class KeywordsConfig:
         "cancel this order", "delete order", "refund order",
     ])
 
+    # 查询订单意图关键词（用于检测用户想要查询订单）
+    query_order_keywords: List[str] = field(default_factory=lambda: [
+        # 中文
+        "查询订单", "查看订单", "我的订单", "订单列表", "订单信息",
+        "帮我查询", "查询我的订单", "订单查询", "看看订单",
+        "订单状态", "订单详情", "订单情况",
+        # 英文
+        "query order", "query orders", "my orders", "order list",
+        "show orders", "list orders", "check order", "check orders",
+    ])
+
     # 选择相关关键词
     selection_keywords: List[str] = field(default_factory=lambda: [
         "选择", "确认", "第", "选",

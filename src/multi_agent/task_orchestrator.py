@@ -2,13 +2,14 @@
 
 TaskChainOrchestrator 负责：
 1. 检测是否为多步骤任务
-2. 创建任务链
+2. 创建任务链（支持LLM动态生成）
 3. 执行当前步骤
 4. 管理任务链生命周期
 
 2025-2026 最佳实践：
 - 使用 LLM-based 意图识别替代硬编码规则
 - 结合规则和 LLM：规则作为快速路径，LLM 作为精确判断
+- LLM动态生成任务链，无需枚举所有场景
 - 利用已有的意图分类器基础设施
 """
 
@@ -18,7 +19,7 @@ import uuid
 import logging
 import re
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -60,11 +61,54 @@ class TaskChainOrchestrator:
 
     负责检测和编排多步骤任务，如"搜索商品 → 用户选择 → 创建订单"。
     
-    改进点：
+    2025企业级最佳实践：
     1. 使用 LLM-based 检测替代硬编码规则
     2. 保留规则作为快速路径（可选）
     3. 更好的语义理解和上下文感知
+    4. LLM动态生成任务链，无需枚举所有场景
     """
+    
+    # 定义可用的步骤类型和能力（作为LLM的上下文）
+    AVAILABLE_STEP_TYPES = {
+        "product_search": {
+            "description": "搜索商品，返回商品列表",
+            "agent_name": "product_agent",
+            "output": "products: List[Product]",
+            "requires": ["search_keyword"]
+        },
+        "user_selection": {
+            "description": "用户从选项中选择（需要用户交互）",
+            "agent_name": None,  # 需要用户交互
+            "output": "selected_item: Any",
+            "requires": ["options"]
+        },
+        "order_creation": {
+            "description": "准备订单信息（调用prepare_create_order准备订单详情，但不创建确认。订单信息会保存到result_data中，供后续confirmation步骤使用）",
+            "agent_name": "order_agent",
+            "output": "order_info: Dict（包含订单详情，如items、total_amount等）",
+            "requires": ["product_id", "quantity", "user_phone"],
+            "note": "此步骤只准备订单信息，不创建确认。必须在order_creation之后添加confirmation步骤来确认订单"
+        },
+        "confirmation": {
+            "description": "确认操作（需要用户确认。如果上一步是order_creation，则确认订单创建；否则用于其他确认场景）",
+            "agent_name": None,
+            "output": "confirmed: bool（确认后执行相应操作）",
+            "requires": ["confirmation_data（从上一步骤的result_data中获取）"],
+            "note": "用于订单确认或其他需要用户确认的操作"
+        },
+        "web_search": {
+            "description": "网络搜索，获取最新信息",
+            "agent_name": "rag_agent",
+            "output": "search_results: List[str]",
+            "requires": ["query"]
+        },
+        "rag_search": {
+            "description": "RAG检索，从知识库中搜索相关信息",
+            "agent_name": "rag_agent",
+            "output": "retrieved_docs: List[Document]",
+            "requires": ["query"]
+        }
+    }
 
     def __init__(self, llm: Optional[ChatOpenAI] = None, use_fast_path: bool = True):
         """初始化任务编排器
@@ -76,7 +120,7 @@ class TaskChainOrchestrator:
         self.selection_manager = get_selection_manager()
         self.use_fast_path = use_fast_path
         
-        # 初始化 LLM（用于精确检测）
+        # 初始化 LLM（用于精确检测和动态生成）
         self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
         self.structured_llm = self.llm.with_structured_output(MultiStepTaskDetection)
         
@@ -265,6 +309,10 @@ class TaskChainOrchestrator:
         initial_state: MultiAgentState
     ) -> TaskChain:
         """根据任务类型创建任务链
+        
+        2025企业级最佳实践：支持LLM动态生成任务链
+        - 已知任务类型使用快速路径（如 order_with_search）
+        - 未知任务类型使用LLM动态生成
 
         Args:
             task_type: 任务类型
@@ -273,10 +321,13 @@ class TaskChainOrchestrator:
         Returns:
             TaskChain 对象
         """
-        if task_type == "order_with_search":
-            return self._create_order_with_search_chain(initial_state)
-        else:
-            raise ValueError(f"不支持的任务类型: {task_type}")
+        # 快速路径：已知的任务类型
+        # if task_type == "order_with_search":
+        #     return self._create_order_with_search_chain(initial_state)
+        
+        # LLM动态生成：未知的任务类型
+        logger.info(f"使用LLM动态生成任务链: task_type={task_type}")
+        return self._llm_generate_task_chain(task_type, initial_state)
 
     def _create_order_with_search_chain(
         self,
@@ -342,6 +393,245 @@ class TaskChainOrchestrator:
 
         return task_chain
 
+    def _llm_generate_task_chain(
+        self,
+        task_type: str,
+        initial_state: MultiAgentState
+    ) -> TaskChain:
+        """使用LLM动态生成任务链
+        
+        2025企业级最佳实践：让LLM根据任务需求自动组合步骤。
+        无需枚举所有场景，LLM会根据可用步骤类型和用户需求动态生成。
+
+        Args:
+            task_type: 任务类型
+            initial_state: 初始状态
+            
+        Returns:
+            TaskChain 对象
+        """
+        from pydantic import BaseModel as PydanticBaseModel
+        
+        class TaskStepPlan(PydanticBaseModel):
+            """任务步骤计划"""
+            step_id: str = Field(description="步骤唯一标识，如 'search-1', 'select-1'")
+            step_type: str = Field(description="步骤类型，必须是可用的步骤类型之一")
+            agent_name: Optional[str] = Field(
+                default=None,
+                description="执行该步骤的Agent名称，如果为None则表示需要用户交互"
+            )
+            description: str = Field(description="步骤描述，说明这个步骤要做什么")
+            required_context: List[str] = Field(
+                default_factory=list,
+                description="需要的上下文数据字段列表，如 ['search_keyword', 'quantity']"
+            )
+            output_context: List[str] = Field(
+                default_factory=list,
+                description="输出的上下文数据字段列表，如 ['products', 'selected_product_id']"
+            )
+        
+        class TaskChainPlan(PydanticBaseModel):
+            """任务链计划"""
+            chain_type: str = Field(description="任务链类型，描述性名称")
+            steps: List[TaskStepPlan] = Field(description="步骤列表，按执行顺序排列")
+            context_data: Dict[str, Any] = Field(
+                default_factory=dict,
+                description="初始上下文数据，包含任务所需的所有初始信息（键值对形式）"
+            )
+            reasoning: str = Field(description="为什么这样设计任务链，解释设计思路")
+        
+        # 构建可用步骤的描述
+        available_steps_desc = "\n".join([
+            f"- **{step_id}**: {info['description']}\n"
+            f"  - 需要输入: {', '.join(info['requires'])}\n"
+            f"  - 输出: {info['output']}\n"
+            f"  - Agent: {info['agent_name'] or '需要用户交互'}"
+            + (f"\n  - ⚠️ 注意: {info.get('note', '')}" if info.get('note') else "")
+            for step_id, info in self.AVAILABLE_STEP_TYPES.items()
+        ])
+        
+        # 从状态中提取信息
+        entities = initial_state.get("entities", {})
+        user_message = None
+        for msg in reversed(initial_state["messages"]):
+            if isinstance(msg, HumanMessage):
+                user_message = msg.content
+                break
+        
+        # LLM生成任务链计划
+        template = """你是一个任务编排专家。请根据用户需求，设计一个多步骤任务链。
+
+# 任务类型
+{task_type}
+
+# 用户消息
+{user_message}
+
+# 可用步骤类型
+{available_steps}
+
+# 当前上下文（已提取的实体信息）
+{context}
+
+# 重要规则（单一职责原则）
+1. **order_creation 步骤的职责**：只负责准备订单信息（调用 prepare_create_order），将订单详情保存到 result_data 中，**不创建确认请求**。
+2. **confirmation 步骤的职责**：负责确认操作。如果上一步是 order_creation，则从 result_data 中读取订单信息并创建确认请求；确认后执行订单创建。
+3. **订单创建的标准流程**：order_creation → confirmation（必须按此顺序，遵循单一职责原则）
+
+# 要求
+1. 分析用户需求，确定需要哪些步骤来完成这个任务
+2. 按照逻辑顺序排列步骤，确保前一步的输出能满足下一步的输入需求
+3. 从可用步骤类型中选择，不要创建新的步骤类型
+4. 如果某个步骤需要用户交互（如选择），使用 user_selection
+5. **订单创建必须包含两个步骤**：order_creation（准备订单信息）→ confirmation（确认订单）
+6. 确保步骤之间的数据流是连贯的（前一步的输出要包含下一步需要的输入）
+7. 初始上下文数据应该包含从用户消息中提取的所有必要信息
+
+# 输出要求
+请设计任务链，包括：
+- chain_type: 任务链类型（描述性名称）
+- steps: 步骤列表（每个步骤包含 step_id, step_type, agent_name, description, required_context, output_context）
+- context_data: 初始上下文数据（从用户消息和entities中提取）
+- reasoning: 设计理由（解释为什么这样设计）
+
+请确保步骤类型必须是可用步骤类型之一，不要创建新的步骤类型。"""
+
+        prompt = ChatPromptTemplate.from_template(template)
+        # 使用 function_calling 方法，因为 OpenAI structured output 不支持开放的 Dict[str, Any]
+        chain_plan_llm = self.llm.with_structured_output(
+            TaskChainPlan,
+            method="function_calling"
+        )
+        chain = prompt | chain_plan_llm
+        
+        try:
+            plan = chain.invoke({
+                "task_type": task_type,
+                "user_message": user_message or "",
+                "available_steps": available_steps_desc,
+                "context": str(entities) if entities else "无"
+            })
+            
+            # 将计划转换为TaskChain
+            return self._plan_to_task_chain(plan, task_type, initial_state)
+            
+        except Exception as e:
+            logger.error(f"LLM生成任务链失败: {e}", exc_info=True)
+            # 降级：返回通用任务链
+            logger.warning(f"降级到通用任务链: {task_type}")
+            return self._create_fallback_chain(task_type, initial_state)
+    
+    def _plan_to_task_chain(
+        self,
+        plan: Any,  # TaskChainPlan (定义在方法内部，使用Any避免前向引用)
+        task_type: str,
+        initial_state: MultiAgentState
+    ) -> TaskChain:
+        """将LLM生成的计划转换为TaskChain对象
+        
+        Args:
+            plan: LLM生成的任务链计划
+            initial_state: 初始状态
+            
+        Returns:
+            TaskChain 对象
+        """
+        steps = []
+        for i, step_plan in enumerate(plan.steps):
+            # 验证步骤类型是否可用
+            if step_plan.step_type not in self.AVAILABLE_STEP_TYPES:
+                logger.warning(
+                    f"LLM生成的步骤类型 {step_plan.step_type} 不可用，跳过。"
+                    f"可用类型: {list(self.AVAILABLE_STEP_TYPES.keys())}"
+                )
+                continue
+            
+            step_info = self.AVAILABLE_STEP_TYPES[step_plan.step_type]
+            # 使用LLM指定的agent_name，如果没有则使用默认值
+            agent_name = step_plan.agent_name or step_info.get("agent_name")
+            
+            step: TaskStep = {
+                "step_id": step_plan.step_id or f"{step_plan.step_type}-{i+1}",
+                "step_type": step_plan.step_type,  # type: ignore
+                "status": "pending",
+                "agent_name": agent_name,
+                "result_data": None,
+                "metadata": {
+                    "description": step_plan.description,
+                    "required_context": step_plan.required_context,
+                    "output_context": step_plan.output_context,
+                    "reasoning": plan.reasoning,
+                    "generated_by": "llm"
+                }
+            }
+            steps.append(step)
+        
+        # 合并初始上下文数据
+        entities = initial_state.get("entities", {})
+        context_data = {**entities, **plan.context_data}
+        
+        task_chain: TaskChain = {
+            "chain_id": str(uuid.uuid4()),
+            "chain_type": plan.chain_type or f"dynamic_{task_type}",
+            "steps": steps,
+            "current_step_index": 0,
+            "context_data": context_data,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        logger.info(
+            f"LLM动态生成任务链: type={task_chain['chain_type']}, "
+            f"steps={len(steps)}, reasoning={plan.reasoning[:100]}..."
+        )
+        
+        return task_chain
+    
+    def _create_fallback_chain(
+        self,
+        task_type: str,
+        initial_state: MultiAgentState
+    ) -> TaskChain:
+        """创建降级任务链（当LLM生成失败时使用）
+        
+        Args:
+            task_type: 任务类型
+            initial_state: 初始状态
+            
+        Returns:
+            通用的降级任务链
+        """
+        entities = initial_state.get("entities", {})
+        context_data = entities.copy()
+        
+        # 创建一个通用的任务链，包含基本的步骤
+        task_chain: TaskChain = {
+            "chain_id": str(uuid.uuid4()),
+            "chain_type": f"fallback_{task_type}",
+            "steps": [
+                {
+                    "step_id": "rag-search-1",
+                    "step_type": "rag_search",  # type: ignore
+                    "status": "pending",
+                    "agent_name": "rag_agent",
+                    "result_data": None,
+                    "metadata": {
+                        "description": "使用RAG搜索相关信息",
+                        "fallback": True
+                    }
+                }
+            ],
+            "current_step_index": 0,
+            "context_data": context_data,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        
+        logger.warning(
+            f"创建降级任务链: type={task_chain['chain_type']}, "
+            f"steps={len(task_chain['steps'])}"
+        )
+        
+        return task_chain
+
     async def execute_current_step(
         self,
         state: MultiAgentState,
@@ -386,6 +676,12 @@ class TaskChainOrchestrator:
             return await self._execute_user_selection(state, task_chain, current_step, session_id)
         elif step_type == "order_creation":
             return self._execute_order_creation(state, task_chain, current_step)
+        elif step_type == "rag_search":
+            return self._execute_rag_search(state, task_chain, current_step)
+        elif step_type == "web_search":
+            return self._execute_web_search(state, task_chain, current_step)
+        elif step_type == "confirmation":
+            return await self._execute_confirmation(state, task_chain, current_step, session_id)
         else:
             logger.error(f"不支持的步骤类型: {step_type}")
             return {"next_action": "finish"}
@@ -490,6 +786,157 @@ class TaskChainOrchestrator:
             "selected_agent": "order_agent",
             "task_chain": task_chain,
             "context_data": context_data
+        }
+    
+    def _execute_rag_search(
+        self,
+        state: MultiAgentState,
+        task_chain: TaskChain,
+        current_step: TaskStep
+    ) -> Dict[str, Any]:
+        """执行RAG搜索步骤"""
+        current_step["status"] = "in_progress"
+        context_data = task_chain.get("context_data", {})
+        
+        return {
+            "next_action": "rag_search",
+            "selected_agent": "rag_agent",
+            "task_chain": task_chain,
+            "context_data": context_data
+        }
+    
+    def _execute_web_search(
+        self,
+        state: MultiAgentState,
+        task_chain: TaskChain,
+        current_step: TaskStep
+    ) -> Dict[str, Any]:
+        """执行网络搜索步骤"""
+        current_step["status"] = "in_progress"
+        context_data = task_chain.get("context_data", {})
+        
+        # web_search 通过 rag_agent 的工具调用实现
+        return {
+            "next_action": "rag_search",  # 使用rag_agent，它会调用web_search工具
+            "selected_agent": "rag_agent",
+            "task_chain": task_chain,
+            "context_data": context_data
+        }
+    
+    async def _execute_confirmation(
+        self,
+        state: MultiAgentState,
+        task_chain: TaskChain,
+        current_step: TaskStep,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """执行确认步骤
+        
+        遵循单一职责原则：
+        - 如果上一步是 order_creation，则处理订单确认
+        - 否则处理其他类型的确认
+        """
+        current_index = task_chain["current_step_index"]
+        current_step["status"] = "in_progress"
+        
+        # 检查上一步是否是 order_creation（订单确认场景）
+        if current_index > 0:
+            prev_step = task_chain["steps"][current_index - 1]
+            if prev_step.get("step_type") == "order_creation":
+                # 订单确认场景：从 order_creation 的 result_data 中读取订单信息
+                prev_result_data = prev_step.get("result_data", {})
+                order_info = prev_result_data.get("order_info", {})
+                
+                if not order_info:
+                    logger.error("未找到订单信息，无法创建确认请求")
+                    return {
+                        "next_action": "finish",
+                        "task_chain": None,
+                        "messages": state.get("messages", []) + [
+                            AIMessage(content="❌ 订单信息缺失，无法确认")
+                        ]
+                    }
+                
+                # 构建订单确认消息
+                order_text = order_info.get("text", "订单信息")
+                display_message = f"请确认订单信息：\n{order_text}"
+                
+                # 创建订单确认请求
+                from src.confirmation.manager import get_confirmation_manager
+                confirmation_manager = get_confirmation_manager()
+                
+                confirmation = await confirmation_manager.request_confirmation(
+                    session_id=session_id,
+                    action_type="create_order",  # 订单确认使用 create_order action_type
+                    action_data={
+                        "user_phone": order_info.get("user_phone"),
+                        "items": order_info.get("items"),  # JSON 字符串格式
+                        "notes": None
+                    },
+                    agent_name="order_agent",
+                    display_message=display_message,
+                    display_data={
+                        "items": order_info.get("items_data"),
+                        "total_amount": order_info.get("total_amount"),
+                        "task_chain_id": task_chain["chain_id"],
+                        "step_id": current_step["step_id"]
+                    }
+                )
+                
+                logger.info(f"订单确认请求已创建: confirmation_id={confirmation.confirmation_id}")
+                
+                return {
+                    "confirmation_pending": {
+                        "confirmation_id": confirmation.confirmation_id,
+                        "action_type": confirmation.action_type,
+                        "action_data": confirmation.action_data,
+                        "display_message": confirmation.display_message,
+                        "display_data": confirmation.display_data,  # 包含订单信息，供前端UI使用
+                        "agent_name": confirmation.agent_name
+                    },
+                    "next_action": "wait_for_confirmation",
+                    "task_chain": task_chain
+                }
+        
+        # 其他类型的确认场景
+        context_data = task_chain.get("context_data", {})
+        step_metadata = current_step.get("metadata", {}) or {}
+        confirmation_data = step_metadata.get("confirmation_data") or context_data
+        
+        confirmation_message = (
+            step_metadata.get("confirmation_message") or
+            step_metadata.get("description") or
+            "请确认是否继续执行此操作？"
+        )
+        
+        agent_name = current_step.get("agent_name") or "task_orchestrator"
+        
+        from src.confirmation.manager import get_confirmation_manager
+        confirmation_manager = get_confirmation_manager()
+        
+        confirmation = await confirmation_manager.request_confirmation(
+            session_id=session_id,
+            action_type="task_chain_action",
+            action_data=confirmation_data,
+            agent_name=agent_name,
+            display_message=confirmation_message,
+            display_data={
+                "task_chain_id": task_chain["chain_id"],
+                "step_id": current_step["step_id"],
+                "chain_type": task_chain["chain_type"]
+            }
+        )
+        
+        return {
+            "confirmation_pending": {
+                "confirmation_id": confirmation.confirmation_id,
+                "action_type": confirmation.action_type,
+                "action_data": confirmation.action_data,
+                "display_message": confirmation.display_message,
+                "agent_name": confirmation.agent_name
+            },
+            "next_action": "wait_for_confirmation",
+            "task_chain": task_chain
         }
 
     def move_to_next_step(self, task_chain: TaskChain) -> TaskChain:

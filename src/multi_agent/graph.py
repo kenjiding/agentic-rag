@@ -668,6 +668,7 @@ class MultiAgentGraph:
                 "messages": result.get("messages", state.get("messages", [])),
                 "current_agent": "order_agent",
                 "confirmation_pending": result.get("confirmation_pending"),
+                "tools_used": result.get("tools_used", state.get("tools_used", [])),
             }
 
             # 保留context_data
@@ -681,15 +682,38 @@ class MultiAgentGraph:
                 steps = task_chain["steps"]
 
                 if current_index < len(steps):
-                    if result.get("confirmation_pending"):
-                        # 有待确认操作，保持任务链为 in_progress，并设置 next_action
+                    current_step = steps[current_index]
+                    step_type = current_step.get("step_type")
+                    
+                    # order_creation 步骤：保存订单信息到 result_data，不创建确认
+                    if step_type == "order_creation":
+                        # 保存订单信息到步骤的 result_data 中，供后续 confirmation 步骤使用
+                        order_info = result.get("order_info") or {}
+                        steps[current_index].update({
+                            "status": "completed",
+                            "result_data": {
+                                "order_info": order_info,
+                                "message": result.get("messages", [])[-1].content if result.get("messages") else ""
+                            }
+                        })
+                        from src.multi_agent.task_orchestrator import get_task_orchestrator
+                        task_chain = get_task_orchestrator().move_to_next_step(task_chain)
+                        updated_state["task_chain"] = task_chain
+                        
+                        if task_chain["current_step_index"] < len(task_chain["steps"]):
+                            updated_state["next_action"] = "execute_task_chain"
+                        else:
+                            # 任务链完成（不应该发生，因为 order_creation 后应该有 confirmation）
+                            updated_state["task_chain"] = None
+                            logger.warning("任务链在 order_creation 后完成，缺少 confirmation 步骤")
+                    elif result.get("confirmation_pending"):
+                        # 其他步骤的确认操作（非订单确认）
                         steps[current_index]["status"] = "in_progress"
                         updated_state["task_chain"] = task_chain
-                        # 重要：设置 next_action 为 wait_for_confirmation，让 graph 暂停
                         updated_state["next_action"] = "wait_for_confirmation"
-                        logger.info("订单创建需要确认，暂停任务链执行")
+                        logger.info("需要确认，暂停任务链执行")
                     else:
-                        # 没有待确认操作，标记步骤完成并移动到下一步
+                        # 普通步骤完成
                         from src.multi_agent.task_orchestrator import get_task_orchestrator
                         steps[current_index].update({
                             "status": "completed",
@@ -745,6 +769,7 @@ class MultiAgentGraph:
             updated_state = {
                 "task_chain": result.get("task_chain", state.get("task_chain")),
                 "pending_selection": result.get("pending_selection"),
+                "confirmation_pending": result.get("confirmation_pending"),
                 "next_action": result.get("next_action"),
                 "selected_agent": result.get("selected_agent"),
             }

@@ -9,11 +9,22 @@ logger = logging.getLogger(__name__)
 
 async def cancel_order_executor(action_type: str, action_data: Dict[str, Any]) -> Dict[str, Any]:
     """执行订单取消"""
+    logger.info(f"🔧 [EXECUTOR_CANCEL] 开始执行订单取消")
+    logger.info(f"🔧 [EXECUTOR_CANCEL] action_type: {action_type}")
+    logger.info(f"🔧 [EXECUTOR_CANCEL] action_data: {action_data}")
+    
     from src.tools.order_tools import confirm_cancel_order
     result = confirm_cancel_order.invoke(action_data)
+    
     if isinstance(result, str):
-        return json.loads(result)
-    return result
+        parsed_result = json.loads(result)
+    else:
+        parsed_result = result
+    
+    # 【关键日志】记录执行结果
+    logger.info(f"🔧 [EXECUTOR_CANCEL] 执行结果: success={parsed_result.get('success')}, order_status={parsed_result.get('order_status')}")
+    
+    return parsed_result
 
 
 async def create_order_executor(action_type: str, action_data: Dict[str, Any]) -> Dict[str, Any]:

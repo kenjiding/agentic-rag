@@ -102,14 +102,17 @@ def query_user_orders(
                         "subtotal": float(item.price * item.quantity),
                         "product_images": product_images,
                     })
-                orders_data.append({
+                order_data_item = {
                     "id": order.id,
                     "order_number": order.order_id,
                     "status": order.status,
                     "total_amount": float(order.total_amount) if order.total_amount else 0,
                     "created_at": order.created_at.isoformat() if order.created_at else None,
                     "items": order_items,
-                })
+                }
+                orders_data.append(order_data_item)
+                # 【关键日志】记录每个订单的状态
+                logger.info(f"📋 [ORDER_QUERY] 构建订单数据: id={order.id}, order_number={order.order_id}, status={order.status}, status_from_db={order.status}")
 
             # 生成人类可读文本
             if not orders:
@@ -122,10 +125,17 @@ def query_user_orders(
                     result_lines.append(f"{i}. {display.format_text()}\n")
                 text = "\n".join(result_lines)
 
-            return json.dumps({
+            result_json = json.dumps({
                 "text": text,
                 "orders": orders_data
             }, ensure_ascii=False)
+            
+            # 【关键日志】记录返回给前端的订单数据
+            logger.info(f"📋 [ORDER_QUERY] 返回订单数据: 共{len(orders_data)}个订单")
+            for od in orders_data:
+                logger.info(f"  - 订单ID: {od['id']}, 订单号: {od['order_number']}, 状态: {od['status']}")
+            
+            return result_json
 
     except Exception as e:
         return json.dumps({
@@ -200,6 +210,12 @@ def query_order_detail(
                 "created_at": order.created_at.isoformat() if order.created_at else None,
                 "items": order_items,
             }
+            
+            # 【关键日志】记录查询到的订单详情状态
+            import logging
+            logger_detail = logging.getLogger(__name__)
+            logger_detail.info(f"📋 [ORDER_DETAIL] 查询订单详情: id={order.id}, order_number={order.order_id}, status={order.status}, status_from_db={order.status}")
+            logger_detail.info(f"📋 [ORDER_DETAIL] 返回订单数据: id={order_data['id']}, status={order_data['status']}")
 
             # 生成人类可读文本
             status_emoji = {
@@ -224,10 +240,17 @@ def query_order_detail(
 
             text = "\n".join(text_parts)
 
-            return json.dumps({
+            result_json = json.dumps({
                 "text": text,
                 "order": order_data
             }, ensure_ascii=False)
+            
+            # 【关键日志】记录返回给前端的订单详情
+            import logging
+            logger_detail = logging.getLogger(__name__)
+            logger_detail.info(f"📋 [ORDER_DETAIL] 返回JSON: order.status={order_data['status']}")
+            
+            return result_json
 
     except Exception as e:
         return json.dumps({
@@ -332,38 +355,62 @@ def confirm_cancel_order(
     ],
 ) -> str:
     """确认取消订单 - 执行实际的取消操作（JSON格式）"""
+    import logging
+    logger_cancel = logging.getLogger(__name__)
+    
     try:
+        logger_cancel.info(f"🚫 [CANCEL_ORDER] 开始取消订单: order_id={order_id}, user_phone={user_phone}")
+        
         with get_db_session() as db:
+            # 【关键日志】取消前的状态
+            order_before = get_order_by_id(db, order_id)
+            if order_before:
+                logger_cancel.info(f"🚫 [CANCEL_ORDER] 取消前状态: order_id={order_before.id}, status={order_before.status}, order_number={order_before.order_id}")
+            else:
+                logger_cancel.warning(f"🚫 [CANCEL_ORDER] 取消前未找到订单: order_id={order_id}")
+            
             order = get_order_by_id(db, order_id)
             if not order:
+                logger_cancel.error(f"🚫 [CANCEL_ORDER] 未找到订单: order_id={order_id}")
                 return json.dumps({
                     "text": f"未找到ID为 {order_id} 的订单",
                     "success": False
                 }, ensure_ascii=False)
 
             if order.user_id != user_phone:
+                logger_cancel.warning(f"🚫 [CANCEL_ORDER] 权限验证失败: order.user_id={order.user_id}, user_phone={user_phone}")
                 return json.dumps({
                     "text": "无权取消此订单",
                     "success": False
                 }, ensure_ascii=False)
 
+            # 【关键日志】执行取消操作
+            logger_cancel.info(f"🚫 [CANCEL_ORDER] 执行取消操作: order_id={order_id}, 当前状态={order.status}")
             order = cancel_order_db(db, order_id)
             if not order:
+                logger_cancel.error(f"🚫 [CANCEL_ORDER] 取消操作失败: order_id={order_id}")
                 return json.dumps({
                     "text": f"无法取消订单 {order_id}",
                     "success": False
                 }, ensure_ascii=False)
             
+            # 【关键日志】取消后的状态
+            logger_cancel.info(f"🚫 [CANCEL_ORDER] 取消后状态: order_id={order.id}, status={order.status}, order_number={order.order_id}")
+            
             # 上下文管理器会自动提交事务
             # 为了确保获取最新状态，在提交后重新查询（使用新的查询会从数据库读取最新数据）
             # 由于事务会在退出 with 块时提交，这里返回的对象状态应该是正确的
             
-            return json.dumps({
+            result_data = {
                 "text": f"订单 {order.order_id} 已成功取消",
                 "success": True,
                 "order_id": order.id,
                 "order_status": order.status  # 明确返回状态，用于前端显示
-            }, ensure_ascii=False)
+            }
+            
+            logger_cancel.info(f"🚫 [CANCEL_ORDER] 返回结果: success={result_data['success']}, order_status={result_data['order_status']}")
+            
+            return json.dumps(result_data, ensure_ascii=False)
 
     except ValueError as e:
         return json.dumps({

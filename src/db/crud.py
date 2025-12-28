@@ -166,6 +166,9 @@ def get_order_by_id(db: Session, order_id: int, refresh: bool = False) -> Option
         order_id: 订单 ID
         refresh: 是否强制从数据库刷新对象（用于确保获取最新状态）
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # SQLAlchemy 2.0+: 使用 joinedload 加载集合关系时需要调用 unique() 去重
     order = db.execute(
         select(Order)
@@ -173,11 +176,18 @@ def get_order_by_id(db: Session, order_id: int, refresh: bool = False) -> Option
         .where(Order.id == order_id)
     ).unique().scalar_one_or_none()
     
+    if order:
+        logger.info(f"💾 [DB_GET_ORDER] 查询订单: order_id={order_id}, 找到订单, status={order.status}, refresh={refresh}")
+    else:
+        logger.warning(f"💾 [DB_GET_ORDER] 查询订单: order_id={order_id}, 未找到订单")
+    
     # 如果需要强制刷新（例如在状态更新后查询）
     if order and refresh:
         # 先过期对象，然后刷新，确保从数据库重新加载
+        old_status = order.status
         db.expire(order)
         db.refresh(order)
+        logger.info(f"💾 [DB_GET_ORDER] 刷新订单: order_id={order_id}, 刷新前status={old_status}, 刷新后status={order.status}")
     
     return order
 
@@ -209,6 +219,9 @@ def get_user_orders(
     Returns:
         订单列表
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     query = select(Order).options(
         joinedload(Order.order_items).joinedload(OrderItem.product),
     ).where(Order.user_id == user_phone)
@@ -220,7 +233,14 @@ def get_user_orders(
 
     # 使用 unique() 去重，因为 joinedload 会产生重复行
     result = db.execute(query).unique().scalars().all()
-    return list(result)
+    orders = list(result)
+    
+    # 【关键日志】记录从数据库查询到的订单状态
+    logger.info(f"💾 [DB_QUERY] 查询用户订单: user_phone={user_phone}, status_filter={status}, 找到{len(orders)}个订单")
+    for order in orders:
+        logger.info(f"  - 订单ID: {order.id}, 订单号: {order.order_id}, 状态: {order.status}")
+    
+    return orders
 
 
 def create_order(
@@ -296,23 +316,38 @@ def cancel_order(db: Session, order_id: int) -> Optional[Order]:
     Returns:
         取消后的订单对象，失败返回 None
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     order = get_order_by_id(db, order_id)
     if not order:
+        logger.warning(f"💾 [DB_CANCEL] 未找到订单: order_id={order_id}")
         return None
+
+    # 【关键日志】取消前的状态
+    logger.info(f"💾 [DB_CANCEL] 取消前: order_id={order.id}, status={order.status}, order_number={order.order_id}")
 
     # 只有 pending 状态的订单可以取消
     if order.status != "pending":
+        logger.error(f"💾 [DB_CANCEL] 订单状态不允许取消: order_id={order.id}, status={order.status}")
         raise ValueError(f"Cannot cancel order with status {order.status}")
 
     # 更新状态和更新时间
     from datetime import datetime, timezone
+    old_status = order.status
     order.status = "cancelled"
     order.updated_at = datetime.now(timezone.utc)
+    
+    # 【关键日志】更新后的状态（flush前）
+    logger.info(f"💾 [DB_CANCEL] 更新状态: order_id={order.id}, {old_status} -> {order.status}")
     
     # flush 确保更改被保存到当前会话
     db.flush()
     # refresh 确保对象状态与数据库同步
     db.refresh(order)
+    
+    # 【关键日志】刷新后的状态
+    logger.info(f"💾 [DB_CANCEL] 刷新后: order_id={order.id}, status={order.status}, order_number={order.order_id}")
     
     return order
 
