@@ -771,7 +771,18 @@ class OrderAgent:
                             "current_agent": self.name,
                             "confirmation_pending": None,
                         }
-                # result 为 None 表示用户输入不是确认响应，继续正常处理
+                # result 为 None 表示用户输入不是确认响应
+                # 【关键修复】check_and_resolve_from_text 已经自动取消了确认，
+                # 但我们需要确保返回 confirmation_pending: None 以清理 state
+                logger.info(f"用户输入不是确认响应，确认已自动取消，清理 confirmation_pending: session={session_id}")
+                # 继续正常处理，但确保返回 confirmation_pending: None
+        elif not pending_confirmation:
+            # 【关键修复】如果没有待确认操作，但 state 中可能还有旧的 confirmation_pending
+            # 确保返回 None 以清理 state
+            state_confirmation = state.get("confirmation_pending")
+            if state_confirmation:
+                logger.info(f"检测到 state 中有旧的 confirmation_pending，但 ConfirmationManager 中已无待确认操作，清理: session={session_id}")
+                # 继续正常处理，但确保返回 confirmation_pending: None
 
         # 获取用户输入内容
         latest_content = latest_message.content if hasattr(latest_message, "content") else ""
@@ -783,21 +794,47 @@ class OrderAgent:
         if intent["is_query"]:
             result = await self._handle_query_intent(state, messages, latest_content)
             if result:
+                # 【关键修复】确保清理旧的 confirmation_pending
+                if "confirmation_pending" not in result:
+                    pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
+                    if not pending_confirmation:
+                        result["confirmation_pending"] = None
                 return result
 
         # 处理取消订单意图
         if intent["is_cancel"]:
             result = await self._handle_cancel_intent(state, messages, session_id, latest_content)
             if result:
+                # _handle_cancel_intent 会返回 confirmation_pending（如果创建了新的确认）
+                # 如果没有创建新的确认，确保清理旧的
+                if "confirmation_pending" not in result:
+                    pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
+                    if not pending_confirmation:
+                        result["confirmation_pending"] = None
                 return result
 
         # 处理任务链模式下的订单创建
         result = await self._handle_task_chain_order_creation(state, messages)
         if result:
+            # 任务链模式可能创建确认，如果没有，确保清理旧的
+            if "confirmation_pending" not in result:
+                pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
+                if not pending_confirmation:
+                    result["confirmation_pending"] = None
             return result
 
         # 使用 LLM 处理
         user_phone = self._get_entity(state, "user_phone")
         selected_product_id = self._get_entity(state, "selected_product_id")
         selected_quantity = self._get_entity(state, "quantity", 1)
-        return await self._handle_with_llm(state, messages, session_id, user_phone, selected_product_id, selected_quantity)
+        result = await self._handle_with_llm(state, messages, session_id, user_phone, selected_product_id, selected_quantity)
+        
+        # 【关键修复】确保如果没有创建新的确认，就清理旧的 confirmation_pending
+        if "confirmation_pending" not in result:
+            # 检查是否还有待确认操作
+            pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
+            if not pending_confirmation:
+                # 没有待确认操作，清理 state 中的 confirmation_pending
+                result["confirmation_pending"] = None
+        
+        return result

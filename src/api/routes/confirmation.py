@@ -45,6 +45,21 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
 
         session_id = confirmation.session_id
 
+        # 2.5. 【关键修复】如果用户取消，立即清理 state 中的 confirmation_pending
+        if not request.confirmed:
+            graph = await get_graph()
+            config = {"configurable": {"thread_id": session_id}}
+            try:
+                # 清理 state 中的 confirmation_pending
+                graph.graph.update_state(
+                    config,
+                    {"confirmation_pending": None},
+                    as_node="order_agent"
+                )
+                logger.info(f"已清理 state 中的 confirmation_pending: session={session_id}")
+            except Exception as e:
+                logger.warning(f"清理 state 中的 confirmation_pending 失败: {e}")
+
         # 3. 检查是否在任务链模式下
         graph = await get_graph()
         config = {"configurable": {"thread_id": session_id}}

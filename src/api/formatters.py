@@ -297,6 +297,8 @@ def format_state_update(state_update: Dict[str, Any], node_update: Dict[str, Any
     if not confirmation_pending:
         confirmation_pending = state_update.get("confirmation_pending")
     
+    # 【关键修复】如果 confirmation_pending 为 None，确保不返回确认信息
+    # 注意：验证逻辑在 order_agent.py 中完成，这里只负责格式化
     if confirmation_pending:
         result["data"]["confirmation_pending"] = confirmation_pending
         result["data"]["response_type"] = "confirmation"
