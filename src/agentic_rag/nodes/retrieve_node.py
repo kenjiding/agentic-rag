@@ -153,7 +153,8 @@ def create_retrieve_node(
                             "retrieved_docs": retrieved_docs,
                             "retrieval_history": retrieval_history,
                             "retrieval_quality": quality,
-                            "error_message": ""
+                            "error_message": "",
+                            "iteration_count": iteration + 1
                         }
                         
                         # 仍然进行失败分析（基于上一轮结果），供决策节点判断
@@ -224,7 +225,8 @@ def create_retrieve_node(
                 "retrieved_docs": retrieved_docs,
                 "retrieval_history": retrieval_history,
                 "retrieval_quality": quality,
-                "error_message": ""
+                "error_message": "",
+                "iteration_count": iteration + 1
             }
 
             # 如果启用自适应检索，更新失败分析信息（用于决策节点判断）
@@ -256,10 +258,12 @@ def create_retrieve_node(
             print(f"{Style.BRIGHT}{Fore.RED}🔍【retrieve】 ❌ {error_msg}{Style.RESET_ALL}")
             import traceback
             traceback.print_exc()
+            iteration = state.get("iteration_count", 0)
             return {
                 "error_message": error_msg,
                 "retrieved_docs": [],
-                "retrieval_quality": 0.0
+                "retrieval_quality": 0.0,
+                "iteration_count": iteration + 1
             }
 
     return retrieve_node

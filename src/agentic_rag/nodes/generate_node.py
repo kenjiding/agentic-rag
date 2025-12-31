@@ -89,22 +89,28 @@ def create_generate_node(
             generation_history = state.get("generation_history", [])
             generation_history.append(answer)
 
+            # 更新迭代计数
+            iteration = state.get("iteration_count", 0)
+
             return {
                 "answer": answer,
                 "generation_history": generation_history,
                 "answer_quality": quality,
                 "answer_type": answer_type,  # 新增：答案类型
                 "evaluation_feedback": feedback,
-                "error_message": ""
+                "error_message": "",
+                "iteration_count": iteration + 1
             }
             
         except Exception as e:
             error_msg = f"生成错误: {str(e)}"
             print(f"{Style.BRIGHT}{Fore.YELLOW}🚢【generator]点】 ❌ {error_msg}{Style.RESET_ALL}")
+            iteration = state.get("iteration_count", 0)
             return {
                 "error_message": error_msg,
                 "answer": "",
-                "answer_quality": 0.0
+                "answer_quality": 0.0,
+                "iteration_count": iteration + 1
             }
     
     return generate_node
