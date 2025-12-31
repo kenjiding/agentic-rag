@@ -128,11 +128,11 @@ class TaskChainOrchestrator:
 
     def detect_multi_step_task(self, state: MultiAgentState) -> Optional[str]:
         """检测是否为多步骤任务
-        
+
         改进后的实现：
         1. 快速路径：使用规则快速过滤明显不是多步骤任务的情况
         2. 精确路径：使用 LLM 进行语义理解和上下文感知
-        
+
         Args:
             state: 当前状态
 
@@ -141,27 +141,39 @@ class TaskChainOrchestrator:
         """
         # 提取最后一条用户消息
         user_message = None
-        for msg in reversed(state["messages"]):
+        for msg in reversed(state.messages):
             if isinstance(msg, HumanMessage):
                 user_message = msg.content
                 break
 
         if not user_message:
+            logger.debug("[多步骤检测] 无用户消息，返回 None")
             return None
+
+        logger.info(f"[多步骤检测] 用户消息: {user_message[:50]}...")
 
         # === 快速路径：规则检测（可选，用于提高性能）===
         if self.use_fast_path:
+            logger.debug("[多步骤检测] 尝试快速路径检测")
             fast_result = self._fast_path_detection(user_message)
             if fast_result is not None:
+                logger.info(f"[多步骤检测] ✓ 快速路径检测到: {fast_result}")
                 return fast_result
+            logger.debug("[多步骤检测] 快速路径未检测到，继续")
 
         # === 精确路径：LLM-based 检测 ===
         llm_result = self._llm_based_detection(user_message, state)
         if llm_result:
+            logger.info(f"[多步骤检测] ✓ LLM检测到: {llm_result}")
             return llm_result
-        
+
         # LLM 检测失败或返回 None，使用降级规则
-        return self._fallback_rule_detection(user_message)
+        fallback_result = self._fallback_rule_detection(user_message)
+        if fallback_result:
+            logger.info(f"[多步骤检测] ✓ 降级规则检测到: {fallback_result}")
+        else:
+            logger.info(f"[多步骤检测] ✗ 所有检测方法均未检测到多步骤任务")
+        return fallback_result
 
     def _fast_path_detection(self, user_message: str) -> Optional[str]:
         """快速路径：基于规则的快速检测
@@ -175,19 +187,31 @@ class TaskChainOrchestrator:
         keywords_config = get_keywords_config()
 
         # 快速排除：已经有明确的 product_id
-        if re.search(r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+", user_message_lower):
+        has_product_id = re.search(r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+", user_message_lower)
+        if has_product_id:
+            logger.info(f"[快速路径] 检测到product_id，跳过多步骤任务检测")
             return None
 
         # 快速排除：完全没有购买意图（使用配置化关键词）
-        if not any(kw in user_message_lower for kw in keywords_config.order_intent_keywords):
+        matched_order_keywords = [kw for kw in keywords_config.order_intent_keywords if kw in user_message_lower]
+        has_order_intent = len(matched_order_keywords) > 0
+        logger.info(f"[快速路径] 购买意图关键词匹配: {matched_order_keywords}, has_intent={has_order_intent}")
+
+        if not has_order_intent:
             return None
 
         # 检测到购买意图，检查是否有商品关键词（使用配置化关键词）
-        if any(kw.lower() in user_message_lower for kw in keywords_config.get_all_product_keywords()):
+        all_product_keywords = keywords_config.get_all_product_keywords()
+        matched_product_keywords = [kw for kw in all_product_keywords if kw.lower() in user_message_lower]
+        has_product_keyword = len(matched_product_keywords) > 0
+        logger.info(f"[快速路径] 商品关键词匹配: {matched_product_keywords}, has_product={has_product_keyword}")
+
+        if has_product_keyword:
             # 明确的多步骤任务信号，直接返回
-            logger.info("快速路径：检测到明确的多步骤任务信号")
+            logger.info(f"[快速路径] ✓ 检测到明确的多步骤任务信号 (order_with_search)")
             return "order_with_search"
 
+        logger.info(f"[快速路径] 未检测到商品关键词，返回 None")
         return None
 
     def _llm_based_detection(self, user_message: str, state: MultiAgentState) -> Optional[str]:
@@ -342,7 +366,7 @@ class TaskChainOrchestrator:
             TaskChain 对象
         """
         # 从 state["entities"] 读取实体信息（2025最佳实践：统一实体管理）
-        entities = state.get("entities", {})
+        entities = state.entities
         context_data = {
             "user_phone": entities.get("user_phone"),
             "quantity": entities.get("quantity", 1),
@@ -351,44 +375,44 @@ class TaskChainOrchestrator:
 
         logger.info(f"从 entities 读取任务链上下文: {context_data}")
 
-        task_chain: TaskChain = {
-            "chain_id": str(uuid.uuid4()),
-            "chain_type": "order_with_search",
-            "steps": [
-                {
-                    "step_id": "search-1",
-                    "step_type": "product_search",
-                    "status": "pending",
-                    "agent_name": "product_agent",
-                    "result_data": None,
-                    "metadata": None
-                },
-                {
-                    "step_id": "select-1",
-                    "step_type": "user_selection",
-                    "status": "pending",
-                    "agent_name": None,
-                    "result_data": None,
-                    "metadata": None
-                },
-                {
-                    "step_id": "order-1",
-                    "step_type": "order_creation",
-                    "status": "pending",
-                    "agent_name": "order_agent",
-                    "result_data": None,
-                    "metadata": None
-                }
+        task_chain: TaskChain = TaskChain(
+            chain_id=str(uuid.uuid4()),
+            chain_type="order_with_search",
+            steps=[
+                TaskStep(
+                    step_id="search-1",
+                    step_type="product_search",
+                    status="pending",
+                    agent_name="product_agent",
+                    result_data=None,
+                    metadata=None
+                ),
+                TaskStep(
+                    step_id="select-1",
+                    step_type="user_selection",
+                    status="pending",
+                    agent_name=None,
+                    result_data=None,
+                    metadata=None
+                ),
+                TaskStep(
+                    step_id="order-1",
+                    step_type="order_creation",
+                    status="pending",
+                    agent_name="order_agent",
+                    result_data=None,
+                    metadata=None
+                )
             ],
-            "current_step_index": 0,
-            "context_data": context_data,
-            "created_at": datetime.utcnow().isoformat()
-        }
+            current_step_index=0,
+            context_data=context_data,
+            created_at=datetime.utcnow().isoformat()
+        )
 
         logger.info(
-            f"创建任务链: id={task_chain['chain_id']}, "
-            f"type={task_chain['chain_type']}, "
-            f"steps={len(task_chain['steps'])}"
+            f"创建任务链: id={task_chain.chain_id}, "
+            f"type={task_chain.chain_type}, "
+            f"steps={len(task_chain.steps)}"
         )
 
         return task_chain
@@ -451,9 +475,9 @@ class TaskChainOrchestrator:
         ])
         
         # 从状态中提取信息
-        entities = initial_state.get("entities", {})
+        entities = initial_state.entities
         user_message = None
-        for msg in reversed(initial_state["messages"]):
+        for msg in reversed(initial_state.messages):
             if isinstance(msg, HumanMessage):
                 user_message = msg.content
                 break
@@ -549,38 +573,38 @@ class TaskChainOrchestrator:
             step_info = self.AVAILABLE_STEP_TYPES[step_plan.step_type]
             # 使用LLM指定的agent_name，如果没有则使用默认值
             agent_name = step_plan.agent_name or step_info.get("agent_name")
-            
-            step: TaskStep = {
-                "step_id": step_plan.step_id or f"{step_plan.step_type}-{i+1}",
-                "step_type": step_plan.step_type,  # type: ignore
-                "status": "pending",
-                "agent_name": agent_name,
-                "result_data": None,
-                "metadata": {
+
+            step = TaskStep(
+                step_id=step_plan.step_id or f"{step_plan.step_type}-{i+1}",
+                step_type=step_plan.step_type,  # type: ignore
+                status="pending",
+                agent_name=agent_name,
+                result_data=None,
+                metadata={
                     "description": step_plan.description,
                     "required_context": step_plan.required_context,
                     "output_context": step_plan.output_context,
                     "reasoning": plan.reasoning,
                     "generated_by": "llm"
                 }
-            }
+            )
             steps.append(step)
-        
-        # 合并初始上下文数据
-        entities = initial_state.get("entities", {})
+
+        # 合并初始上下��数据
+        entities = initial_state.entities
         context_data = {**entities, **plan.context_data}
-        
-        task_chain: TaskChain = {
-            "chain_id": str(uuid.uuid4()),
-            "chain_type": plan.chain_type or f"dynamic_{task_type}",
-            "steps": steps,
-            "current_step_index": 0,
-            "context_data": context_data,
-            "created_at": datetime.utcnow().isoformat()
-        }
+
+        task_chain = TaskChain(
+            chain_id=str(uuid.uuid4()),
+            chain_type=plan.chain_type or f"dynamic_{task_type}",
+            steps=steps,
+            current_step_index=0,
+            context_data=context_data,
+            created_at=datetime.utcnow().isoformat()
+        )
         
         logger.info(
-            f"LLM动态生成任务链: type={task_chain['chain_type']}, "
+            f"LLM动态生成任务链: type={task_chain.chain_type}, "
             f"steps={len(steps)}, reasoning={plan.reasoning[:100]}..."
         )
         
@@ -600,34 +624,34 @@ class TaskChainOrchestrator:
         Returns:
             通用的降级任务链
         """
-        entities = initial_state.get("entities", {})
+        entities = initial_state.entities
         context_data = entities.copy()
-        
+
         # 创建一个通用的任务链，包含基本的步骤
-        task_chain: TaskChain = {
-            "chain_id": str(uuid.uuid4()),
-            "chain_type": f"fallback_{task_type}",
-            "steps": [
-                {
-                    "step_id": "rag-search-1",
-                    "step_type": "rag_search",  # type: ignore
-                    "status": "pending",
-                    "agent_name": "rag_agent",
-                    "result_data": None,
-                    "metadata": {
+        task_chain = TaskChain(
+            chain_id=str(uuid.uuid4()),
+            chain_type=f"fallback_{task_type}",
+            steps=[
+                TaskStep(
+                    step_id="rag-search-1",
+                    step_type="rag_search",  # type: ignore
+                    status="pending",
+                    agent_name="rag_agent",
+                    result_data=None,
+                    metadata={
                         "description": "使用RAG搜索相关信息",
                         "fallback": True
                     }
-                }
+                )
             ],
-            "current_step_index": 0,
-            "context_data": context_data,
-            "created_at": datetime.utcnow().isoformat()
-        }
+            current_step_index=0,
+            context_data=context_data,
+            created_at=datetime.utcnow().isoformat()
+        )
         
         logger.warning(
-            f"创建降级任务链: type={task_chain['chain_type']}, "
-            f"steps={len(task_chain['steps'])}"
+            f"创建降级任务链: type={task_chain.chain_type}, "
+            f"steps={len(task_chain.steps)}"
         )
         
         return task_chain
@@ -646,13 +670,13 @@ class TaskChainOrchestrator:
         Returns:
             要更新到状态中的数据
         """
-        task_chain = state.get("task_chain")
+        task_chain = state.task_chain
         if not task_chain:
             logger.error("task_chain 不存在")
             return {"next_action": "finish"}
 
-        current_index = task_chain["current_step_index"]
-        steps = task_chain["steps"]
+        current_index = task_chain.current_step_index
+        steps = task_chain.steps
 
         if current_index >= len(steps):
             logger.info("任务链已完成")
@@ -662,17 +686,20 @@ class TaskChainOrchestrator:
             }
 
         current_step: TaskStep = steps[current_index]
-        step_type = current_step["step_type"]
+        step_type = current_step.step_type
 
         logger.info(
-            f"执行步骤: index={current_index}, "
+            f"[execute_current_step] 执行步骤: index={current_index}, "
             f"type={step_type}, "
-            f"agent={current_step.get('agent_name')}"
+            f"agent={current_step.agent_name}, "
+            f"chain_id={task_chain.chain_id}"
         )
 
         if step_type == "product_search":
+            logger.info(f"[execute_current_step] 路由到 product_search")
             return self._execute_product_search(state, task_chain, current_step)
         elif step_type == "user_selection":
+            logger.info(f"[execute_current_step] 路由到 user_selection，准备执行用户选择步骤")
             return await self._execute_user_selection(state, task_chain, current_step, session_id)
         elif step_type == "order_creation":
             return self._execute_order_creation(state, task_chain, current_step)
@@ -701,16 +728,17 @@ class TaskChainOrchestrator:
 
         Returns:
             路由到 product_agent
-        """
-        # 标记当前步骤为 in_progress
-        current_step["status"] = "in_progress"
 
+        注意：步骤状态在 product_agent 执行完成后更新，不需要在这里更新
+        """
         # 路由到 product_agent，并传递context_data
+        context_data = task_chain.context_data
+        
         return {
             "next_action": "product_search",
             "selected_agent": "product_agent",
             "task_chain": task_chain,
-            "context_data": task_chain.get("context_data", {})
+            "context_data": context_data
         }
 
     async def _execute_user_selection(
@@ -720,55 +748,202 @@ class TaskChainOrchestrator:
         current_step: TaskStep,
         session_id: str
     ) -> Dict[str, Any]:
-        """执行用户选择步骤"""
+        """执行用户选择步骤（LangGraph 1.x 最佳实践：使用 interrupt()）
+
+        工作流程：
+        1. 获取产品列表
+        2. 创建选择请求（selection_manager）
+        3. 调用 interrupt() 暂停图执行
+        4. 用户选择后，通过 /api/selection/resolve 提交
+        5. 使用 Command(resume=...) 恢复执行
+
+        LangGraph 1.x interrupt() 机制：
+        - interrupt() 会保存当前状态到 checkpointer
+        - 图执行暂停，等待 resume 值
+        - 恢复时 interrupt() 返回 resume 值
+        """
         # 从任务链的上一步骤获取产品列表
         products = None
-        current_index = task_chain["current_step_index"]
+        current_index = task_chain.current_step_index
         if current_index > 0:
-            prev_step = task_chain["steps"][current_index - 1]
-            if prev_step.get("step_type") == "product_search":
-                products = prev_step.get("result_data", {}).get("products")
-        
+            prev_step = task_chain.steps[current_index - 1]
+            if prev_step.step_type == "product_search":
+                result_data = prev_step.result_data or {}
+                products = result_data.get("products")
+
         # 降级：从 agent_results 获取
         if not products:
-            product_result = state.get("agent_results", {}).get("product_agent", {})
+            agent_results = state.agent_results or {}
+            product_result = agent_results.get("product_agent", {})
             products = product_result.get("products") if isinstance(product_result, dict) else None
 
+        # 降级：从 state.messages 中提取
         if not products:
+            import json
+            from langchain_core.messages import ToolMessage
+
+            for msg in reversed(state.messages):
+                if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
+                    try:
+                        data = json.loads(msg.content)
+                        if isinstance(data, dict) and "products" in data:
+                            extracted_products = data["products"]
+                            if extracted_products:
+                                products = extracted_products
+                                logger.info(f"从 messages 中的 ToolMessage 提取到 {len(products)} 个产品")
+                                break
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+        if not products or not isinstance(products, list) or len(products) == 0:
             logger.error("未找到产品列表，无法创建选择")
             return {
                 "next_action": "finish",
                 "task_chain": None,
-                "messages": state.get("messages", []) + [{
-                    "role": "assistant",
-                    "content": "抱歉，未找到相关商品，请更换关键词重试。"
-                }]
+                "messages": state.messages + [
+                    AIMessage(content="抱歉，未找到相关商品，请更换关键词重试。")
+                ]
             }
 
         # 创建选择请求
-        search_keyword = task_chain["context_data"].get("search_keyword", "商品")
+        search_keyword = task_chain.context_data.get("search_keyword", "商品")
+
+        # 构建选择信息供 interrupt() 使用
+        selection_info = {
+            "selection_id": str(uuid.uuid4()),
+            "selection_type": "product",
+            "options": products,
+            "display_message": f"请选择要购买的{search_keyword}:",
+            "metadata": {"task_chain_id": task_chain.chain_id, "session_id": session_id}
+        }
+
+        # 保存到 selection_manager（供前端查询）
         selection = await self.selection_manager.request_selection(
             session_id=session_id,
             selection_type="product",
             options=products,
-            display_message=f"请选择要购买的{search_keyword}:",
-            metadata={"task_chain_id": task_chain["chain_id"]}
+            display_message=selection_info["display_message"],
+            metadata={"task_chain_id": task_chain.chain_id}
         )
 
-        # 标记当前步骤为 in_progress
-        current_step["status"] = "in_progress"
+        # 更新 selection_info 中的 selection_id 为实际创建的 ID
+        selection_info["selection_id"] = selection.selection_id
 
-        # 返回待选择状态，graph 将暂停
+        logger.info(f"[用户选择步骤] 创建选择请求: selection_id={selection_info['selection_id']}, options_count={len(products)}")
+        logger.info(f"[用户选择步骤] 准备调用 interrupt()，当前 task_chain: chain_id={task_chain.chain_id}, current_step_index={task_chain.current_step_index}, session_id={session_id}")
+
+        # 【LangGraph 1.x】使用 interrupt() 暂停图执行
+        # interrupt() 的返回值在恢复时就是用户的选择结果
+        # 注意：interrupt() 会抛出 GraphInterrupt 异常，状态会在异常处理时保存到 checkpointer
+        from langgraph.types import interrupt
+
+        # 【关键调试】在调用 interrupt() 之前记录完整的状态
+        logger.info(f"[用户选择步骤] ========================================")
+        logger.info(f"[用户选择步骤] 准备调用 interrupt()")
+        logger.info(f"[用户选择步骤] 当前 task_chain.chain_id={task_chain.chain_id}")
+        logger.info(f"[用户选择步骤] 当前 task_chain.current_step_index={task_chain.current_step_index}")
+        logger.info(f"[用户选择步骤] 当前 task_chain.steps_count={len(task_chain.steps)}")
+        logger.info(f"[用户选择步骤] session_id={session_id}")
+        logger.info(f"[用户选择步骤] selection_id={selection_info['selection_id']}")
+        logger.info(f"[用户选择步骤] state 完整内容: {state.model_dump()}")
+
+        logger.info(f"[用户选择步骤] 调用 interrupt()，selection_info={selection_info}, session_id={session_id}")
+        logger.info(f"[用户选择步骤] interrupt() 将抛出 GraphInterrupt 异常，状态将保存到 checkpointer，thread_id 应该与 session_id 一致: {session_id}")
+        user_selection = interrupt(selection_info)
+        logger.warning(f"[用户选择步骤] interrupt() 返回（不应该执行到这里），这表明 interrupt() 没有抛出异常")
+
+        # 恢复执行后，user_selection 包含用户的选择
+        # 格式：{"selected_option_id": "1"}
+        logger.info(f"[用户选择步骤] interrupt() 恢复执行，收到用户选择: {user_selection}")
+
+        # 验证用户选择
+        selected_option_id = user_selection.get("selected_option_id") if isinstance(user_selection, dict) else None
+        if not selected_option_id:
+            logger.warning(f"[用户选择步骤] 用户选择无效: {user_selection}")
+            return {
+                "next_action": "finish",
+                "task_chain": None,
+                "messages": state.messages + [
+                    AIMessage(content="选择无效，请重新开始。")
+                ]
+            }
+
+        logger.info(f"[用户选择步骤] 验证用户选择成功: selected_option_id={selected_option_id}")
+
+        # 查找选择的产品
+        selected_product = None
+        for product in products:
+            product_id = product.get("id") or product.get("product_id")
+            if str(product_id) == str(selected_option_id):
+                selected_product = product
+                break
+
+        if not selected_product:
+            logger.warning(f"[用户选择步骤] 选择的产品不存在: selected_option_id={selected_option_id}, products_count={len(products)}")
+            return {
+                "next_action": "finish",
+                "task_chain": None,
+                "messages": state.messages + [
+                    AIMessage(content="选择的产品不存在，请重新开始。")
+                ]
+            }
+
+        logger.info(f"[用户选择步骤] 找到选择的产品: product_id={selected_product.get('id')}, product_name={selected_product.get('name')}")
+
+        # 更新步骤为完成状态（使用 model_copy 创建新实例，因为 Pydantic 模型不可变）
+        updated_step = current_step.model_copy(update={
+            "status": "completed",
+            "result_data": {
+                "selected_product": selected_product,
+                "selected_option_id": selected_option_id
+            }
+        })
+
+        # 更新任务链：先更新当前步骤，然后移动到下一步
+        current_index = task_chain.current_step_index
+        logger.info(f"[用户选择步骤] 更新任务链步骤: current_index={current_index}, steps_count={len(task_chain.steps)}")
+        updated_steps = list(task_chain.steps)
+        updated_steps[current_index] = updated_step
+        updated_task_chain = task_chain.model_copy(update={"steps": updated_steps})
+        
+        # 移动到下一步
+        updated_task_chain = self.move_to_next_step(updated_task_chain)
+        next_index = updated_task_chain.current_step_index
+        logger.info(f"[用户选择步骤] 移动到下一步: new_index={next_index}, steps_count={len(updated_task_chain.steps)}")
+
+        # 检查下一步是否需要路由到其他 agent
+        steps = updated_task_chain.steps
+
+        if next_index < len(steps):
+            next_step = steps[next_index]
+            next_step_type = next_step.step_type
+            logger.info(f"[用户选择步骤] 下一步类型: step_type={next_step_type}")
+
+            # 根据下一步类型设置 next_action
+            if next_step_type == "order_creation":
+                logger.info(f"[用户选择步骤] 路由到 order_agent 执行订单创建")
+                return {
+                    "task_chain": updated_task_chain,
+                    "next_action": "order_management",
+                    "selected_agent": "order_agent",
+                    "selected_product": selected_product
+                }
+            elif next_step_type == "confirmation":
+                logger.info(f"[用户选择步骤] 路由到 order_agent 执行确认")
+                return {
+                    "task_chain": updated_task_chain,
+                    "next_action": "order_management",
+                    "selected_agent": "order_agent",
+                    "selected_product": selected_product
+                }
+        else:
+            logger.warning(f"[用户选择步骤] 没有更多步骤，任务链已完成")
+
+        # 默认完成
+        logger.info(f"[用户选择步骤] 返回完成状态")
         return {
-            "pending_selection": {
-                "selection_id": selection.selection_id,
-                "selection_type": selection.selection_type,
-                "options": selection.options,
-                "display_message": selection.display_message,
-                "metadata": selection.metadata
-            },
-            "next_action": "wait_for_selection",
-            "task_chain": task_chain
+            "task_chain": updated_task_chain,
+            "next_action": "finish"
         }
 
     def _execute_order_creation(
@@ -778,16 +953,16 @@ class TaskChainOrchestrator:
         current_step: TaskStep
     ) -> Dict[str, Any]:
         """执行订单创建步骤"""
-        current_step["status"] = "in_progress"
-        context_data = task_chain.get("context_data", {})
-        
+        current_step.status = "in_progress"
+        context_data = task_chain.context_data
+
         return {
             "next_action": "order_management",
             "selected_agent": "order_agent",
             "task_chain": task_chain,
             "context_data": context_data
         }
-    
+
     def _execute_rag_search(
         self,
         state: MultiAgentState,
@@ -795,16 +970,16 @@ class TaskChainOrchestrator:
         current_step: TaskStep
     ) -> Dict[str, Any]:
         """执行RAG搜索步骤"""
-        current_step["status"] = "in_progress"
-        context_data = task_chain.get("context_data", {})
-        
+        # 注意：步骤状态在执行完成时更新，不需要在这里更新
+        context_data = task_chain.context_data
+
         return {
             "next_action": "rag_search",
             "selected_agent": "rag_agent",
             "task_chain": task_chain,
             "context_data": context_data
         }
-    
+
     def _execute_web_search(
         self,
         state: MultiAgentState,
@@ -812,9 +987,9 @@ class TaskChainOrchestrator:
         current_step: TaskStep
     ) -> Dict[str, Any]:
         """执行网络搜索步骤"""
-        current_step["status"] = "in_progress"
-        context_data = task_chain.get("context_data", {})
-        
+        # 注意：步骤状态在执行完成时更新，不需要在这里更新
+        context_data = task_chain.context_data
+
         # web_search 通过 rag_agent 的工具调用实现
         return {
             "next_action": "rag_search",  # 使用rag_agent，它会调用web_search工具
@@ -822,7 +997,7 @@ class TaskChainOrchestrator:
             "task_chain": task_chain,
             "context_data": context_data
         }
-    
+
     async def _execute_confirmation(
         self,
         state: MultiAgentState,
@@ -831,20 +1006,20 @@ class TaskChainOrchestrator:
         session_id: str
     ) -> Dict[str, Any]:
         """执行确认步骤
-        
+
         遵循单一职责原则：
         - 如果上一步是 order_creation，则处理订单确认
         - 否则处理其他类型的确认
         """
-        current_index = task_chain["current_step_index"]
-        current_step["status"] = "in_progress"
-        
+        current_index = task_chain.current_step_index
+        # 注意：步骤状态在执行完成时更新，不需要在这里更新
+
         # 检查上一步是否是 order_creation（订单确认场景）
         if current_index > 0:
-            prev_step = task_chain["steps"][current_index - 1]
-            if prev_step.get("step_type") == "order_creation":
+            prev_step = task_chain.steps[current_index - 1]
+            if prev_step.step_type == "order_creation":
                 # 订单确认场景：从 order_creation 的 result_data 中读取订单信息
-                prev_result_data = prev_step.get("result_data", {})
+                prev_result_data = prev_step.result_data or {}
                 order_info = prev_result_data.get("order_info", {})
                 
                 if not order_info:
@@ -852,7 +1027,7 @@ class TaskChainOrchestrator:
                     return {
                         "next_action": "finish",
                         "task_chain": None,
-                        "messages": state.get("messages", []) + [
+                        "messages": state.messages + [
                             AIMessage(content="❌ 订单信息缺失，无法确认")
                         ]
                     }
@@ -860,12 +1035,18 @@ class TaskChainOrchestrator:
                 # 构建订单确认消息
                 order_text = order_info.get("text", "订单信息")
                 display_message = f"请确认订单信息：\n{order_text}"
-                
+
                 # 创建订单确认请求
                 from src.confirmation.manager import get_confirmation_manager
                 confirmation_manager = get_confirmation_manager()
-                
-                confirmation = await confirmation_manager.request_confirmation(
+
+                # 【修复】检查是否已有待确认的订单请求
+                existing_confirmation = await confirmation_manager.get_pending_confirmation(session_id)
+                if existing_confirmation and existing_confirmation.action_type == "create_order":
+                    logger.info(f"重用已存在的确认请求: confirmation_id={existing_confirmation.confirmation_id}")
+                    confirmation = existing_confirmation
+                else:
+                    confirmation = await confirmation_manager.request_confirmation(
                     session_id=session_id,
                     action_type="create_order",  # 订单确认使用 create_order action_type
                     action_data={
@@ -878,8 +1059,8 @@ class TaskChainOrchestrator:
                     display_data={
                         "items": order_info.get("items_data"),
                         "total_amount": order_info.get("total_amount"),
-                        "task_chain_id": task_chain["chain_id"],
-                        "step_id": current_step["step_id"]
+                        "task_chain_id": task_chain.chain_id,
+                        "step_id": current_step.step_id
                     }
                 )
                 
@@ -899,21 +1080,21 @@ class TaskChainOrchestrator:
                 }
         
         # 其他类型的确认场景
-        context_data = task_chain.get("context_data", {})
-        step_metadata = current_step.get("metadata", {}) or {}
+        context_data = task_chain.context_data
+        step_metadata = current_step.metadata or {}
         confirmation_data = step_metadata.get("confirmation_data") or context_data
-        
+
         confirmation_message = (
             step_metadata.get("confirmation_message") or
             step_metadata.get("description") or
             "请确认是否继续执行此操作？"
         )
-        
-        agent_name = current_step.get("agent_name") or "task_orchestrator"
-        
+
+        agent_name = current_step.agent_name or "task_orchestrator"
+
         from src.confirmation.manager import get_confirmation_manager
         confirmation_manager = get_confirmation_manager()
-        
+
         confirmation = await confirmation_manager.request_confirmation(
             session_id=session_id,
             action_type="task_chain_action",
@@ -921,9 +1102,9 @@ class TaskChainOrchestrator:
             agent_name=agent_name,
             display_message=confirmation_message,
             display_data={
-                "task_chain_id": task_chain["chain_id"],
-                "step_id": current_step["step_id"],
-                "chain_type": task_chain["chain_type"]
+                "task_chain_id": task_chain.chain_id,
+                "step_id": current_step.step_id,
+                "chain_type": task_chain.chain_type
             }
         )
         
@@ -948,20 +1129,28 @@ class TaskChainOrchestrator:
         Returns:
             更新后的任务链
         """
-        current_index = task_chain["current_step_index"]
-        steps = task_chain["steps"]
+        current_index = task_chain.current_step_index
+        steps = task_chain.steps
 
         if current_index < len(steps):
-            # 标记当前步骤为完成
-            steps[current_index]["status"] = "completed"
-
-            # 移动到下一步
-            task_chain["current_step_index"] = current_index + 1
+            # 标记当前步骤为完成（使用 model_copy 创建新实例，因为 Pydantic 模型不可变）
+            current_step = steps[current_index]
+            updated_step = current_step.model_copy(update={"status": "completed"})
+            updated_steps = list(steps)
+            updated_steps[current_index] = updated_step
+            
+            # 移动到下一步（创建新的 task_chain 实例）
+            updated_task_chain = task_chain.model_copy(update={
+                "steps": updated_steps,
+                "current_step_index": current_index + 1
+            })
 
             logger.info(
-                f"移动到下一步: chain={task_chain['chain_id']}, "
-                f"new_index={task_chain['current_step_index']}"
+                f"移动到下一步: chain={updated_task_chain.chain_id}, "
+                f"new_index={updated_task_chain.current_step_index}"
             )
+            
+            return updated_task_chain
 
         return task_chain
 

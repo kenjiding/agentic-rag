@@ -42,14 +42,14 @@ def search_products_tool(
             examples=["智能手机", "5G手机", "笔记本电脑"]
         )
     ] = None,
-    brand: Annotated[
-        Optional[str],
-        Field(
-            default=None,
-            description="品牌名称",
-            examples=["Apple", "华为", "小米"]
-        )
-    ] = None,
+    # brand: Annotated[
+    #     Optional[str],
+    #     Field(
+    #         default=None,
+    #         description="品牌名称",
+    #         examples=["品牌: Apple", "品牌: 华为", "品牌: 小米"]
+    #     )
+    # ] = None,
     price_min: Annotated[
         Optional[float],
         Field(
@@ -94,7 +94,7 @@ def search_products_tool(
         int,
         Field(
             default=10,
-            description="返回结果数量限制",
+            description="返回结果数量限制, 这不是商品购买数量, 而是商品搜索结果数量限制",
             examples=[10, 20, 50]
         )
     ] = 10,
@@ -107,8 +107,8 @@ def search_products_tool(
         with get_db_session() as db:
             # 构建搜索参数（注意：name参数用于商品名搜索，brand是品牌）
             args = ProductSearchArgs(
-                name=brand,      # 商品名称关键词
-                brand="",  # 品牌名称
+                name=name,      # 商品名称关键词
+                # brand=brand,  # 品牌名称
                 category=category,
                 sub_category=sub_category,
                 price_min=price_min,
@@ -159,8 +159,8 @@ def search_products_tool(
                     conditions.append(f"关键词'{name}'")
                 if category:
                     conditions.append(f"分类'{category}'")
-                if brand:
-                    conditions.append(f"品牌'{brand}'")
+                # if brand:
+                #     conditions.append(f"品牌'{brand}'")
                 if price_max:
                     conditions.append(f"价格≤{price_max}元")
 

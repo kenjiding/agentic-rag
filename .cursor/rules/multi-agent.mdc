@@ -1,0 +1,57 @@
+---
+alwaysApply: true
+---
+This is a production-grade multi-agent intelligent customer service system.
+
+Project Context:
+- Domain: TV / E-commerce intelligent customer support
+- Architecture: Multi-Agent System
+- Frameworks: LangChain 1.x, LangGraph 1.x
+- Goal: Stable, scalable, enterprise-level AI customer service
+
+Technology & Best Practices Rules:
+- All implementations must use the latest stable APIs and patterns from LangChain 1.x and LangGraph 1.x
+- Deprecated APIs, legacy patterns, or pre-1.x approaches are strictly forbidden
+- Design decisions must follow current industry best practices for LLM systems and agent architectures
+- If multiple approaches exist, prefer the one that is modern, officially recommended, and future-proof
+
+Architectural Rules:
+- All agent behaviors must be modeled as explicit nodes in LangGraph
+- Agent orchestration must be deterministic, observable, and traceable
+- No implicit agent logic hidden inside prompt-only chains
+- Control flow must be expressed through LangGraph edges and explicit state transitions
+
+Agent Design Rules:
+- Each agent must have a single, clearly defined responsibility
+- Agents must not perform tasks outside their responsibility scope
+- Cross-agent communication must go through shared LangGraph state
+- Agent decisions must be explainable, debuggable, and auditable
+
+LangChain Usage Rules:
+- Chains must be modular, composable, and reusable
+- Avoid monolithic chains mixing reasoning, retrieval, and execution
+- Tools must be stateless and idempotent
+- Tool side effects must be explicit and well-documented
+
+State Management Rules:
+- LangGraph state is the single source of truth
+- All business-relevant data must be stored in the shared state
+- State updates must be explicit, predictable, and version-safe
+- No hidden state in closures, lambdas, or global variables
+
+Error Handling Rules:
+- Errors must be handled at the graph level, not patched inside agents
+- No silent failures or prompt-based fallbacks
+- All error paths must be observable, testable, and logged
+
+Enterprise Engineering Rules:
+- Do not write patch-based or workaround code
+- Do not stack logic to mask underlying design problems
+- Always analyze the full execution flow to identify root causes
+- Fix problems at the architectural or system-design level
+- Solutions must prioritize maintainability, extensibility, and long-term evolution
+
+Non-Functional Requirements:
+- All changes must preserve agent traceability
+- The system must support adding new agents without refactoring core logic
+- Performance optimizations must not sacrifice clarity or debuggability

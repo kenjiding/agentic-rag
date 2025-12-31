@@ -171,16 +171,24 @@ class SelectionManager:
             raise ValueError(f"选择 {selection_id} 已过期")
 
         # 验证选项ID
+        # 注意：产品字典可能使用 'id' 或 'product_id' 字段
         selected_option = None
         for option in selection.options:
-            if str(option.get("id")) == str(selected_option_id):
+            # 支持两种字段名：id 或 product_id
+            option_id = option.get("id") or option.get("product_id")
+            if str(option_id) == str(selected_option_id):
                 selected_option = option
                 break
 
         if not selected_option:
+            # ���供更详细的错误信息
+            available_ids = [
+                opt.get("id") or opt.get("product_id")
+                for opt in selection.options
+            ]
             raise ValueError(
                 f"无效的选项ID: {selected_option_id}，"
-                f"可选ID: {[opt.get('id') for opt in selection.options]}"
+                f"可选ID: {available_ids}"
             )
 
         # 更新状态

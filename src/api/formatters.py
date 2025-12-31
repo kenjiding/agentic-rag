@@ -17,11 +17,6 @@ def _extract_tool_results_from_messages(messages: list, expected_data_types: lis
 
     只提取最新的 ToolMessage 中的结构化数据。
 
-    【关键改进】：
-    1. 如果指定了 expected_data_types，只提取匹配的数据类型
-    2. 从最新的消息开始，只处理最近的 ToolMessage
-    3. 避免历史数据污染
-
     Args:
         messages: 消息列表
         expected_data_types: 期望的数据类型列表，如 ["orders"] 或 ["products"]
@@ -30,138 +25,92 @@ def _extract_tool_results_from_messages(messages: list, expected_data_types: lis
     Returns:
         包含 products/orders 等数据的字典
     """
-    results = {}
-
     if not messages:
-        return results
+        return {}
 
     from langchain_core.messages import ToolMessage
 
-    # 【关键日志】记录提取过程
-    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 开始提取工具结果: 消息总数={len(messages)}, 期望类型={expected_data_types}")
-    
     # 倒序遍历，找到第一个有效的 ToolMessage 即停止
-    tool_message_count = 0
-    for idx, message in enumerate(reversed(messages)):
-        if isinstance(message, ToolMessage):
-            tool_message_count += 1
-            try:
-                tool_content = message.content
-                if isinstance(tool_content, str):
-                    try:
-                        tool_result = json.loads(tool_content)
-                    except:
-                        logger.warning(f"🔍 [EXTRACT_TOOL_RESULTS] 消息#{len(messages)-idx} JSON解析失败")
-                        continue
+    for message in reversed(messages):
+        if not isinstance(message, ToolMessage):
+            continue
 
-                    if isinstance(tool_result, dict):
-                        # 【关键日志】记录找到的订单数据
-                        if "orders" in tool_result:
-                            orders = tool_result.get("orders", [])
-                            logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 消息#{len(messages)-idx} 找到订单数据: 数量={len(orders)}")
-                            for o in orders:
-                                logger.info(f"  - 订单ID: {o.get('id')}, 订单号: {o.get('order_number')}, 状态: {o.get('status')}")
-                        
-                        if "order" in tool_result:
-                            order = tool_result.get("order")
-                            if order:
-                                logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 消息#{len(messages)-idx} 找到订单详情: id={order.get('id')}, status={order.get('status')}")
-                        
-                        # 【改进】根据 expected_data_types 过滤
-                        if expected_data_types:
-                            # 只提取期望的数据类型
-                            if "products" in expected_data_types and "products" in tool_result:
-                                products = tool_result.get("products", [])
-                                if products:
-                                    results["products"] = products
-                                    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 提取products: 数量={len(products)}")
-                            if "orders" in expected_data_types and "orders" in tool_result:
-                                orders = tool_result.get("orders", [])
-                                if orders:
-                                    results["orders"] = orders
-                                    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 提取orders: 数量={len(orders)}, 订单状态列表={[o.get('status') for o in orders]}")
-                        else:
-                            # 提取所有类型
-                            if "products" in tool_result:
-                                products = tool_result.get("products", [])
-                                if products:
-                                    results["products"] = products
-                                    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 提取products: 数量={len(products)}")
-                            if "orders" in tool_result:
-                                orders = tool_result.get("orders", [])
-                                if orders:
-                                    results["orders"] = orders
-                                    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 提取orders: 数量={len(orders)}, 订单状态列表={[o.get('status') for o in orders]}")
-
-                        # 找到有效数据后立即停止
-                        if results:
-                            logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 从消息#{len(messages)-idx}提取到数据，停止搜索")
-                            break
-            except Exception as e:
-                logger.warning(f"🔍 [EXTRACT_TOOL_RESULTS] 消息#{len(messages)-idx}处理异常: {e}")
+        try:
+            content = message.content
+            if not isinstance(content, str):
                 continue
 
-    logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 提取完成: 检查了{tool_message_count}个ToolMessage, 结果keys={list(results.keys())}")
-    if "orders" in results:
-        logger.info(f"🔍 [EXTRACT_TOOL_RESULTS] 最终提取的订单状态: {[o.get('status') for o in results['orders']]}")
-    
-    return results
+            tool_result = json.loads(content)
+            if not isinstance(tool_result, dict):
+                continue
+
+            # 根据 expected_data_types 过滤提取
+            results = {}
+            data_types = expected_data_types or ["products", "orders"]
+
+            for data_type in data_types:
+                if data_type in tool_result and tool_result[data_type]:
+                    results[data_type] = tool_result[data_type]
+
+            if results:
+                return results
+
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    return {}
 
 
-def _determine_expected_data_types(tools_used: list, current_agent: str = None) -> list:
+def _determine_expected_data_types(tools_used: list, current_agent: Optional[str] = None) -> list:
     """根据当前 agent 和工具调用确定期望的数据类型
 
-    【关键改进】：
-    1. 优先使用 current_agent 来确定数据类型（最可靠）
-    2. tools_used 可能包含历史累积的工具调用，不太可靠
-
     Args:
-        tools_used: 当前节点使用的工具列表（注意：可能是累积的）
+        tools_used: 当前节点使用的工具列表
         current_agent: 当前 agent 名称
 
     Returns:
         期望的数据类型列表，如 ["orders"] 或 ["products"]
     """
-    # 【优先】根据 current_agent 确定数据类型（最可靠的判断依据）
-    if current_agent:
-        if current_agent == "order_agent":
-            logger.info(f"根据 current_agent={current_agent} 确定期望数据类型: ['orders']")
-            return ["orders"]
-        elif current_agent == "product_agent":
-            logger.info(f"根据 current_agent={current_agent} 确定期望数据类型: ['products']")
-            return ["products"]
+    # 优先根据 current_agent 确定数据类型
+    if current_agent == "order_agent":
+        return ["orders"]
+    if current_agent == "product_agent":
+        return ["products"]
 
-    # 降级：根据最后一个工具调用判断（只看最后一个，避免历史污染）
+    # 降级：根据最后一个工具调用判断
     if tools_used:
-        order_tools = ["query_user_orders", "query_order_detail", "prepare_create_order", "confirm_create_order", "prepare_cancel_order", "confirm_cancel_order"]
-        product_tools = ["search_products_tool", "get_product_detail", "get_brands", "get_categories"]
+        order_tools = {
+            "query_user_orders", "query_order_detail", "prepare_create_order",
+            "confirm_create_order", "prepare_cancel_order", "confirm_cancel_order"
+        }
+        product_tools = {
+            "search_products_tool", "get_product_detail", "get_brands", "get_categories"
+        }
 
-        # 只看最后一个工具调用
         last_tool = tools_used[-1] if tools_used else None
-        if last_tool:
-            tool_name = last_tool.get("tool", "") if isinstance(last_tool, dict) else ""
+        if last_tool and isinstance(last_tool, dict):
+            tool_name = last_tool.get("tool", "")
             if tool_name in order_tools:
-                logger.info(f"根据最后一个工具 {tool_name} 确定期望数据类型: ['orders']")
                 return ["orders"]
             if tool_name in product_tools:
-                logger.info(f"根据最后一个工具 {tool_name} 确定期望数据类型: ['products']")
                 return ["products"]
 
-    logger.info("无法确定期望数据类型，返回空列表")
     return []
 
 
-def format_state_update(state_update: Dict[str, Any], node_update: Dict[str, Any] = None) -> Dict[str, Any]:
+def format_state_update(state_update: Dict[str, Any], node_update: Any = None, messages_count_before_update: int = 0) -> Dict[str, Any]:
     """格式化状态更新为前端友好的格式
 
     核心原则：
     - 只提取当前节点新产生的 ToolMessage 数据
     - 如果当前节点没有产生新的 ToolMessage，response_data 保持为空
     - 避免任何历史数据污染
+    - 支持购买流程中的产品选择列表
 
     Args:
         state_update: 完整的累积状态（包含历史消息）
         node_update: 当前节点的更新（只包含当前轮次的变化）
+        messages_count_before_update: 更新前 state_update 中的消息数量，用于判断是否有新消息
 
     Returns:
         格式化后的响应数据
@@ -174,158 +123,109 @@ def format_state_update(state_update: Dict[str, Any], node_update: Dict[str, Any
         }
     }
 
-    # 【调试】打印关键信息
-    task_chain = state_update.get("task_chain")
-    if task_chain:
-        logger.info(f"[DEBUG] 当前有活跃任务链: chain_id={task_chain.get('chain_id')}, current_step={task_chain.get('current_step_index')}")
-    else:
-        logger.info("[DEBUG] 无活跃任务链")
-
+    # 1. 提取工具结果（仅当 node_update 有新的工具调用时）
     if node_update and isinstance(node_update, dict):
-        logger.info(f"[DEBUG] node_update keys: {list(node_update.keys())}")
-        logger.info(f"[DEBUG] node_update.tools_used: {node_update.get('tools_used', [])}")
-        logger.info(f"[DEBUG] node_update.messages count: {len(node_update.get('messages', []))}")
+        tools_used = node_update.get("tools_used", [])
+        node_messages = node_update.get("messages", [])
 
-    has_products = False
-    has_orders = False
-    has_new_tool_messages = False  # 标记当前节点是否产生了新的 ToolMessage
+        # 判断是否有有效的新工具调用
+        new_tools = [t for t in tools_used if t and t.get("tool")]
+        if new_tools and node_messages:
+            expected_data_types = _determine_expected_data_types(
+                tools_used,
+                node_update.get("current_agent")
+            )
+            tool_results = _extract_tool_results_from_messages(node_messages, expected_data_types)
 
-    # 【核心逻辑】判断当前节点是否产生了新的 ToolMessage
-    if node_update and isinstance(node_update, dict):
-        # 方法1：检查 tools_used（最可靠的判断依据）
-        # 【关键修复】node_update 只包含当前节点的更新，如果它有 tools_used，说明当前节点有新的工具调用
-        # 注意：在 chat.py 中，accumulated_state 会在调用 formatter 之前更新，所以 state_update 可能已经包含了新的 tools_used
-        # 但 node_update 中的 tools_used 仍然代表当前节点新增的工具调用
-        new_tools_used = node_update.get("tools_used", [])
-        state_tools_used = state_update.get("tools_used", [])
-        
-        logger.info(f"🔍 [FORMAT_STATE] 检查工具调用: node_update.tools_used长度={len(new_tools_used)}, state_update.tools_used长度={len(state_tools_used)}")
-        if new_tools_used:
-            logger.info(f"🔍 [FORMAT_STATE] node_update.tools_used内容: {[t.get('tool') if t else None for t in new_tools_used]}")
-        
-        # 【关键修复】简化逻辑：如果 node_update 有 tools_used，就认为有新工具调用
-        # 因为 node_update 只包含当前节点的更新，不包含历史数据
-        if new_tools_used:
-            # 过滤出有效的工具调用
-            actual_new_tools = [t for t in new_tools_used if t and t.get("tool")]
-            if actual_new_tools:
-                has_new_tool_messages = True
-                tool_names = [t.get("tool") for t in actual_new_tools]
-                logger.info(f"✅ [FORMAT_STATE] 当前节点有新的工具调用: {tool_names} (node_update中有{len(actual_new_tools)}个新工具)")
-            else:
-                logger.warning(f"⚠️ [FORMAT_STATE] node_update有tools_used但无效: {new_tools_used}")
-        else:
-            logger.info(f"⚠️ [FORMAT_STATE] node_update没有tools_used")
+            if "products" in tool_results:
+                result["data"]["response_data"]["products"] = tool_results["products"]
+            if "orders" in tool_results:
+                result["data"]["response_data"]["orders"] = tool_results["orders"]
 
-        # 方法2：检查 node_update 的 messages 中是否有新的 ToolMessage
-        # 【关键修复】只有当 node_update 中有新的 ToolMessage 且这些消息不在原始 state 中时，才认为是新的
-        if not has_new_tool_messages:
-            node_messages = node_update.get("messages", [])
-            state_messages = state_update.get("messages", [])
-            state_message_count = len(state_messages)
-            
-            from langchain_core.messages import ToolMessage
-            # 只检查 node_update 中新增的消息（在 state_messages 之后的消息）
-            new_tool_messages = []
-            for idx, msg in enumerate(node_messages):
-                if idx >= state_message_count and isinstance(msg, ToolMessage):
-                    new_tool_messages.append(msg)
-            
-            if new_tool_messages:
-                has_new_tool_messages = True
-                logger.info(f"✅ [FORMAT_STATE] 当前节点有新的 ToolMessage（数量={len(new_tool_messages)}），这些是新增的消息")
-            else:
-                logger.info("⚠️ [FORMAT_STATE] 当前节点虽然有 ToolMessage，但都是历史消息，不提取数据（避免旧数据污染）")
-
-        # 只有确认当前节点产生了新的 ToolMessage，才提取数据
-        if has_new_tool_messages:
-            node_messages = node_update.get("messages", [])
-            if node_messages:
-                # 【关键改进】根据当前工具调用确定期望的数据类型
-                new_tools_used = node_update.get("tools_used", [])
-                current_agent = node_update.get("current_agent")
-                expected_data_types = _determine_expected_data_types(new_tools_used, current_agent)
-
-                logger.info(f"当前节点工具: {[t.get('tool') for t in new_tools_used if t]}, agent: {current_agent}, 期望数据类型: {expected_data_types}")
-
-                # 使用期望的数据类型过滤，避免历史数据污染
-                tool_results = _extract_tool_results_from_messages(node_messages, expected_data_types)
-
-                if "products" in tool_results:
-                    result["data"]["response_data"]["products"] = tool_results["products"]
-                    has_products = True
-                if "orders" in tool_results:
-                    orders_data = tool_results["orders"]
-                    result["data"]["response_data"]["orders"] = orders_data
-                    has_orders = True
-                    # 【关键日志】记录返回给前端的订单数据
-                    logger.info(f"📤 [FORMAT_STATE] 准备返回订单数据给前端: 数量={len(orders_data)}")
-                    for o in orders_data:
-                        logger.info(f"  - 订单ID: {o.get('id')}, 订单号: {o.get('order_number')}, 状态: {o.get('status')}")
-
-                logger.info(f"从当前节点提取到工具结果: products={has_products}, orders={has_orders}")
-        else:
-            # 当前节点没有产生新的 ToolMessage，确保 response_data 为空
-            logger.info("当前节点无新 ToolMessage，不提取任何工具结果")
-
-    # 提取文本内容（从完整状态中获取最后一条 AI 消息）
+    # 2. 提取新增的 AI 消息内容
     messages = state_update.get("messages", [])
-    if messages:
+    new_messages = messages[messages_count_before_update:]
+    if new_messages:
         from langchain_core.messages import AIMessage
-
-        ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
+        ai_messages = [msg for msg in new_messages if isinstance(msg, AIMessage)]
         if ai_messages:
             last_ai_message = ai_messages[-1]
             if hasattr(last_ai_message, "content") and last_ai_message.content:
                 result["data"]["content"] = last_ai_message.content
                 result["data"]["role"] = "assistant"
 
-    # 提取选择等待信息（优先处理）
-    pending_selection = state_update.get("pending_selection")
-    if pending_selection:
-        result["data"]["pending_selection"] = pending_selection
-        result["data"]["response_type"] = "selection"
-        # 当有pending_selection时，不在response_data中重复包含products
-        if "products" in result["data"]["response_data"]:
-            del result["data"]["response_data"]["products"]
-            has_products = False
+    # 3. 处理 task_chain 中的 user_selection 步骤
+    # 当 task_chain 存在且当前步骤是 user_selection 时：
+    #   从 state_update 中获取 pending_selection（由 _execute_user_selection 设置）
+    #   如果有 pending_selection，设置 response_type 为 selection
 
-    # 提取确认等待信息（优先从 node_update 中获取，因为它是当前节点的更新）
-    confirmation_pending = None
-    if node_update and isinstance(node_update, dict):
-        confirmation_pending = node_update.get("confirmation_pending")
-    if not confirmation_pending:
-        confirmation_pending = state_update.get("confirmation_pending")
-    
-    # 【关键修复】如果 confirmation_pending 为 None，确保不返回确认信息
-    # 注意：验证逻辑在 order_agent.py 中完成，这里只负责格式化
+    task_chain = state_update.get("task_chain")
+    if task_chain:
+        # 辅助函数：兼容 Pydantic 模型和字典获取步骤属性
+        def _get_step_attr(step, attr, default=None):
+            if hasattr(step, attr):
+                return getattr(step, attr)
+            elif isinstance(step, dict):
+                return step.get(attr, default)
+            return default
+
+        # task_chain 可能是 Pydantic 模型或字典，需要兼容处理
+        if hasattr(task_chain, 'model_dump'):
+            current_step_index = task_chain.current_step_index
+            steps = task_chain.steps
+        else:
+            current_step_index = task_chain.get("current_step_index")
+            steps = task_chain.get("steps", [])
+
+        if current_step_index is not None and current_step_index < len(steps):
+            current_step = steps[current_step_index]
+            step_type = _get_step_attr(current_step, "step_type")
+
+            # 检测是否是 user_selection 步骤
+            if step_type == "user_selection":
+                logger.info(f"检测到 task_chain 中的 user_selection 步骤，index={current_step_index}")
+
+    # 4. 处理特殊状态（从 state_update 中获取 pending_selection）
+    # 如果 result 中还没有设置 pending_selection，则从 state_update 中获取
+    if result["data"].get("pending_selection") is None:
+        pending_selection = state_update.get("pending_selection")
+        if pending_selection:
+            result["data"]["pending_selection"] = pending_selection
+            result["data"]["response_type"] = "selection"
+            # 移除重复的 products 数据
+            result["data"]["response_data"].pop("products", None)
+
+    # node_update 可能是 tuple（当 interrupt() 被调用时），需要类型检查
+    node_confirmation = node_update.get("confirmation_pending") if isinstance(node_update, dict) else None
+    confirmation_pending = node_confirmation or state_update.get("confirmation_pending")
+
     if confirmation_pending:
         result["data"]["confirmation_pending"] = confirmation_pending
         result["data"]["response_type"] = "confirmation"
-        
-        # 如果是订单确认，将订单信息放入 response_data 供前端UI使用
+
+        # 订单确认时，构建订单信息供前端使用
         if confirmation_pending.get("action_type") == "create_order":
             display_data = confirmation_pending.get("display_data", {})
             if display_data:
-                # 构建订单信息结构
-                order_data = {
+                result["data"]["response_data"]["order"] = {
                     "items": display_data.get("items", []),
                     "total_amount": display_data.get("total_amount", 0),
                     "user_phone": confirmation_pending.get("action_data", {}).get("user_phone", "")
                 }
-                result["data"]["response_data"]["order"] = order_data
-                logger.info(f"订单确认：已将订单信息放入 response_data，items={len(order_data.get('items', []))}, total={order_data.get('total_amount')}")
-            else:
-                logger.warning(f"订单确认：confirmation_pending 中没有 display_data，action_data={confirmation_pending.get('action_data')}")
 
-    # 确定响应类型（仅在没有pending_selection和confirmation_pending时）
-    if not pending_selection and not confirmation_pending:
-        if has_orders:
+    # 5. 确定响应类型（仅在没有特殊状态时）
+    # 检查 result 中是否有特殊状态，而不是检查 state_update
+    has_pending_selection = result["data"].get("pending_selection") is not None
+    has_confirmation_pending = result["data"].get("confirmation_pending") is not None
+
+    if not has_pending_selection and not has_confirmation_pending:
+        response_data = result["data"]["response_data"]
+        if "orders" in response_data:
             result["data"]["response_type"] = "order_list"
-        elif has_products:
+        elif "products" in response_data:
             result["data"]["response_type"] = "product_list"
 
-    # 提取其他信息
+    # 6. 添加其他元信息
     if current_agent := state_update.get("current_agent"):
         result["data"]["current_agent"] = current_agent
     if tools_used := state_update.get("tools_used", []):
@@ -334,7 +234,7 @@ def format_state_update(state_update: Dict[str, Any], node_update: Dict[str, Any
     return result
 
 
-def format_step_name(node_name: str, node_update: Dict[str, Any]) -> Optional[str]:
+def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
     """格式化执行步骤名称"""
     step_map = {
         "intent_recognition": "🎯 意图识别",
@@ -356,7 +256,7 @@ def format_step_name(node_name: str, node_update: Dict[str, Any]) -> Optional[st
     return step_map.get(node_name)
 
 
-def format_step_detail(node_name: str, node_update: Dict[str, Any]) -> str:
+def format_step_detail(node_name: str, node_update: Any) -> str:
     """格式化执行步骤的详细描述"""
     detail_map = {
         "intent_recognition": "正在分析您的问题意图...",

@@ -4,11 +4,72 @@
 """
 
 import logging
-from typing import List
+from typing import List, Any, TypeVar, Union
+from typing import Mapping
 
 from langchain_core.messages import AIMessage, ToolMessage, BaseMessage
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+
+
+def get_state_value(state: Union[Mapping[str, Any], object], key: str, default: T = None) -> Union[Any, T]:
+    """安全地获取状态字段值，支持字典和 Pydantic 模型
+
+    LangGraph 的 state_snapshot.values 可能是字典或 Pydantic 实例
+    这个函数统一处理两种情况，避免 AttributeError 和 KeyError
+
+    Args:
+        state: 状态对象（字典或 Pydantic 实例）
+        key: 字段名
+        default: 默认值（如果字段不存在）
+
+    Returns:
+        字段值或默认值
+
+    Examples:
+        >>> # Pydantic 实例
+        >>> value = get_state_value(snapshot.values, "task_chain")
+        >>> # 字典
+        >>> value = get_state_value(snapshot.values, "task_chain")
+    """
+    # 如果是字典或 Mapping
+    if isinstance(state, Mapping):
+        return state.get(key, default)
+
+    # 如果是 Pydantic 实例或其他对象
+    try:
+        return getattr(state, key, default)
+    except (AttributeError, TypeError):
+        return default
+
+
+def state_to_dict(state: Union[Mapping[str, Any], object]) -> Mapping[str, Any]:
+    """将状态转换为字典格式
+
+    处理 Pydantic 实例和字典两种情况
+
+    Args:
+        state: 状态对象（字典或 Pydantic 实例）
+
+    Returns:
+        字典格式的状态
+    """
+    # 如果已经是字典或 Mapping
+    if isinstance(state, Mapping):
+        return state
+
+    # 如果是 Pydantic 实例
+    if hasattr(state, 'model_dump'):
+        return state.model_dump()
+
+    # 其他情况，尝试转换为字典
+    try:
+        return dict(state)
+    except (TypeError, ValueError):
+        logger.warning(f"无法将状态转换为字典: {type(state)}")
+        return {}
 
 
 def clean_messages_for_llm(messages: List[BaseMessage], keep_recent_n: int = 10) -> List[BaseMessage]:

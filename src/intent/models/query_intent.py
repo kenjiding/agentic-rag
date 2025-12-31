@@ -34,7 +34,7 @@ class Entities(BaseModel):
     )
     search_keyword: Optional[str] = Field(
         default=None,
-        description="搜索关键词（商品名称），如果查询中包含商品名称则提取"
+        description="搜索关键词（品牌名、产品名或型号），用于商品模糊搜索。注意：只提取核心关键词，不要包含'产品'、'商品'、'东西'等通用词汇"
     )
 
 

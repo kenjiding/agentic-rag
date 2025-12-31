@@ -199,7 +199,16 @@ sub_queries: []
    - time_points: List[str] - 时间点（年份、日期等）
    - user_phone: Optional[str] - 用户手机号（11位，1开头）
    - quantity: Optional[int] - 购买数量
-   - search_keyword: Optional[str] - 搜索关键词（商品名称）
+   - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
+
+   **search_keyword 提取规则（重要）**：
+   - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
+   - 示例：
+     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"西门子产品"）
+     - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
+     - "查一下苹果手机" → search_keyword="苹果手机"
+     - "有没有冰箱" → search_keyword="冰箱"
+     - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
 
 输出JSON："""
@@ -283,8 +292,8 @@ sub_queries: []
         phone_match = phone_pattern.search(query)
         user_phone: Optional[str] = phone_match.group(0) if phone_match else None
 
-        # Extract quantity (numbers followed by 件/个)
-        quantity_pattern = re.compile(r'(\d+)\s*[件个]')
+        # Extract quantity (numbers followed by 件/个/台)
+        quantity_pattern = re.compile(r'(\d+)\s*[件个台]')
         quantity_match = quantity_pattern.search(query)
         quantity: Optional[int] = None
         if quantity_match:
@@ -293,14 +302,22 @@ sub_queries: []
             except ValueError:
                 pass
 
-        # Extract search keyword (simplified: remove common words)
-        keywords_to_remove = ["下单", "购买", "买", "我要", "件", "个", "商品", "产品", "手机号", "是", "的"]
+        # Extract search keyword (remove common/generic words, keep core keywords)
+        # 通用词汇列表：这些词不应该出现在 search_keyword 中
+        generic_words_to_remove = [
+            "下单", "购买", "买", "我要", "我想", "想要", "想", "要",
+            "件", "个", "台", "款",
+            "商品", "产品", "东西", "货", "物品",
+            "手机号", "是", "的", "有没有", "有", "没有",
+            "一下", "看看", "查", "查询", "搜索", "找", "帮我"
+        ]
         search_keyword = query
-        for keyword in keywords_to_remove:
+        for keyword in generic_words_to_remove:
             search_keyword = search_keyword.replace(keyword, "")
         search_keyword = phone_pattern.sub("", search_keyword)  # Remove phone number
         search_keyword = re.sub(r'\d+', "", search_keyword)  # Remove numbers
-        search_keyword = re.sub(r'[，。、；：？！,.;:?!]', "", search_keyword).strip()
+        search_keyword = re.sub(r'[，。、；：？！,.;:?!\s]+', "", search_keyword).strip()
+        # Only set search_keyword if there's meaningful content left
         search_keyword_value: Optional[str] = search_keyword if search_keyword and len(search_keyword) >= 2 else None
 
         # Create Entities model instance

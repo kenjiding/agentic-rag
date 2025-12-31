@@ -54,7 +54,7 @@ class ProductSearchArgs(BaseModel):
         description="最低评分，范围 1-5"
     )
     in_stock_only: bool = Field(
-        default=True,
+        default=False,
         description="是否仅显示有货商品"
     )
     special_only: bool = Field(

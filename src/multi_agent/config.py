@@ -30,7 +30,7 @@ class KeywordsConfig:
     # 购买/下单意图关键词
     order_intent_keywords: List[str] = field(default_factory=lambda: [
         # 中文
-        "下单", "购买", "买", "订购", "我要", "帮我",
+        "下单", "购买", "买", "订购", "我要",
         # 英文
         "order", "buy", "purchase",
     ])
@@ -73,25 +73,49 @@ class KeywordsConfig:
         "no", "cancel", "abort", "stop", "never mind",
     ])
 
-    # 取消订单意图关键词（用于检测用户想要取消订单）
-    cancel_order_keywords: List[str] = field(default_factory=lambda: [
-        # 中文
-        "取消订单", "退订", "撤销订单", "不要订单", "取消这个订单",
-        "订单取消", "删除订单", "订单退订",
+    # 取消订单意图正则表达式模式（支持所有匹配场景，包括包含订单号的查询）
+    cancel_order_patterns: List[str] = field(default_factory=lambda: [
+        # 中文精确匹配
+        r'取消订单', r'退订', r'撤销订单', r'不要订单', r'取消这个订单',
+        r'订单取消', r'删除订单', r'订单退订',
+        # 订单号相关
+        r'取消订单号', r'删除订单号', r'退订订单号',
+        r'取消订单编号', r'删除订单编号', r'退订订单编号',
+        # 灵活匹配（支持包含订单号，如"取消订单13566667666"）
+        r'取消.*订单',
+        r'删除.*订单',
+        r'退订.*订单',
+        r'撤销.*订单',
+        r'订单.*取消',
+        r'订单.*删除',
+        r'订单.*退订',
         # 英文
-        "cancel order", "cancel the order", "cancel my order",
-        "cancel this order", "delete order", "refund order",
+        r'cancel\s+order', r'cancel\s+the\s+order', r'cancel\s+my\s+order',
+        r'cancel\s+this\s+order', r'delete\s+order', r'refund\s+order',
+        r'cancel\s+order\s+number', r'cancel\s+order\s+id', r'cancel\s+order\s+no',
     ])
 
-    # 查询订单意图关键词（用于检测用户想要查询订单）
-    query_order_keywords: List[str] = field(default_factory=lambda: [
-        # 中文
-        "查询订单", "查看订单", "我的订单", "订单列表", "订单信息",
-        "帮我查询", "查询我的订单", "订单查询", "看看订单",
-        "订单状态", "订单详情", "订单情况",
+    # 查询订单意图正则表达式模式（支持所有匹配场景，包括包含订单号的查询）
+    query_order_patterns: List[str] = field(default_factory=lambda: [
+        # 中文精确匹配
+        r'查询订单', r'查看订单', r'我的订单', r'订单列表', r'订单信息',
+        r'帮我查询', r'查询我的订单', r'订单查询', r'看看订单',
+        r'订单状态', r'订单详情', r'订单情况',
+        # 订单号相关
+        r'订单号', r'查看订单号', r'查询订单号', r'我的订单号',
+        r'订单编号', r'查看订单编号', r'查询订单编号',
+        # 灵活匹配（支持包含订单号，如"查看13566667666订单"）
+        r'查看.*订单',
+        r'查询.*订单',
+        r'我的.*订单',
+        r'订单号.*',
+        r'订单编号.*',
+        r'订单.*号',
+        r'订单.*编号',
         # 英文
-        "query order", "query orders", "my orders", "order list",
-        "show orders", "list orders", "check order", "check orders",
+        r'query\s+order', r'query\s+orders', r'my\s+orders', r'order\s+list',
+        r'show\s+orders', r'list\s+orders', r'check\s+order', r'check\s+orders',
+        r'order\s+number', r'order\s+id', r'order\s+no', r'order\s+code',
     ])
 
     # 选择相关关键词

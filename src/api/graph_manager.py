@@ -16,10 +16,14 @@ _graph_lock = asyncio.Lock()
 async def get_graph() -> MultiAgentGraph:
     """获取或创建 MultiAgentGraph 实例（异步，支持并发安全）"""
     global _graph, _graph_initializing
-    
+
+    logger.info(f"[get_graph] 调用: _graph is {_graph}, _graph_initializing={_graph_initializing}")
+
     if _graph is not None:
+        logger.info(f"[get_graph] 返回现有 graph 实例: id={id(_graph)}, checkpointer id={id(_graph.checkpointer)}")
         return _graph
-    
+
+    logger.info(f"[get_graph] 创建新的 graph 实例")
     async with _graph_lock:
         # 双重检查，避免重复初始化
         if _graph is not None:

@@ -33,7 +33,7 @@ class RoutingDecision(BaseModel):
         ...,
         description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，execute_task_chain表示执行任务链，finish表示结束"
     )
-    selected_agent: Optional[str] = Field(
+    selected_agent: Literal["rag_agent", "chat_agent", "product_agent", "order_agent", "task_orchestrator"] = Field(
         None,
         description="选中的Agent名称，如果next_action为finish则可以为null"
     )
@@ -148,234 +148,185 @@ class SupervisorAgent:
             - task_chain: 任务链（如果创建）
         """
         try:
-            # === 新增：多步骤任务编排支持 ===
+            user_message = self._extract_user_message(state)
 
-            # 提取用户消息（提前提取，用于检查特殊消息）
-            user_message = None
-            for msg in reversed(state["messages"]):
-                if isinstance(msg, HumanMessage):
-                    user_message = msg.content
-                    break
+            # 1. 处理现有任务链状态
+            chain_result, needs_cleanup = await self._handle_existing_task_chain(state, user_message)
+            if chain_result:
+                return chain_result
 
-            # 0. 检查是否是任务链继续消息（优先级最高）
-            if user_message and "__TASK_CHAIN_CONTINUE__" in user_message:
-                logger.info("检测到任务链继续消息，直接路由到任务编排器")
-                return {
-                    "next_action": "execute_task_chain",
-                    "selected_agent": None,
-                    "routing_reason": "任务链继续执行",
-                    "confidence": 1.0
-                }
+            # 3. 尝试创建新任务链
+            create_result = self._try_create_task_chain(state)
+            if create_result:
+                return create_result
 
-            # 1. 检查是否有活跃的任务链或待选择状态
-            task_chain = state.get("task_chain")
-            pending_selection = state.get("pending_selection")
-            # 标记是否需要清理（用于在最终返回时携带清理状态）
-            needs_cleanup = False
-
-            if task_chain or pending_selection:
-                logger.info(f"检测到活跃任务链或待选择状态: task_chain={task_chain is not None}, pending_selection={pending_selection is not None}")
-
-                # === 核心逻辑：检测用户新输入是否与任务链/选择相关 ===
-                should_clear_task_chain = False
-                clear_reason = ""
-
-                # 检查用户消息是否是选择/确认操作
-                is_selection_response = False
-                if user_message:
-                    # 使用配置化关键词
-                    keywords_config = get_keywords_config()
-
-                    # 选择操作通常包含：数字选择、关键词确认、纯数字（如"1"、"2"）
-                    # 检查是否是纯数字（如 "1"、"2" 等）
-                    is_pure_number = bool(re.match(r'^\d+$', user_message.strip()))
-                    is_selection_response = is_pure_number or any(kw in user_message for kw in keywords_config.selection_keywords)
-
-                    # 【关键修复】只有存在 pending_selection 且用户单独说"取消"（不是"取消订单"等）时，
-                    # 才视为取消选择操作；否则"取消"可能是业务操作（如取消订单）
-                    if pending_selection and not is_selection_response:
-                        # 检查是否是单独的"取消"操作（取消选择）- 使用配置化模式
-                        is_selection_response = any(re.search(p, user_message.strip()) for p in keywords_config.cancel_selection_patterns)
-
-                # 如果不是选择响应，检查是否是完全不相关的新问题
-                if not is_selection_response:
-                    # 【关键改进】检查用户意图是否与任务链匹配
-                    query_intent = state.get("query_intent")
-                    if query_intent:
-                        intent_type = query_intent.get("intent_type", "")
-
-                        # 如果用户意图是明确的订单查询/管理，且任务链是购买流程，清除任务链
-                        is_order_query_intent = any(keyword in intent_type.lower() for keyword in ["order", "订单", "factual"])
-                        is_purchase_task_chain = task_chain and task_chain.get("chain_type") == "order_with_search"
-
-                        if is_order_query_intent and is_purchase_task_chain:
-                            should_clear_task_chain = True
-                            clear_reason = f"用户意图变化（{intent_type}），与购买流程不匹配"
-
-                    # 检查任务链当前步骤
-                    if task_chain and not should_clear_task_chain:
-                        current_step_index = task_chain.get("current_step_index", 0)
-                        steps = task_chain.get("steps", [])
-                        if current_step_index < len(steps):
-                            current_step = steps[current_step_index]
-                            step_type = current_step.get("step_type")
-                            step_status = current_step.get("status")
-
-                            # 【关键修复】如果任务链在等待用户选择（pending 或 in_progress），
-                            # 但用户的新输入不是选择操作，清除任务链
-                            if step_type == "user_selection" and step_status in ["pending", "in_progress"]:
-                                should_clear_task_chain = True
-                                clear_reason = "用户跳过商品选择，发起新问题"
-
-                    # 如果有 pending_selection 但用户不是在选择，也清除
-                    if pending_selection and not should_clear_task_chain:
-                        should_clear_task_chain = True
-                        clear_reason = "用户跳过选择，发起新问题"
-
-                # 执行清理
-                if should_clear_task_chain:
-                    logger.info(f"🧹 自动清理任务链和待选择状态: {clear_reason}")
-
-                    # 清理 pending_selection（如果存在）
-                    if pending_selection:
-                        from src.confirmation.selection_manager import get_selection_manager
-                        selection_manager = get_selection_manager()
-                        try:
-                            await selection_manager.cancel_selection(pending_selection.get("selection_id", ""))
-                        except Exception as e:
-                            logger.warning(f"清理 pending_selection 失败: {e}")
-
-                    # 【关键改进】清理后不要直接返回 finish，而是继续执行后续路由逻辑
-                    # 将 task_chain 和 pending_selection 设置为 None，然后让代码继续执行下去
-                    # 这样用户的新问题会被正常路由到合适的 agent
-                    logger.info("任务链已清理，继续执行正常路由流程")
-                    # 标记需要清理，以便在最终返回时携带
-                    needs_cleanup = True
-                    task_chain = None  # 标记为清理
-                    pending_selection = None  # 标记为清理
-
-                else:
-                    # 意图匹配，继续执行任务链
-                    logger.info("用户输入与任务链匹配，继续执行任务链")
-                    return {
-                        "next_action": "execute_task_chain",
-                        "selected_agent": None,
-                        "routing_reason": "继续执行活跃的任务链",
-                        "confidence": 1.0
-                    }
-
-            # 2. 检测是否需要创建新的任务链
-            from src.multi_agent.task_orchestrator import get_task_orchestrator
-            orchestrator = get_task_orchestrator()
-            task_type = orchestrator.detect_multi_step_task(state)
-
-            if task_type:
-                logger.info(f"检测到多步骤任务: {task_type}")
-                # 创建任务链
-                new_task_chain = orchestrator.create_task_chain(task_type, state)
-                return {
-                    "next_action": "execute_task_chain",
-                    "selected_agent": None,
-                    "routing_reason": f"创建多步骤任务链: {task_type}",
-                    "confidence": 0.9,
-                    "task_chain": new_task_chain
-                }
-
-            # === 原有单步路由逻辑 ===
-
-            # 检查是否有用户消息（user_message 已在前面提取）
-            if not user_message:
-                return {
-                    "next_action": "finish",
-                    "selected_agent": None,
-                    "routing_reason": "未找到用户消息",
-                    "confidence": 0.0
-                }
-
-            # 获取意图识别结果
-            query_intent = state.get("query_intent")
-            intent_context = self._build_intent_context(query_intent)
-
-            # 构建路由提示词
-            available_agents = self.get_available_agents()
-            agents_description = "\n".join([
-                f"- {agent['name']}: {agent['description']}"
-                for agent in available_agents
-            ])
-
-            routing_prompt = ChatPromptTemplate.from_messages([
-                ("system", """你是一个智能路由系统，负责分析用户意图并决定调用哪个Agent。
-
-**重要提示**：如果用户想要购买商品但没有提供具体的 product_id（如"我要下单，购买XX商品"），这应该由任务链系统处理，不要直接路由到 order_agent。
-
-可用Agent列表：
-{agents}
-
-路由规则：
-1. 商品相关：用户询问商品、搜索产品、比价等，选择 product_agent，next_action设为"product_search"
-   - 关键词：商品、产品、手机、电脑、价格、多少钱、推荐、品牌
-   - 示例："2000元以下的手机"、"华为笔记本有哪些"、"推荐一款性价比高的手机"
-
-2. 订单相关：
-   - **查询/取消订单**：选择 order_agent，next_action设为"order_management"
-     - 示例："我的订单"、"取消订单123"
-   - **创建订单**：
-     * 如果用户提供了明确的 product_id，选择 order_agent
-     * 如果用户只说"我要下单，购买XX商品"（没有 product_id），这应该由任务链处理，但任务链系统已经处理过了，这里不应该出现
-
-3. 知识检索：如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"
-   - 示例："公司政策是什么"、"如何使用产品"
-
-4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
-
-5. 如果问题无法由现有Agent处理，next_action设为"finish"
-
-请仔细分析用户问题，结合意图识别信息（如果有），做出最佳路由决策。"""),
-                ("user", "用户问题: {question}\n\n{intent_context}")
-            ])
-
-            # 使用结构化输出的LLM进行路由决策
-            # with_structured_output会自动确保输出符合RoutingDecision结构
-            try:
-                routing_decision = self.structured_llm.invoke(
-                    routing_prompt.format_messages(
-                        agents=agents_description,
-                        question=user_message,
-                        intent_context=intent_context
-                    )
-                )
-
-                # 验证选中的Agent是否存在
-                selected_agent = routing_decision.selected_agent
-                if selected_agent and selected_agent not in self.agents:
-                    logger.warning(f"选中的Agent {selected_agent} 不存在，使用chat_agent")
-                    selected_agent = "chat_agent" if "chat_agent" in self.agents else None
-
-                result = {
-                    "next_action": routing_decision.next_action,
-                    "selected_agent": selected_agent,
-                    "routing_reason": routing_decision.routing_reason,
-                    "confidence": routing_decision.confidence
-                }
-
-                # 如果需要清理任务链/待选择状态，添加到结果中
-                if needs_cleanup:
-                    result["task_chain"] = None
-                    result["pending_selection"] = None
-                    result["routing_reason"] = f"[清理旧任务链后] {result['routing_reason']}"
-
-                logger.info(f"Supervisor路由决策: {result}")
-                return result
-
-            except Exception as e:
-                logger.error(f"结构化输出解析失败: {e}, 使用降级策略", exc_info=True)
-                # 企业级最佳实践：降级时也使用LLM，但用更简单的prompt和更便宜的模型
-                return await self._fallback_routing_with_llm(user_message)
+            # 4. LLM 单步路由
+            llm_result = await self._do_llm_routing(state, user_message)
+            if needs_cleanup:
+                llm_result["task_chain"] = None
+                llm_result["pending_selection"] = None
+                llm_result["routing_reason"] = f"[清理旧任务链后] {llm_result['routing_reason']}"
+            return llm_result
 
         except Exception as e:
             logger.error(f"Supervisor路由决策错误: {str(e)}", exc_info=True)
-            # 企业级最佳实践：降级时也使用LLM
-            return await self._fallback_routing_with_llm(user_message if 'user_message' in locals() else "")
+            return await self._fallback_routing_with_llm(self._extract_user_message(state) or "")
+
+    async def _handle_existing_task_chain(self, state: MultiAgentState, user_message: Optional[str]) -> tuple[Optional[Dict[str, Any]], bool]:
+        """处理现有任务链状态
+
+        Returns:
+            (路由结果字典, 是否需要清理标记)
+        """
+        task_chain = state.task_chain
+        pending_selection = state.pending_selection
+        query_intent = state.query_intent
+
+        # 【调试日志】详细记录状态信息
+        logger.info(
+            f"[任务链处理] 检查现有任务链状态: "
+            f"task_chain={task_chain is not None}, "
+            f"pending_selection={pending_selection is not None}, "
+            f"user_message={user_message}, "
+            f"query_intent={query_intent is not None}"
+        )
+        
+        if task_chain:
+            logger.info(f"[任务链处理] task_chain 详情: chain_type={task_chain.chain_type}, current_index={task_chain.current_step_index}, steps_count={len(task_chain.steps)}")
+
+        if not (task_chain or pending_selection):
+            logger.info("[任务链处理] 没有活跃的任务链或待选择状态，返回 None")
+            return None, False
+
+        logger.info(f"检测到活跃任务链或待选择状态: task_chain={task_chain is not None}, pending_selection={pending_selection is not None}, user_message={user_message}")
+
+        # 【关键修复】如果没有用户消息但有活跃的任务链，继续执行任务链
+        # 这处理了用户选择产品后的恢复执行场景：
+        # 1. 用户选择后，interrupt() 恢复执行，_execute_user_selection 处理用户选择并更新 task_chain
+        # 2. 如果恢复执行时重新从 entry point 开始，supervisor 应该检测到 task_chain 并路由到 task_orchestrator
+        # 3. 无论当前步骤是什么类型，只要有活跃的 task_chain 且没有新用户消息，都应该继续执行任务链
+        if not user_message and task_chain:
+            current_index = task_chain.current_step_index
+            steps = task_chain.steps
+            
+            logger.info(f"检测到活跃任务链，无用户消息: current_index={current_index}, steps_count={len(steps)}")
+
+            if current_index < len(steps):
+                current_step = steps[current_index]
+                step_type = current_step.step_type
+                
+                logger.info(f"任务链当前步骤: step_type={step_type}, index={current_index}")
+                
+                # 【关键修复】无论当前步骤是什么类型，只要有活跃的 task_chain，都应该路由到 task_orchestrator
+                # task_orchestrator 会根据当前步骤类型执行相应的逻辑
+                logger.info(f"无新用户消息但有活跃任务链，路由到 task_orchestrator: step_type={step_type}, index={current_index}")
+                return {
+                    "next_action": "execute_task_chain",
+                    "selected_agent": None,
+                    "routing_reason": f"恢复任务链执行，当前步骤: {step_type}",
+                    "confidence": 1.0
+                }, False
+            else:
+                # 任务链已完成
+                logger.info(f"任务链已完成: current_index={current_index}, steps_count={len(steps)}")
+                return None, True
+
+        # 核心逻辑：检测用户新输入是否与任务链/选择相关
+        should_clear_task_chain = False
+        clear_reason = ""
+
+        # 检查用户消息是否是选择/确认操作
+        is_selection_response = False
+        if user_message:
+            keywords_config = get_keywords_config()
+            is_pure_number = bool(re.match(r'^\d+$', user_message.strip()))
+            is_selection_response = is_pure_number or any(kw in user_message for kw in keywords_config.selection_keywords)
+
+            if pending_selection and not is_selection_response:
+                is_selection_response = any(re.search(p, user_message.strip()) for p in keywords_config.cancel_selection_patterns)
+
+        # 如果不是选择响应，检查用户输入是否是补充信息
+        if not is_selection_response:
+            if task_chain and not should_clear_task_chain:
+                from src.multi_agent.task_orchestrator import TaskChainOrchestrator
+                orchestrator = TaskChainOrchestrator()
+
+                current_step_index = task_chain.current_step_index
+                steps = task_chain.steps
+                if current_step_index < len(steps):
+                    current_step = steps[current_step_index]
+                    step_type = current_step.step_type
+
+                    step_def = orchestrator.AVAILABLE_STEP_TYPES.get(step_type)
+                    if step_def:
+                        required_fields = step_def.get("requires", [])
+                        all_entities = self._collect_all_entities(state, include_task_chain=True)
+
+                        missing_fields = []
+                        for field in required_fields:
+                            field_aliases = [field, f"selected_{field}"]
+                            if not any(all_entities.get(alias) for alias in field_aliases):
+                                missing_fields.append(field)
+
+                        if missing_fields and user_message:
+                            is_supplementing = self._check_if_supplementing_info(user_message, missing_fields, all_entities)
+                            if is_supplementing:
+                                logger.info(f"用户提供了补充信息，继续执行任务链: step_type={step_type}, missing_fields={missing_fields}")
+                                return {"next_action": "execute_task_chain", "selected_agent": None,
+                                        "routing_reason": f"用户提供了任务链所需的信息（{', '.join(missing_fields)}），继续执行",
+                                        "confidence": 0.9}, False
+
+            # 检查用户意图是否与任务链匹配
+            if query_intent and task_chain:
+                intent_type = query_intent.get("intent_type", "")
+                chain_type = task_chain.chain_type
+                is_order_query_intent = any(keyword in intent_type.lower() for keyword in ["order", "订单", "factual"])
+                is_purchase_task_chain = chain_type == "order_with_search"
+
+                if is_order_query_intent and is_purchase_task_chain:
+                    should_clear_task_chain = True
+                    clear_reason = f"用户意图变化（{intent_type}），与购买流程不匹配"
+
+            # 检查任务链当前步骤
+            if task_chain and not should_clear_task_chain:
+                current_step_index = task_chain.current_step_index
+                steps = task_chain.steps
+                if current_step_index < len(steps):
+                    current_step = steps[current_step_index]
+                    step_type = current_step.step_type
+                    step_status = current_step.status
+
+                    if step_type == "user_selection" and step_status in ["pending", "in_progress"]:
+                        should_clear_task_chain = True
+                        clear_reason = "用户跳过商品选择，发起新问题"
+
+            if pending_selection and not should_clear_task_chain:
+                should_clear_task_chain = True
+                clear_reason = "用户跳过选择，发起新问题"
+
+        # 执行清理
+        if should_clear_task_chain:
+            logger.info(f"🧹 自动清理任务链和待选择状态: {clear_reason}")
+
+            if pending_selection:
+                from src.confirmation.selection_manager import get_selection_manager
+                selection_manager = get_selection_manager()
+                try:
+                    await selection_manager.cancel_selection(pending_selection.selection_id)
+                except Exception as e:
+                    logger.warning(f"清理 pending_selection 失败: {e}")
+
+            logger.info("任务链已清理，继续执行正常路由流程")
+            return None, True
+
+        # 意图匹配，继续执行任务链
+        logger.info("用户输入与任务链匹配，继续执行任务链")
+        return {
+            "next_action": "execute_task_chain",
+            "selected_agent": None,
+            "routing_reason": "继续执行活跃的任务链",
+            "confidence": 1.0
+        }, False
 
     def _build_intent_context(self, query_intent: Optional[Dict[str, Any]]) -> str:
         """
@@ -416,6 +367,142 @@ class SupervisorAgent:
 
         return "\n".join(context_parts)
 
+    def _build_entity_context(self, state: MultiAgentState) -> str:
+        """
+        构建实体状态上下文信息
+
+        根源解决方案：让 LLM 能够看到累积的实体状态，
+        而不仅仅是当前用户消息。这样用户分多轮提供信息时，
+        LLM 能够正确理解上下文，不会把补充信息当作一般对话。
+
+        Args:
+            state: 多 Agent 系统状态
+
+        Returns:
+            格式化的实体上下文字符串
+        """
+        all_entities = self._collect_all_entities(state)
+
+        if not all_entities:
+            return "（无累积实体信息）"
+
+        context_parts = ["累积实体信息:"]
+        for key, value in all_entities.items():
+            if value is not None:
+                context_parts.append(f"  - {key}: {value}")
+
+        return "\n".join(context_parts)
+
+    def _check_if_supplementing_info(self, user_message: str, missing_fields: List[str], current_entities: Dict[str, Any]) -> bool:
+        """
+        使用 LLM 判断用户是否在补充缺失的信息
+
+        通用解决方案：不硬编码每种字段类型的检测模式，而是让 LLM 理解语义。
+
+        Args:
+            user_message: 用户输入消息
+            missing_fields: 缺失的字段列表
+            current_entities: 当前已收集的实体信息
+
+        Returns:
+            True 如果用户在补充信息，False 否则
+        """
+        try:
+            from pydantic import BaseModel
+
+            class SupplementCheck(BaseModel):
+                is_supplementing: bool = Field(description="是否在补充信息")
+                provided_field: str = Field(description="提供的字段名（如 user_phone、quantity 等）")
+
+            structured_llm = self.llm.with_structured_output(SupplementCheck)
+
+            prompt = f"""判断用户是否在补充任务所需的信息。
+
+缺失字段: {', '.join(missing_fields)}
+当前已收集信息: {current_entities}
+
+用户输入: {user_message}
+
+如果用户输入提供了缺失字段的值（如手机号、数量、地址等），返回 True。
+注意：用户可能用各种方式表达，如"手机号是138..."、"就买2个"、"送到XXX"等。"""
+
+            result = structured_llm.invoke(prompt)
+            if result.is_supplementing:
+                logger.info(f"LLM 检测到用户补充了字段: {result.provided_field}")
+            return result.is_supplementing
+        except Exception as e:
+            logger.warning(f"LLM 补充信息检测失败: {e}，保守返回 False")
+            return False
+
+    def _collect_all_entities(self, state: MultiAgentState, include_task_chain: bool = False) -> Dict[str, Any]:
+        """
+        收集所有可用的实体信息
+
+        统一的实体收集逻辑，避免重复代码。
+
+        Args:
+            state: 多 Agent 系统状态
+            include_task_chain: 是否包含任务链上下文（保留参数用于向后兼容）
+
+        Returns:
+            合并后的实体字典
+        """
+        all_entities = state.entities.copy()
+
+        query_intent = state.query_intent
+        if query_intent and query_intent.get("entities"):
+            all_entities.update(query_intent["entities"])
+
+        return all_entities
+
+    def _get_agents_description(self) -> str:
+        """
+        构建可用 Agent 的描述文本
+
+        统一的 Agent 描述构建逻辑，避免重复代码。
+
+        Returns:
+            格式化的 Agent 描述字符串
+        """
+        return "\n".join([
+            f"- {agent['name']}: {agent['description']}"
+            for agent in self.get_available_agents()
+        ])
+
+    def _validate_selected_agent(self, agent_name: Optional[str]) -> Optional[str]:
+        """
+        验证并返回有效的 Agent 名称
+
+        如果指定的 Agent 不存在，返回默认的 chat_agent。
+
+        Args:
+            agent_name: 要验证的 Agent 名称
+
+        Returns:
+            有效的 Agent 名称
+        """
+        if not agent_name:
+            return None
+        if agent_name not in self.agents:
+            logger.warning(f"选中的 Agent {agent_name} 不存在，使用 chat_agent")
+            return "chat_agent" if "chat_agent" in self.agents else None
+        return agent_name
+
+    def _extract_user_message(self, state: MultiAgentState) -> Optional[str]:
+        """
+        从状态中提取最新的用户消息
+
+        Args:
+            state: 多 Agent 系统状态
+
+        Returns:
+            最新的用户消息内容，如果没有则返回 None
+        """
+        for msg in reversed(state.messages):
+            if isinstance(msg, HumanMessage):
+                return msg.content
+        return None
+
     async def _fallback_routing_with_llm(self, user_message: str) -> Dict[str, Any]:
         """
         降级路由策略（企业级最佳实践）- 使用更便宜的LLM进行快速路由
@@ -433,13 +520,8 @@ class SupervisorAgent:
             路由决策字典
         """
         try:
-            # 构建简化的路由提示词（降级策略使用更简单的prompt）
-            available_agents = self.get_available_agents()
-            agents_description = "\n".join([
-                f"- {agent['name']}: {agent['description']}"
-                for agent in available_agents
-            ])
-            
+            agents_description = self._get_agents_description()
+
             # 简化的prompt，提高响应速度
             simple_prompt = ChatPromptTemplate.from_messages([
                 ("system", """你是一个路由系统。快速分析用户问题，决定调用哪个Agent。
@@ -457,7 +539,7 @@ class SupervisorAgent:
 快速决策。"""),
                 ("user", "问题: {question}")
             ])
-            
+
             # 使用更便宜的模型进行降级路由
             routing_decision = self.fallback_structured_llm.invoke(
                 simple_prompt.format_messages(
@@ -465,13 +547,10 @@ class SupervisorAgent:
                     question=user_message
                 )
             )
-            
+
             # 验证选中的Agent是否存在
-            selected_agent = routing_decision.selected_agent
-            if selected_agent and selected_agent not in self.agents:
-                logger.warning(f"降级策略选中的Agent {selected_agent} 不存在，使用chat_agent")
-                selected_agent = "chat_agent" if "chat_agent" in self.agents else None
-            
+            selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
+
             result = {
                 "next_action": routing_decision.next_action,
                 "selected_agent": selected_agent,
@@ -483,10 +562,112 @@ class SupervisorAgent:
             return result
             
         except Exception as e:
-            logger.error(f"降级策略LLM路由失败: {e}, 使用最终降级方案", exc_info=True)
+            logger.error(f"降���策略LLM路由失败: {e}, 使用最终降级方案", exc_info=True)
             # 最终降级：如果LLM也失败，使用简单的启发式规则
             return self._final_fallback_routing(user_message)
-    
+
+    def _try_create_task_chain(self, state: MultiAgentState) -> Optional[Dict[str, Any]]:
+        """尝试创建新的任务链"""
+        from src.multi_agent.task_orchestrator import get_task_orchestrator
+        orchestrator = get_task_orchestrator()
+
+        # 提取用户消息用于日志
+        user_message = None
+        for msg in reversed(state.messages):
+            if hasattr(msg, 'content') and not hasattr(msg, 'name'):  # HumanMessage 没有 name 属性
+                user_message = msg.content
+                break
+
+        logger.info(f"[任务链检测] 开始检测多步骤任务，用户消息: {user_message}")
+
+        task_type = orchestrator.detect_multi_step_task(state)
+
+        if task_type:
+            logger.info(f"[任务链检测] ✓ 检测到多步骤任务: {task_type}")
+            new_task_chain = orchestrator.create_task_chain(task_type, state)
+            return {
+                "next_action": "execute_task_chain",
+                "selected_agent": None,
+                "routing_reason": f"创建多步骤任务链: {task_type}",
+                "confidence": 0.9,
+                "task_chain": new_task_chain
+            }
+
+        logger.info(f"[任务链检测] ✗ 未检测到多步骤任务，将使用普通 LLM 路由")
+        return None
+
+    async def _do_llm_routing(self, state: MultiAgentState, user_message: Optional[str]) -> Dict[str, Any]:
+        """执行 LLM 单步路由"""
+        if not user_message:
+            return {
+                "next_action": "finish",
+                "selected_agent": None,
+                "routing_reason": "未找到用户消息",
+                "confidence": 0.0
+            }
+
+        query_intent = state.query_intent
+        intent_context = self._build_intent_context(query_intent)
+        entity_context = self._build_entity_context(state)
+        agents_description = self._get_agents_description()
+
+        routing_prompt = ChatPromptTemplate.from_messages([
+            ("system", """你是一个智能路由系统，负责根据用户问题和上下文信息决定调用哪个Agent。
+
+可用Agent列表：
+{agents}
+
+路由规则（基于用户问题和上下文信息）：
+1. 商品相关：用户询问商品、搜索产品、比价等，选择 product_agent，next_action设为"product_search"
+
+2. 订单相关：
+   - **查询/取消订单**：选择 order_agent，next_action设为"order_management"
+   - **创建订单**：如果用户提供了明确的 product_id（或累积状态中有），选择 order_agent
+
+3. 知识检索：如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"
+
+4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
+
+5. 如果问题无法由现有Agent处理，next_action设为"finish"
+
+**重要**：用户可能分多轮提供信息。
+- 根据"累积实体信息"判断用户是否正在补充之前任务所需的信息。
+- 例如：用户之前选择了商品（有 selected_product_id），现在只说了手机号，这应该路由到 order_agent 而不是 chat_agent。
+
+**意图识别结果**（已由前置节点完成，仅供参考）：
+{intent_context}
+
+**累积实体信息**（包含用户已提供的所有信息）：
+{entity_context}"""),
+            ("user", "用户问题: {question}")
+        ])
+
+        try:
+            routing_decision = self.structured_llm.invoke(
+                routing_prompt.format_messages(
+                    agents=agents_description,
+                    question=user_message,
+                    intent_context=intent_context,
+                    entity_context=entity_context
+                )
+            )
+
+            selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
+
+            result = {
+                "next_action": routing_decision.next_action,
+                "selected_agent": selected_agent,
+                "routing_reason": routing_decision.routing_reason,
+                "confidence": routing_decision.confidence
+            }
+
+            logger.info(f"Supervisor路由决策: {result}")
+            return result
+
+        except Exception as e:
+            logger.error(f"结构化输出解析失败: {e}, 使用降级策略", exc_info=True)
+            return await self._fallback_routing_with_llm(user_message)
+
     def _final_fallback_routing(self, user_message: str) -> Dict[str, Any]:
         """
         最终降级策略 - 仅在LLM完全失败时使用

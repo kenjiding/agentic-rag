@@ -89,7 +89,7 @@ class BaseAgent(ABC):
         Returns:
             如果状态有效返回True，否则返回False
         """
-        return "messages" in state and isinstance(state["messages"], list)
+        return hasattr(state, "messages") and isinstance(state.messages, list)
 
 
 class ToolEnabledAgent(BaseAgent):

@@ -89,7 +89,7 @@ class RAGAgent(BaseAgent):
         try:
             # 从消息历史中提取最后一个用户问题
             user_message = None
-            for msg in reversed(state["messages"]):
+            for msg in reversed(state.messages):
                 if isinstance(msg, HumanMessage):
                     user_message = msg.content
                     break
@@ -104,8 +104,8 @@ class RAGAgent(BaseAgent):
             
             # 从state中提取意图识别结果
             # 注意：query_intent 已经通过 intent.model_dump() 包含了所有字段，包括 sub_queries
-            query_intent = state.get("query_intent")
-            original_question = state.get("original_question", user_message)
+            query_intent = state.query_intent
+            original_question = state.original_question or user_message
             
             # 确保sub_queries是列表格式（如果存在）
             if query_intent and query_intent.get("sub_queries") and not isinstance(query_intent["sub_queries"], list):

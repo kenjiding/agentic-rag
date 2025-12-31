@@ -28,29 +28,16 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 商�
 2. 提供商品详细信息
 3. 推荐符合条件的商品
 
-工具使用指南：
-- search_products_tool: 主要工具，支持多条件搜索
-  * name: 商品名称关键词
-  * category/sub_category: 分类筛选
-  * brand: 品牌筛选
-  * price_min/price_max: 价格范围
-  * min_rating: 最低评分
-  * in_stock_only: 是否仅显示有货
-
-- get_product_detail: 查询指定商品的详细信息
-- get_brands: 获取所有可用品牌
-- get_categories: 获取所有可用分类
+重要业务规则：
+- 优先展示评分高、有库存的商品
+- 如果用户提供的搜索条件过于严格导致无结果，建议放宽条件
+- 所有工具参数都是可选的，根据用户输入动态构建查询
 
 回复风格：
 - 使用友好的语气，用 emoji 让回复更生动
 - 如果找到多个结果，用列表展示
 - 如果没有找到，给出建议（如放宽筛选条件）
 - 主动询问用户是否需要更详细的信息
-
-注意事项：
-- 所有参数都是可选的，根据用户输入动态构建查询
-- 如果用户提供的搜索条件过于严格导致无结果，建议放宽条件
-- 优先展示评分高、有库存的商品
 """
 
 
@@ -89,8 +76,47 @@ class ProductAgent:
         """获取 Agent 描述"""
         return "商品搜索专家 - 处理商品查询、搜索、比价等请求"
 
-    def invoke(self, state: MultiAgentState) -> Dict[str, Any]:
-        """执行商品查询
+    def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
+        """构建系统提示的上下文信息
+        
+        企业级最佳实践：通过 system prompt 提示 LLM 上下文信息，
+        让 LLM 自己判断如何使用工具，而不是硬编码工具调用。
+        
+        Args:
+            state: 当前多Agent状态
+
+        Returns:
+            上下文提示字符串
+        """
+        hints = []
+
+        # 检查任务链上下文
+        task_chain = state.task_chain
+        entities = state.entities
+
+        # 如果有任务链或实体信息，提示 LLM
+        if task_chain and entities:
+            hints.append("\n\n=== 任务链上下文 ===")
+            if entities.get("search_keyword"):
+                search_keyword = entities["search_keyword"]
+                hints.append(f"当前处于任务链的商品搜索步骤。")
+                hints.append(f"需要搜索关键词：{search_keyword}")
+                hints.append("请使用 search_products_tool 工具执行搜索，根据工具描述选择合适的参数。")
+
+            # 显示其他��下文信息
+            other_context = {k: v for k, v in entities.items() if k != "search_keyword" and v is not None}
+            if other_context:
+                hints.append("\n其他上下文信息：")
+                for key, value in other_context.items():
+                    hints.append(f"- {key}: {value}")
+
+        return "\n".join(hints) if hints else ""
+
+    async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
+        """执行商品查询（异步接口，符合LangGraph 1.x规范）
+
+        企业级最佳实践：让 LLM 自己决定使用哪些工具，而不是硬编码工具调用。
+        LLM 会根据工具描述和上下文，自动判断需要调用什么工具。
 
         Args:
             state: 当前多 Agent 状态
@@ -99,7 +125,7 @@ class ProductAgent:
             更新后的状态片段
         """
         # 获取最新消息
-        messages = state.get("messages", [])
+        messages = state.messages
         if not messages:
             return {
                 "messages": [
@@ -108,64 +134,18 @@ class ProductAgent:
                 "current_agent": self.name,
             }
 
-        # 检查是否在任务链模式中
-        task_chain = state.get("task_chain")
-        context_data = state.get("context_data", {})
-
-        # 如果在任务链模式且有搜索关键词，直接执行搜索
-        if task_chain and context_data.get("search_keyword"):
-            search_keyword = context_data["search_keyword"]
-            logger.info(f"任务链模式：自动搜索商品 '{search_keyword}'")
-
-            # 直接调用搜索工具
-            search_tool = next((t for t in self.tools if t.name == "search_products_tool"), None)
-            if search_tool:
-                try:
-                    # 使用搜索关键词作为name参数
-                    result = search_tool.invoke({"name": search_keyword})
-
-                    # 解析结果
-                    try:
-                        result_json = json.loads(result) if isinstance(result, str) else result
-                    except (json.JSONDecodeError, TypeError):
-                        result_json = {}
-
-                    # 构造简短的回复消息
-                    if result_json.get("products"):
-                        products = result_json["products"]
-                        reply_msg = f"为您找到{len(products)}款{search_keyword}相关商品，请选择您想要购买的商品："
-                    else:
-                        reply_msg = f"抱歉，未找到{search_keyword}相关商品，请更换关键词重试。"
-
-                    # 创建ToolMessage
-                    tool_message = ToolMessage(
-                        content=str(result),
-                        tool_call_id="auto-search-1"
-                    )
-
-                    # 返回结果
-                    return {
-                        "messages": messages + [tool_message, AIMessage(content=reply_msg)],
-                        "current_agent": self.name,
-                        "tools_used": state.get("tools_used", []) + [{
-                            "agent": self.name,
-                            "tool": "search_products_tool",
-                            "args": {"name": search_keyword}
-                        }]
-                    }
-                except Exception as e:
-                    logger.error(f"自动搜索失败: {e}", exc_info=True)
-                    # 失败了就走正常LLM流程
-                    pass
-
+        # 构建系统提示（包含任务链上下文）
+        hints = self._build_system_prompt_hints(state)
+        system_prompt = PRODUCT_AGENT_SYSTEM_PROMPT + hints
+        
         # 构建 Agent 消息
-        # 清理历史消息，移除 ToolMessage 避免历史工具结果干扰
-        cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=5)
-        agent_messages = [SystemMessage(content=PRODUCT_AGENT_SYSTEM_PROMPT)]
-        agent_messages.extend(cleaned_messages)
+        # 使用最新的用户消息和最近的几轮对话
+        recent_messages = messages[-5:] if len(messages) > 5 else messages
+        agent_messages = [SystemMessage(content=system_prompt)]
+        agent_messages.extend(recent_messages)
 
-        # 调用 LLM
-        response = self.llm_with_tools.invoke(agent_messages)
+        # 调用 LLM（异步执行）
+        response = await self.llm_with_tools.ainvoke(agent_messages)
 
         # 处理工具调用
         if hasattr(response, "tool_calls") and response.tool_calls:
@@ -178,7 +158,7 @@ class ProductAgent:
                 tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
                 if tool:
                     try:
-                        result = tool.invoke(tool_call["args"])
+                        result = await tool.ainvoke(tool_call["args"])
 
                         # 尝试解析工具返回的结构化数据
                         try:
@@ -218,17 +198,21 @@ class ProductAgent:
             else:
                 # 没有结构化数据，需要调用 LLM 生成回复
                 followup_messages = agent_messages + [response] + tool_messages
-                final_response = self.llm.invoke(followup_messages)
+                final_response = await self.llm.ainvoke(followup_messages)
 
             # 返回结果（只添加新的 AIMessage 和 ToolMessage）
-            return {
+            result = {
                 "messages": messages + [response] + tool_messages + [final_response],
                 "current_agent": self.name,
-                "tools_used": state.get("tools_used", []) + tool_used_info,
+                "tools_used": state.tools_used + tool_used_info,
             }
 
+            return result
+
         # 无工具调用，直接返回响应
-        return {
+        result = {
             "messages": messages + [response],
             "current_agent": self.name,
         }
+
+        return result

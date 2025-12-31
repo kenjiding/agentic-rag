@@ -16,7 +16,6 @@ async def stream_chat_response(question: str, session_id: str):
     """流式生成聊天响应"""
     try:
         graph = await get_graph()
-        accumulated_state = {}
         execution_steps: list[str] = []
         step_details: list[dict] = []
 
@@ -42,6 +41,20 @@ async def stream_chat_response(question: str, session_id: str):
             "recursion_limit": 20
         }
 
+        # 【关键修复】在流式处理之前，先从 checkpointer 获取完整的状态作为基础
+        # 这样 accumulated_state 会包含 task_chain、entities 等关键字段
+        accumulated_state = {}
+        try:
+            existing_snapshot = graph.graph.get_state(config)
+            if existing_snapshot and existing_snapshot.values:
+                # 使用现有状态作为基础（保留 task_chain 等关键数据）
+                # Pydantic 模型使用 model_dump() 转换为字典，不能使用 .copy()
+                from src.multi_agent.utils import state_to_dict
+                accumulated_state = state_to_dict(existing_snapshot.values)
+                logger.info(f"从 checkpointer 初始化 accumulated_state: task_chain={'task_chain' in accumulated_state and accumulated_state.get('task_chain') is not None}")
+        except Exception as e:
+            logger.warning(f"从 checkpointer 获取状态失败: {e}，使用空状态初始化")
+
         # 使用 updates 模式获取每个节点的更新
         async for state_update in graph.astream(question, config=config, stream_mode="updates", session_id=session_id):
             # LangGraph 返回的格式是 {node_name: {updated_fields}}
@@ -59,6 +72,10 @@ async def stream_chat_response(question: str, session_id: str):
                     # 如果有新步骤，立即发送
                     if is_new_step:
                         yield f"data: {json.dumps({'type': 'state_update', 'data': {'execution_steps': execution_steps, 'step_details': step_details}}, ensure_ascii=False)}\n\n"
+
+                # 【关键修复】在更新 accumulated_state 之前，记录当前消息数量
+                # 这样可以判断 node_update 中是否有新消息
+                messages_before_update = len(accumulated_state.get("messages", []))
 
                 # 累积状态
                 if isinstance(node_update, dict):
@@ -88,11 +105,48 @@ async def stream_chat_response(question: str, session_id: str):
                         accumulated_state.update(node_update)
 
                 # 发送状态更新
-                # 【关键修复】传递 node_update，只提取当前轮次的工具结果
-                formatted = format_state_update(accumulated_state, node_update)
+                # 【关键修复】传递 node_update 和更新前的消息数量，从源头解决问题：只提取新消息
+                formatted = format_state_update(accumulated_state, node_update, messages_before_update)
                 formatted["data"]["execution_steps"] = execution_steps
                 formatted["data"]["step_details"] = step_details
                 yield f"data: {json.dumps(formatted, ensure_ascii=False)}\n\n"
+
+        # 【LangGraph 1.x】流结束后检查是否有 interrupt()
+        # 当 interrupt() 被调用时，流正常结束，但状态保存在 checkpointer 中
+        # 需要通过 get_state() 检查是否有待处理的 interrupt
+        try:
+            logger.info(f"[chat路由] 流结束，检查是否有 interrupt: session_id={session_id}")
+            final_snapshot = graph.graph.get_state(config)
+            logger.info(f"[chat路由] checkpointer snapshot: {final_snapshot is not None}, tasks存在: {final_snapshot.tasks is not None if final_snapshot else False}, tasks长度: {len(final_snapshot.tasks) if final_snapshot and final_snapshot.tasks else 0}")
+            
+            if final_snapshot and final_snapshot.tasks:
+                logger.info(f"[chat路由] 检查 tasks 中的 interrupt: tasks数量={len(final_snapshot.tasks)}")
+                # 检查是否有待处理的 interrupt（LangGraph 1.x 将 interrupt 保存在 tasks 中）
+                for i, task in enumerate(final_snapshot.tasks):
+                    logger.info(f"[chat路由] 检查 task[{i}]: {type(task)}")
+                    if task.interrupts:
+                        logger.info(f"[chat路由] task[{i}].interrupts 值: {task.interrupts}")
+                        # 提取 interrupt 值
+                        for interrupt_obj in task.interrupts:
+                            if hasattr(interrupt_obj, 'value'):
+                                interrupt_value = interrupt_obj.value
+                                logger.info(f"[chat路由] 检测到 interrupt: {interrupt_value}")
+
+                                if interrupt_value and isinstance(interrupt_value, dict):
+                                    selection_type = interrupt_value.get("selection_type")
+                                    logger.info(f"[chat路由] interrupt selection_type: {selection_type}")
+                                    if selection_type == "product":
+                                        # 发送 pending_selection 到前端
+                                        yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'selection', 'pending_selection': interrupt_value}}, ensure_ascii=False)}\n\n"
+                                        logger.info(f"[chat路由] 已发送 pending_selection: selection_id={interrupt_value.get('selection_id')}")
+                                # 退出循环，只处理第一个 interrupt
+                                break
+                    if final_snapshot.tasks[0].interrupts:
+                        break
+            else:
+                logger.info(f"[chat路由] 没有 interrupt 任务")
+        except Exception as e:
+            logger.error(f"[chat路由] 检查 interrupt 状态失败: {e}", exc_info=True)
 
         # 标记所有步骤为完成
         for detail in step_details:
@@ -127,8 +181,7 @@ async def clear_session(session_id: str):
                     "task_chain": None,
                     "pending_selection": None,
                     "confirmation_pending": None,
-                    "entities": {},
-                    "context_data": {}
+                    "entities": {}
                 },
                 as_node="__start__"
             )

@@ -68,13 +68,6 @@ def query_user_orders(
         logger.info(f"🔍 [ORDER_QUERY] 状态筛选: {status}, 限制数量: {limit}")
 
         with get_db_session() as db:
-            # 先查询所有订单看看数据库中有什么
-            from src.db.models import Order as OrderModel
-            all_orders = db.query(OrderModel).limit(20).all()
-            logger.info(f"🔍 [ORDER_QUERY] 数据库中最近20个订单:")
-            for order in all_orders:
-                logger.info(f"  - 订单ID: {order.id}, 手机号: '{order.user_id}', 订单号: {order.order_id}, 状态: {order.status}")
-
             # 执行用户订单查询
             orders = get_user_orders(db, user_phone, status=status, limit=limit)
 

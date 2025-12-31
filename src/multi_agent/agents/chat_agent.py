@@ -6,7 +6,7 @@
 from typing import Dict, Any, Optional, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
 from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.tools.tool_registry import ToolRegistry
@@ -74,15 +74,16 @@ class ChatAgent(ToolEnabledAgent):
         if self._agent is None:
             # 使用ToolEnabledAgent的方法获取可用工具
             tools = self.get_available_tools()
-            
+
             logger.info(f"ChatAgent 初始化，可用工具数量: {len(tools)}")
             if tools:
                 logger.debug(f"可用工具: {[t.name for t in tools]}")
-            
-            self._agent = create_agent(
-                tools=tools,
+
+            # 使用 LangGraph 1.x 推荐的 create_react_agent
+            self._agent = create_react_agent(
                 model=self.llm,
-                system_prompt=self.system_prompt
+                tools=tools,
+                state_modifier=self.system_prompt
             )
         return self._agent
     
@@ -102,7 +103,7 @@ class ChatAgent(ToolEnabledAgent):
         try:
             # 获取用户消息
             user_message = None
-            for msg in reversed(state["messages"]):
+            for msg in reversed(state.messages):
                 if isinstance(msg, HumanMessage):
                     user_message = msg.content
                     break
@@ -117,7 +118,7 @@ class ChatAgent(ToolEnabledAgent):
             logger.info(f"Chat Agent处理消息: {user_message[:100]}...")
             
             # 检查是否有RAG结果，如果有且质量低，提示使用web search
-            rag_result = state.get("agent_results", {}).get("rag_agent")
+            rag_result = state.agent_results.get("rag_agent")
             should_use_web_search = False
             if rag_result:
                 answer_quality = rag_result.get("answer_quality", 0.0)
@@ -132,28 +133,25 @@ class ChatAgent(ToolEnabledAgent):
             # 构建配置
             from langgraph.graph.state import RunnableConfig
             config = RunnableConfig(
-                configurable={"thread_id": state.get("metadata", {}).get("session_id", "default")},
+                configurable={"thread_id": state.metadata.get("session_id", "default")},
                 recursion_limit=50
             )
             
             # LangGraph 1.x 最佳实践：
-            # create_agent返回的agent是一个Runnable，可以直接处理包含messages的状态
-            # 它会自动从状态中提取messages，处理并返回更新后的messages
+            # create_react_agent返回的agent是一个Runnable，可以直接处理状态
+            # 它会自动处理消息格式，无需手动清理
             try:
-                # 创建适配的状态格式（只包含messages，符合create_agent的期望）
-                # create_agent返回的agent期望输入格式为 {"messages": [...]}
-                # 如果RAG失败，在消息中添加提示，引导使用web search
-                messages = list(state["messages"])  # 创建新列表，避免修改原始状态
+                # 构建agent输入状态
+                agent_input = state.model_dump()
+
+                # 如果RAG失败，在系统提示中添加搜索引导
                 if should_use_web_search:
-                    # 在消息中添加提示，告诉agent需要使用web search
+                    # 更新系统提示，添加web search引导
                     from langchain_core.messages import SystemMessage
-                    search_hint = SystemMessage(
-                        content="Previous RAG search did not find a good answer. "
-                                "Please use web search tools to find information from the internet."
-                    )
-                    messages.append(search_hint)
-                
-                agent_input = {"messages": messages}
+                    enhanced_system = self.system_prompt + "\n\n注意：由于之前的RAG搜索结果不佳，请使用web search工具从互联网获取最新信息。"
+                    agent_input["messages"] = [
+                        SystemMessage(content=enhanced_system)
+                    ] + [msg for msg in state.messages if isinstance(msg, HumanMessage)]
                 
                 # 执行Agent（create_agent返回的agent支持异步调用）
                 if hasattr(agent, 'ainvoke'):
@@ -165,36 +163,36 @@ class ChatAgent(ToolEnabledAgent):
                 else:
                     raise ValueError("Agent不支持invoke或ainvoke方法")
                 
-                # create_agent返回的响应格式：{"messages": [AIMessage, ...]}
-                # 响应中的messages包含所有消息（包括新的AI消息）
-                if isinstance(response, dict) and "messages" in response:
-                    # 获取新增的消息（响应中的messages减去原始messages）
-                    original_message_count = len(state["messages"])
-                    new_messages = response["messages"][original_message_count:]
-                    
-                    # 找到最后一条AI消息
-                    ai_message = None
-                    for msg in reversed(new_messages):
-                        if isinstance(msg, AIMessage):
-                            ai_message = msg
-                            break
-                    
-                    if not ai_message:
-                        # 如果没有AI消息，使用LLM生成回复
-                        logger.warning("Agent未返回AI消息，使用LLM生成回复")
-                        llm_response = self.llm.invoke(user_message)
-                        ai_message = AIMessage(content=llm_response.content)
+                # create_react_agent返回的响应格式：直接返回消息列表或更新后的状态
+                # 处理不同的响应格式
+                if isinstance(response, dict):
+                    # 如果是字典，检查是否包含messages
+                    if "messages" in response:
+                        new_messages = response["messages"]
+                    else:
+                        new_messages = []
                 else:
-                    # 如果响应格式不符合预期，使用LLM生成回复
-                    logger.warning(f"Agent返回格式不符合预期: {type(response)}，使用LLM生成回复")
-                    llm_response = self.llm.invoke(user_message)
-                    ai_message = AIMessage(content=llm_response.content)
-                    
+                    # 如果是列表（直接返回消息）
+                    new_messages = list(response) if response else []
+
+                # 找到最后一条AI消息
+                ai_message = None
+                for msg in reversed(new_messages):
+                    if isinstance(msg, AIMessage):
+                        ai_message = msg
+                        break
+
+                if not ai_message:
+                    # 如果没有AI消息，使用LLM生成回复
+                    logger.warning("Agent未返回AI消息，使用LLM生成回复")
+                    llm_response = await self.llm.ainvoke([HumanMessage(content=user_message)])
+                    ai_message = llm_response
+
             except Exception as agent_error:
                 # 如果Agent调用失败，降级到直接使用LLM
                 logger.warning(f"Agent调用失败: {agent_error}，降级到直接使用LLM", exc_info=True)
-                llm_response = self.llm.invoke(user_message)
-                ai_message = AIMessage(content=llm_response.content)
+                llm_response = await self.llm.ainvoke([HumanMessage(content=user_message)])
+                ai_message = llm_response
             
             # 获取可用工具数量
             available_tools = self.get_available_tools()
