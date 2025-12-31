@@ -140,9 +140,11 @@ class ProductAgent:
         
         # 构建 Agent 消息
         # 使用最新的用户消息和最近的几轮对话
-        recent_messages = messages[-5:] if len(messages) > 5 else messages
+        # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
+        cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=5)
+        
         agent_messages = [SystemMessage(content=system_prompt)]
-        agent_messages.extend(recent_messages)
+        agent_messages.extend(cleaned_messages)
 
         # 调用 LLM（异步执行）
         response = await self.llm_with_tools.ainvoke(agent_messages)

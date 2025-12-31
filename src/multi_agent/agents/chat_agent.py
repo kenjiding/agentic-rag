@@ -6,7 +6,7 @@
 from typing import Dict, Any, Optional, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.tools.tool_registry import ToolRegistry
@@ -62,10 +62,24 @@ class ChatAgent(ToolEnabledAgent):
         )
         
         self.system_prompt = system_prompt or (
-            "You are a helpful assistant that can answer questions and help with tasks. "
-            "When you need to search for information, especially when RAG system cannot find answers, "
-            "use the available web search tools to find information from the internet. "
-            "If the previous RAG search failed or returned low-quality results, you should use web search tools to find the answer."
+            "Your name is Novid Assistant. You are a professional, courteous, and helpful AI assistant.\n\n"
+            "**Greeting Protocol:**\n"
+            "When users greet you politely (e.g., '你好', 'Hello', 'Hi', '您好', '早上好', '下午好', '晚上好'), "
+            "follow this sequence:\n"
+            "1. First, introduce yourself: '您好，我是 Novid Assistant'\n"
+            "2. Then, greet them back warmly: '很高兴为您服务' or 'How can I help you today?'\n"
+            "3. Finally, address their question or offer assistance\n\n"
+            "**Communication Style:**\n"
+            "- Always be polite, respectful, and professional\n"
+            "- Use courteous language (请, 谢谢, 不客气, 抱歉, etc.)\n"
+            "- Show appreciation when users express gratitude\n"
+            "- Apologize gracefully when you cannot help or make mistakes\n"
+            "- Be patient and understanding with user requests\n\n"
+            "**Core Capabilities:**\n"
+            "- Answer questions and help with tasks\n"
+            "- When RAG system cannot find answers, use available web search tools to find information from the internet\n"
+            "- If previous RAG search failed or returned low-quality results, proactively use web search tools to find accurate answers\n"
+            "- Provide clear, accurate, and helpful responses"
         )
         self._agent = None  # 延迟初始化
     
@@ -79,11 +93,12 @@ class ChatAgent(ToolEnabledAgent):
             if tools:
                 logger.debug(f"可用工具: {[t.name for t in tools]}")
 
-            # 使用 LangGraph 1.x 推荐的 create_react_agent
-            self._agent = create_react_agent(
+            # 使用 LangChain 1.x 推荐的 create_agent
+            # system_prompt 参数可以是 str 或 SystemMessage
+            self._agent = create_agent(
                 model=self.llm,
                 tools=tools,
-                state_modifier=self.system_prompt
+                system_prompt=self.system_prompt
             )
         return self._agent
     
@@ -127,7 +142,7 @@ class ChatAgent(ToolEnabledAgent):
                     logger.info("检测到RAG答案质量低，Chat Agent将使用web search工具")
             
             # 使用LangChain Agent处理（支持工具调用）
-            # LangGraph 1.x 最佳实践：create_agent返回的agent可以直接处理状态
+            # LangChain 1.x 最佳实践：create_agent返回的agent可以直接处理状态
             agent = self._get_agent()
             
             # 构建配置
@@ -137,18 +152,20 @@ class ChatAgent(ToolEnabledAgent):
                 recursion_limit=50
             )
             
-            # LangGraph 1.x 最佳实践：
-            # create_react_agent返回的agent是一个Runnable，可以直接处理状态
+            # LangChain 1.x 最佳实践：
+            # create_agent返回的agent是一个Runnable，可以直接处理状态
             # 它会自动处理消息格式，无需手动清理
             try:
                 # 构建agent输入状态
-                agent_input = state.model_dump()
+                # create_agent期望的输入格式：{"messages": [...]}
+                agent_input = {"messages": state.messages}
 
                 # 如果RAG失败，在系统提示中添加搜索引导
                 if should_use_web_search:
                     # 更新系统提示，添加web search引导
                     from langchain_core.messages import SystemMessage
                     enhanced_system = self.system_prompt + "\n\n注意：由于之前的RAG搜索结果不佳，请使用web search工具从互联网获取最新信息。"
+                    # 在消息列表开头添加增强的系统消息
                     agent_input["messages"] = [
                         SystemMessage(content=enhanced_system)
                     ] + [msg for msg in state.messages if isinstance(msg, HumanMessage)]
@@ -163,17 +180,18 @@ class ChatAgent(ToolEnabledAgent):
                 else:
                     raise ValueError("Agent不支持invoke或ainvoke方法")
                 
-                # create_react_agent返回的响应格式：直接返回消息列表或更新后的状态
-                # 处理不同的响应格式
+                # create_agent返回的响应格式：包含messages键的字典
+                # 处理响应格式
                 if isinstance(response, dict):
-                    # 如果是字典，检查是否包含messages
+                    # create_agent返回格式：{"messages": [...]}
                     if "messages" in response:
                         new_messages = response["messages"]
                     else:
                         new_messages = []
                 else:
-                    # 如果是列表（直接返回消息）
-                    new_messages = list(response) if response else []
+                    # 如果是其他格式（不应该发生）
+                    logger.warning(f"Agent返回了意外的格式: {type(response)}")
+                    new_messages = []
 
                 # 找到最后一条AI消息
                 ai_message = None

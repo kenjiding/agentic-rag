@@ -550,14 +550,15 @@ class OrderAgent:
         """
         hints = self._build_system_prompt_hints(state)
         # 保留更多历史消息，确保 LLM 能看到用户之前提供的信息（如手机号、数量等）
-        recent_messages = messages[-20:] if len(messages) > 20 else messages
+        # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
+        cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=20)
 
         agent_messages = [
             SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + hints)
         ]
-        agent_messages.extend(recent_messages)
+        agent_messages.extend(cleaned_messages)
 
-        logger.info(f"准备调用 LLM 处理请求，消息数量: {len(recent_messages)}")
+        logger.info(f"准备调用 LLM 处理请求，消息数量: {len(cleaned_messages)}")
 
         response = await self.llm_with_tools.ainvoke(agent_messages)
 
