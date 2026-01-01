@@ -124,23 +124,18 @@ async def stream_chat_response(question: str, session_id: str):
                 # 检查是否有待处理的 interrupt（LangGraph 1.x 将 interrupt 保存在 tasks 中）
                 for i, task in enumerate(final_snapshot.tasks):
                     logger.info(f"[chat路由] 检查 task[{i}]: {type(task)}")
-                    if task.interrupts:
-                        logger.info(f"[chat路由] task[{i}].interrupts 值: {task.interrupts}")
-                        # 提取 interrupt 值
-                        for interrupt_obj in task.interrupts:
-                            if hasattr(interrupt_obj, 'value'):
-                                interrupt_value = interrupt_obj.value
-                                logger.info(f"[chat路由] 检测到 interrupt: {interrupt_value}")
-
-                                if interrupt_value and isinstance(interrupt_value, dict):
-                                    selection_type = interrupt_value.get("selection_type")
-                                    logger.info(f"[chat路由] interrupt selection_type: {selection_type}")
-                                    if selection_type == "product":
-                                        # 发送 pending_selection 到前端
-                                        yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'selection', 'pending_selection': interrupt_value}}, ensure_ascii=False)}\n\n"
-                                        logger.info(f"[chat路由] 已发送 pending_selection: selection_id={interrupt_value.get('selection_id')}")
-                                # 退出循环，只处理第一个 interrupt
-                                break
+                    # 提取 interrupt 值
+                    for interrupt_obj in (task.interrupts or []):
+                        interrupt_value = interrupt_obj.value
+                        if interrupt_value and isinstance(interrupt_value, dict):
+                            selection_type = interrupt_value.get("selection_type")
+                            logger.info(f"[chat路由] interrupt selection_type: {selection_type}")
+                            if selection_type == "product":
+                                # 发送 pending_selection 到前端
+                                yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'selection', 'pending_selection': interrupt_value}}, ensure_ascii=False)}\n\n"
+                                logger.info(f"[chat路由] 已发送 pending_selection: selection_id={interrupt_value.get('selection_id')}")
+                        # 退出循环，只处理第一个 interrupt
+                        break
                     if final_snapshot.tasks[0].interrupts:
                         break
             else:
