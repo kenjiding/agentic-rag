@@ -10,6 +10,53 @@ export function useStreamingChat() {
   const abortControllerRef = useRef<AbortController | null>(null)
   const currentMessageIdRef = useRef<string | null>(null)
 
+  /**
+   * 通用的消息更新函数
+   * 统一处理 state_update 事件的消息更新逻辑
+   * 
+   * 核心原则：state_update 中的 content 直接替换现有内容，不追加
+   * 这样确保临时状态消息（如 confirmation_resolved）可以被最终结果替换
+   */
+  const updateMessageWithStateUpdate = useCallback((
+    messageId: string,
+    stateUpdateData: StreamEvent["data"]
+  ) => {
+    setMessages((prev) => {
+      const updated = [...prev]
+      const index = updated.findIndex((msg) => msg.id === messageId)
+      if (index === -1) {
+        return updated
+      }
+
+      const existing = updated[index]
+      const existingMetadata = existing.metadata || {}
+
+      // content 直接替换，不追加
+      const newContent = stateUpdateData?.content ?? existing.content
+
+      // 合并 metadata
+      const newMetadata = {
+        current_agent: stateUpdateData?.current_agent ?? existingMetadata.current_agent,
+        tools_used: stateUpdateData?.tools_used ?? existingMetadata.tools_used,
+        execution_steps: stateUpdateData?.execution_steps ?? existingMetadata.execution_steps,
+        step_details: stateUpdateData?.step_details ?? existingMetadata.step_details,
+      }
+
+      updated[index] = {
+        ...existing,
+        content: newContent,
+        responseType: stateUpdateData?.response_type ?? existing.responseType ?? "text",
+        responseData: stateUpdateData?.response_data ?? existing.responseData,
+        confirmationPending: stateUpdateData?.confirmation_pending ?? existing.confirmationPending,
+        pendingSelection: stateUpdateData?.pending_selection ?? existing.pendingSelection,
+        metadata: newMetadata,
+        isStreaming: true,
+      }
+
+      return updated
+    })
+  }, [])
+
   const sendMessage = useCallback(async (content: string, sessionId: string = "default") => {
     // 添加用户消息
     const userMessage: ChatMessage = {
@@ -97,49 +144,7 @@ export function useStreamingChat() {
                   console.log("🛍️ 收到选择请求:", data.data.pending_selection)
                 }
 
-                setMessages((prev) => {
-                  const updated = [...prev]
-                  const index = updated.findIndex(
-                    (msg) => msg.id === assistantMessageId
-                  )
-                  if (index !== -1) {
-                    const existing = updated[index]
-
-                    // 处理内容
-                    let newContent = existing.content
-                    if (data.data?.content) {
-                      const incomingContent = data.data.content
-                      if (incomingContent.includes(existing.content) && existing.content) {
-                        newContent = incomingContent
-                      } else if (incomingContent && !existing.content) {
-                        newContent = incomingContent
-                      } else if (incomingContent !== existing.content) {
-                        newContent = existing.content + incomingContent
-                      }
-                    }
-
-                    // 合并 metadata
-                    const existingMetadata = existing.metadata || {}
-                    const newMetadata = {
-                      current_agent: data.data?.current_agent ?? existingMetadata.current_agent,
-                      tools_used: data.data?.tools_used ?? existingMetadata.tools_used,
-                      execution_steps: data.data?.execution_steps ?? existingMetadata.execution_steps,
-                      step_details: data.data?.step_details ?? existingMetadata.step_details,
-                    }
-
-                    updated[index] = {
-                      ...existing,
-                      content: newContent,
-                      responseType: data.data?.response_type ?? existing.responseType ?? "text",
-                      responseData: data.data?.response_data ?? existing.responseData,
-                      confirmationPending: data.data?.confirmation_pending ?? existing.confirmationPending,
-                      pendingSelection: data.data?.pending_selection ?? existing.pendingSelection,
-                      metadata: newMetadata,
-                      isStreaming: true,
-                    }
-                  }
-                  return updated
-                })
+                updateMessageWithStateUpdate(assistantMessageId, data.data)
               }
 
               if (data.type === "done") {
@@ -234,7 +239,7 @@ export function useStreamingChat() {
     const assistantMessage: ChatMessage = {
       id: assistantMessageId,
       role: "assistant",
-      content: "已确认，正在处理...",
+      content: "",
       responseType: "text",
       timestamp: new Date(),
       isStreaming: true,
@@ -311,46 +316,7 @@ export function useStreamingChat() {
                 }
 
                 if (data.type === "state_update" && data.data) {
-                  // 更新消息内容（与sendMessage中的逻辑相同）
-                  setMessages((prev) => {
-                    const updated = [...prev]
-                    const index = updated.findIndex((msg) => msg.id === assistantMessageId)
-                    if (index !== -1) {
-                      const existing = updated[index]
-
-                      let newContent = existing.content
-                      if (data.data?.content) {
-                        const incomingContent = data.data.content
-                        if (incomingContent.includes(existing.content) && existing.content) {
-                          newContent = incomingContent
-                        } else if (incomingContent && !existing.content) {
-                          newContent = incomingContent
-                        } else if (incomingContent !== existing.content) {
-                          newContent = existing.content + incomingContent
-                        }
-                      }
-
-                      const existingMetadata = existing.metadata || {}
-                      const newMetadata = {
-                        current_agent: data.data?.current_agent ?? existingMetadata.current_agent,
-                        tools_used: data.data?.tools_used ?? existingMetadata.tools_used,
-                        execution_steps: data.data?.execution_steps ?? existingMetadata.execution_steps,
-                        step_details: data.data?.step_details ?? existingMetadata.step_details,
-                      }
-
-                      updated[index] = {
-                        ...existing,
-                        content: newContent,
-                        responseType: data.data?.response_type ?? existing.responseType ?? "text",
-                        responseData: data.data?.response_data ?? existing.responseData,
-                        confirmationPending: data.data?.confirmation_pending ?? existing.confirmationPending,
-                        pendingSelection: data.data?.pending_selection ?? existing.pendingSelection,
-                        metadata: newMetadata,
-                        isStreaming: true,
-                      }
-                    }
-                    return updated
-                  })
+                  updateMessageWithStateUpdate(assistantMessageId, data.data)
                 }
 
                 if (data.type === "done") {
@@ -526,46 +492,7 @@ export function useStreamingChat() {
               }
 
               if (data.type === "state_update" && data.data) {
-                // 更新消息内容（与sendMessage中的逻辑相同）
-                setMessages((prev) => {
-                  const updated = [...prev]
-                  const index = updated.findIndex((msg) => msg.id === assistantMessageId)
-                  if (index !== -1) {
-                    const existing = updated[index]
-
-                    let newContent = existing.content
-                    if (data.data?.content) {
-                      const incomingContent = data.data.content
-                      if (incomingContent.includes(existing.content) && existing.content) {
-                        newContent = incomingContent
-                      } else if (incomingContent && !existing.content) {
-                        newContent = incomingContent
-                      } else if (incomingContent !== existing.content) {
-                        newContent = existing.content + incomingContent
-                      }
-                    }
-
-                    const existingMetadata = existing.metadata || {}
-                    const newMetadata = {
-                      current_agent: data.data?.current_agent ?? existingMetadata.current_agent,
-                      tools_used: data.data?.tools_used ?? existingMetadata.tools_used,
-                      execution_steps: data.data?.execution_steps ?? existingMetadata.execution_steps,
-                      step_details: data.data?.step_details ?? existingMetadata.step_details,
-                    }
-
-                    updated[index] = {
-                      ...existing,
-                      content: newContent,
-                      responseType: data.data?.response_type ?? existing.responseType ?? "text",
-                      responseData: data.data?.response_data ?? existing.responseData,
-                      confirmationPending: data.data?.confirmation_pending ?? existing.confirmationPending,
-                      pendingSelection: data.data?.pending_selection ?? existing.pendingSelection,
-                      metadata: newMetadata,
-                      isStreaming: true,
-                    }
-                  }
-                  return updated
-                })
+                updateMessageWithStateUpdate(assistantMessageId, data.data)
               }
 
               if (data.type === "done") {

@@ -1,9 +1,4 @@
-"""选择相关路由
-
-2025-2026 最佳实践：使用 LangGraph 的 interrupt() + Command(resume=...) 机制
-- interrupt() 暂停图执行，不污染消息历史
-- Command(resume=...) 恢复执行，传递用户选择
-"""
+"""选择相关路由"""
 import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,17 +14,9 @@ router = APIRouter()
 
 @router.post("/selection/resolve")
 async def resolve_selection(request: SelectionResolveRequest):
-    """解析用户选择并恢复执行（LangGraph 1.x 最佳实践）
-
-    使用 Command(resume=...) 机制：
-    1. 记录用户选择到 selection_manager
-    2. 使用 Command(resume=...) 恢复图执行
-    3. interrupt() 返回 resume 值，继续执行
-
-    参考：https://langgraph.com.cn/agents/human-in-the-loop/index.html
-    """
+    """解析用户选择并恢复执行"""
     try:
-        from src.api.formatters import format_state_update
+        from src.api.streaming_utils import accumulate_and_format_state_updates
         import json
         import asyncio
 
@@ -73,31 +60,21 @@ async def resolve_selection(request: SelectionResolveRequest):
         async def stream_response():
             """流式返回恢复执行的结果"""
             try:
-                # 发送选择成功消息
                 yield f"data: {json.dumps({'type': 'selection_resolved', 'message': '已选择商品，正在继续处理...'}, ensure_ascii=False)}\n\n"
-                await asyncio.sleep(0.1)
-
-                # 【LangGraph 1.x】使用 Command(resume=...) 恢复图执行
-                # interrupt() 会返回 resume_data，图继续执行
+                
                 resume_command = Command(resume=resume_data)
-                async for state_update in graph.astream(
-                    command=resume_command,
-                    config=config,
-                    stream_mode="updates",
-                    session_id=session_id
+                
+                # 使用通用工具函数处理状态更新
+                async for formatted in accumulate_and_format_state_updates(
+                    graph.astream(
+                        command=resume_command,
+                        config=config,
+                        stream_mode="updates",
+                        session_id=session_id
+                    )
                 ):
-                    # 格式化并发送状态更新
-                    for node_name, node_data in state_update.items():
-                        if node_name in ("__start__", "__end__"):
-                            continue
-                        if isinstance(node_data, dict):
-                            try:
-                                formatted = format_state_update(node_data)
-                                if isinstance(formatted, dict):
-                                    json_str = json.dumps(formatted, ensure_ascii=False)
-                                    yield f"data: {json_str}\n\n"
-                            except Exception as e:
-                                logger.warning(f"格式化状态更新失败 (node={node_name}): {e}")
+                    json_str = json.dumps(formatted, ensure_ascii=False)
+                    yield f"data: {json_str}\n\n"
 
                 # 发送完成信号
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

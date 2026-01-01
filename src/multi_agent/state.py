@@ -90,7 +90,7 @@ class MultiAgentState(BaseModel):
     max_iterations: int = 10  # 最大迭代次数，默认10
 
     # 路由决策
-    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "wait_for_selection", "wait_for_confirmation", "finish"]] = None  # 下一步行动
+    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "wait_for_selection", "finish"]] = None  # 下一步行动
     routing_reason: Optional[str] = None  # 路由决策的原因说明
 
     # 意图识别
@@ -108,7 +108,7 @@ class MultiAgentState(BaseModel):
     entities: Dict[str, Any] = Field(default_factory=dict)  # 提取的实体信息：{"user_phone": "138...", "quantity": 2, "search_keyword": "西门子", ...}
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式，保持向后兼容性"""
+        """转换为字典格式"""
         return self.model_dump()
 
     @classmethod

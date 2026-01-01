@@ -279,10 +279,9 @@ class GraphNodeHandler:
                 state, task_chain, current_step, current_index, result, updated_state
             )
         elif result.get("confirmation_pending"):
-            steps[current_index] = steps[current_index].model_copy(update={"status": "in_progress"})
-            updated_state["task_chain"] = task_chain
-            updated_state["next_action"] = "wait_for_confirmation"
-            logger.info("需要确认，暂停任务链执行")
+            # 确认机制已改为使用 interrupt()，这里不再需要设置 wait_for_confirmation
+            # confirmation_pending 仅用于状态记录，实际的暂停由 interrupt() 处理
+            logger.info("检测到确认请求，应已通过 interrupt() 处理")
             return updated_state
         else:
             return self._handle_other_order_steps(
@@ -399,6 +398,21 @@ class GraphNodeHandler:
                 "next_action": result.get("next_action"),
                 "selected_agent": result.get("selected_agent"),
             }
+            
+            # 【关键修复】如果 result 中包含 messages，需要合并到状态中
+            # 这通常发生在任务链完成时，会返回最终的成功消息
+            if "messages" in result:
+                existing_messages = state.messages or []
+                new_messages = result.get("messages", [])
+                # 合并消息，避免重复
+                existing_ids = {id(msg) if hasattr(msg, 'id') else str(msg) for msg in existing_messages}
+                for msg in new_messages:
+                    msg_id = id(msg) if hasattr(msg, 'id') else str(msg)
+                    if msg_id not in existing_ids:
+                        existing_messages.append(msg)
+                        existing_ids.add(msg_id)
+                updated_state["messages"] = existing_messages
+                logger.info(f"[Task Orchestrator节点] 已合并 {len(new_messages)} 条新消息到状态中")
 
             if updated_state.get("task_chain"):
                 logger.info(f"[Task Orchestrator节点] 任务链已更新: current_step_index={updated_state['task_chain'].current_step_index if updated_state['task_chain'] else None}")

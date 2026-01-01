@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from src.api.models import ChatRequest
 from src.api.graph_manager import get_graph
 from src.api.formatters import format_state_update, format_step_name, format_step_detail
+from src.api.streaming_utils import accumulate_and_format_state_updates
 
 logger = logging.getLogger(__name__)
 

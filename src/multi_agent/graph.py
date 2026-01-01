@@ -227,8 +227,7 @@ class MultiAgentGraph:
             agent_route_mapping_order = {
                 "task_orchestrator": "task_orchestrator",
                 "supervisor": "supervisor",
-                "finish": END,
-                "wait_for_confirmation": END
+                "finish": END
             }
             graph.add_conditional_edges("order_agent", self.router.route_after_agent, agent_route_mapping_order)
         

@@ -41,11 +41,6 @@ class GraphRouter:
         if state.error_message or state.iteration_count >= self.graph.max_iterations:
             return "finish"
 
-        # 检查是否需要等待确认（优先级最高）
-        if state.next_action == "wait_for_confirmation":
-            logger.info("需要等待用户确认，暂停 graph 执行")
-            return "wait_for_confirmation"
-
         # 任务链模式：继续执行任务链
         if state.task_chain and state.next_action == "execute_task_chain":
             if state.current_agent in ["product_agent", "order_agent"]:

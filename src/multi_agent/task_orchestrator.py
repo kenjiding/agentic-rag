@@ -1007,14 +1007,10 @@ class TaskChainOrchestrator:
         current_step: TaskStep,
         session_id: str
     ) -> Dict[str, Any]:
-        """执行确认步骤
-
-        遵循单一职责原则：
-        - 如果上一步是 order_creation，则处理订单确认
-        - 否则处理其他类型的确认
-        """
+        """执行确认步骤"""
+        from langgraph.types import interrupt
+        
         current_index = task_chain.current_step_index
-        # 注意：步骤状态在执行完成时更新，不需要在这里更新
 
         # 检查上一步是否是 order_creation（订单确认场景）
         if current_index > 0:
@@ -1038,50 +1034,45 @@ class TaskChainOrchestrator:
                 order_text = order_info.get("text", "订单信息")
                 display_message = f"请确认订单信息：\n{order_text}"
 
-                # 创建订单确认请求
                 from src.confirmation.manager import get_confirmation_manager
                 confirmation_manager = get_confirmation_manager()
-
-                # 【修复】检查是否已有待确认的订单请求
                 existing_confirmation = await confirmation_manager.get_pending_confirmation(session_id)
+                
                 if existing_confirmation and existing_confirmation.action_type == "create_order":
-                    logger.info(f"重用已存在的确认请求: confirmation_id={existing_confirmation.confirmation_id}")
+                    logger.info(f"[确认步骤] 第一次执行，使用已存在的确认请求: confirmation_id={existing_confirmation.confirmation_id}")
                     confirmation = existing_confirmation
-                else:
-                    confirmation = await confirmation_manager.request_confirmation(
-                    session_id=session_id,
-                    action_type="create_order",  # 订单确认使用 create_order action_type
-                    action_data={
-                        "user_phone": order_info.get("user_phone"),
-                        "items": order_info.get("items"),  # JSON 字符串格式
-                        "notes": None
-                    },
-                    agent_name="order_agent",
-                    display_message=display_message,
-                    display_data={
-                        "items": order_info.get("items_data"),
-                        "total_amount": order_info.get("total_amount"),
-                        "task_chain_id": task_chain.chain_id,
-                        "step_id": current_step.step_id
-                    }
-                )
-                
-                logger.info(f"订单确认请求已创建: confirmation_id={confirmation.confirmation_id}")
-                
-                return {
-                    "confirmation_pending": {
+                    confirmation_info = {
                         "confirmation_id": confirmation.confirmation_id,
                         "action_type": confirmation.action_type,
-                        "action_data": confirmation.action_data,
                         "display_message": confirmation.display_message,
-                        "display_data": confirmation.display_data,  # 包含订单信息，供前端UI使用
-                        "agent_name": confirmation.agent_name
-                    },
-                    "next_action": "wait_for_confirmation",
-                    "task_chain": task_chain
-                }
+                        "display_data": confirmation.display_data,
+                        "metadata": {
+                            "task_chain_id": task_chain.chain_id,
+                            "step_id": current_step.step_id,
+                            "session_id": session_id
+                        }
+                    }
+                else:
+                    logger.info("[确认步骤] 恢复执行场景，interrupt() 将直接返回 resume 值")
+                    confirmation_info = {
+                        "confirmation_id": None,
+                        "action_type": "create_order",
+                        "display_message": display_message,
+                        "metadata": {
+                            "task_chain_id": task_chain.chain_id,
+                            "step_id": current_step.step_id,
+                            "session_id": session_id
+                        }
+                    }
+                
+                logger.info(f"[确认步骤] 调用 interrupt()")
+                user_confirmation = interrupt(confirmation_info)
+                logger.info(f"[确认步骤] interrupt() 恢复执行，收到用户确认: {user_confirmation}")
+                
+                return self._handle_confirmation_result(
+                    state, task_chain, current_step, current_index, user_confirmation
+                )
         
-        # 其他类型的确认场景
         context_data = task_chain.context_data
         step_metadata = current_step.metadata or {}
         confirmation_data = step_metadata.get("confirmation_data") or context_data
@@ -1110,16 +1101,87 @@ class TaskChainOrchestrator:
             }
         )
         
+        confirmation_info = {
+            "confirmation_id": confirmation.confirmation_id,
+            "action_type": confirmation.action_type,
+            "display_message": confirmation.display_message,
+            "metadata": {
+                "task_chain_id": task_chain.chain_id,
+                "step_id": current_step.step_id,
+                "session_id": session_id
+            }
+        }
+        
+        logger.info(f"[确认步骤] 调用 interrupt()，confirmation_id={confirmation.confirmation_id}")
+        user_confirmation = interrupt(confirmation_info)
+        logger.info(f"[确认步骤] interrupt() 恢复执行，收到用户确认: {user_confirmation}")
+        
+        return self._handle_confirmation_result(
+            state, task_chain, current_step, current_index, user_confirmation
+        )
+
+    def _handle_confirmation_result(
+        self,
+        state: MultiAgentState,
+        task_chain: TaskChain,
+        current_step: TaskStep,
+        current_index: int,
+        user_confirmation: Any
+    ) -> Dict[str, Any]:
+        """统一处理确认结果
+        
+        根据 LangGraph 最佳实践，interrupt() 返回 resume 值后，统一处理确认结果
+        不区分第一次执行和恢复执行，因为逻辑完全相同
+        
+        Args:
+            state: 当前状态
+            task_chain: 任务链
+            current_step: 当前步骤
+            current_index: 当前步骤索引
+            user_confirmation: interrupt() 返回的确认结果，格式：{"confirmed": True/False}
+            
+        Returns:
+            更新后的状态
+        """
+        confirmed = user_confirmation.get("confirmed", False) if isinstance(user_confirmation, dict) else False
+        
+        if not confirmed:
+            # 用户取消确认，结束任务链
+            logger.info("[确认步骤] 用户取消确认")
+            updated_step = current_step.model_copy(update={"status": "completed"})
+            updated_steps = list(task_chain.steps)
+            updated_steps[current_index] = updated_step
+            updated_task_chain = task_chain.model_copy(update={"steps": updated_steps})
+            
+            return {
+                "next_action": "finish",
+                "task_chain": None,
+                "messages": state.messages + [
+                    AIMessage(content="已取消确认")
+                ]
+            }
+        
+        # 用户确认，标记步骤完成并移动到下一步
+        logger.info("[确认步骤] 用户确认，标记步骤完成并移动到下一步")
+        updated_step = current_step.model_copy(update={"status": "completed"})
+        updated_steps = list(task_chain.steps)
+        updated_steps[current_index] = updated_step
+        updated_task_chain = task_chain.model_copy(update={"steps": updated_steps})
+        updated_task_chain = self.move_to_next_step(updated_task_chain)
+        
+        # 检查任务链是否已完成
+        if updated_task_chain.current_step_index >= len(updated_task_chain.steps):
+            logger.info("[确认步骤] 任务链已完成")
+            # 订单创建消息已在流式响应中发送，这里不再返回重复消息
+            return {
+                "next_action": "finish",
+                "task_chain": None
+            }
+        
+        # 继续执行任务链的下一步
         return {
-            "confirmation_pending": {
-                "confirmation_id": confirmation.confirmation_id,
-                "action_type": confirmation.action_type,
-                "action_data": confirmation.action_data,
-                "display_message": confirmation.display_message,
-                "agent_name": confirmation.agent_name
-            },
-            "next_action": "wait_for_confirmation",
-            "task_chain": task_chain
+            "task_chain": updated_task_chain,
+            "next_action": "execute_task_chain"
         }
 
     def move_to_next_step(self, task_chain: TaskChain) -> TaskChain:
