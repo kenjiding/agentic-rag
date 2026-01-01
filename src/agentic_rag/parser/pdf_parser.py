@@ -1,9 +1,6 @@
 from typing import List
-import pickle
-import hashlib
 import asyncio
 import time
-from pathlib import Path
 from docling.document_converter import DocumentConverter
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -43,39 +40,20 @@ chunk_splitter = RecursiveCharacterTextSplitter(
   ])
 
 class PDFParser:
-  def __init__(self, cache_dir: str = "tmp/pdf_cache"):
+  def __init__(self):
     self.converter = DocumentConverter()
     self.llm = LLM(model_name="openai:gpt-3.5-turbo", temperature=0.2).get_llm()
-    self.cache_dir = Path(cache_dir)
-    self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-  def parse_pdf_to_documents(self, pdf_path: str, refresh: bool = False) -> List[Document]:
+  def parse_pdf_to_documents(self, pdf_path: str) -> List[Document]:
     md_text = self.parse_pdf_to_markdown(pdf_path)
-    return self.intellgent_chunking_pdf(md_text, pdf_path, refresh=refresh)
+    return self.intellgent_chunking_pdf(md_text, pdf_path)
 
   def parse_pdf_to_markdown(self, pdf_path: str) -> str:
     result = self.converter.convert(pdf_path)
 
     return result.document.export_to_markdown()
 
-  def _get_cache_path(self, pdf_path: str) -> Path:
-    """生成缓存文件路径"""
-    # 使用PDF路径的哈希值作为缓存文件名，避免路径中的特殊字符问题
-    pdf_hash = hashlib.md5(pdf_path.encode()).hexdigest()
-    return self.cache_dir / f"{pdf_hash}.pkl"
-
-  def intellgent_chunking_pdf(self, md_text: str, pdf_path: str, refresh: bool = False) -> List[Document]:
-    cache_path = self._get_cache_path(pdf_path)
-    
-    # 如果不需要刷新且缓存存在，直接加载缓存
-    if not refresh and cache_path.exists():
-      print(f"Loading cached chunks from {cache_path}")
-      try:
-        with open(cache_path, 'rb') as f:
-          return pickle.load(f)
-      except Exception as e:
-        print(f"Error loading cache: {e}, regenerating...")
-    
+  def intellgent_chunking_pdf(self, md_text: str, pdf_path: str) -> List[Document]:
     # 需要重新生成：first physical chunking by markdown headers
     header_splits = markdown_splitter.split_text(md_text)
 
@@ -155,13 +133,5 @@ class PDFParser:
     # 在同步方法中运行异步代码
     print(f"Processing {len(chunks_to_process)} chunks concurrently (max 10 at a time)...")
     final_chunks = asyncio.run(process_all_chunks_async())
-    
-    # 保存缓存
-    try:
-      with open(cache_path, 'wb') as f:
-        pickle.dump(final_chunks, f)
-      print(f"Cached chunks saved to {cache_path}")
-    except Exception as e:
-      print(f"Error saving cache: {e}")
     
     return final_chunks

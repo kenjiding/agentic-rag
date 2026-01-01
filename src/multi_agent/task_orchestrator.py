@@ -126,7 +126,7 @@ class TaskChainOrchestrator:
         
         logger.info(f"TaskChainOrchestrator 初始化完成 (use_fast_path={use_fast_path})")
 
-    def detect_multi_step_task(self, state: MultiAgentState) -> Optional[str]:
+    async def detect_multi_step_task(self, state: MultiAgentState) -> Optional[str]:
         """检测是否为多步骤任务
 
         改进后的实现：
@@ -162,7 +162,7 @@ class TaskChainOrchestrator:
             logger.debug("[多步骤检测] 快速路径未检测到，继续")
 
         # === 精确路径：LLM-based 检测 ===
-        llm_result = self._llm_based_detection(user_message, state)
+        llm_result = await self._llm_based_detection(user_message, state)
         if llm_result:
             logger.info(f"[多步骤检测] ✓ LLM检测到: {llm_result}")
             return llm_result
@@ -214,7 +214,7 @@ class TaskChainOrchestrator:
         logger.info(f"[快速路径] 未检测到商品关键词，返回 None")
         return None
 
-    def _llm_based_detection(self, user_message: str, state: MultiAgentState) -> Optional[str]:
+    async def _llm_based_detection(self, user_message: str, state: MultiAgentState) -> Optional[str]:
         """LLM-based 精确检测
         
         使用 LLM 进行语义理解和上下文感知，更准确地判断是否为多步骤任务。
@@ -270,7 +270,8 @@ class TaskChainOrchestrator:
         chain = prompt | self.structured_llm
 
         try:
-            result = chain.invoke({"user_message": user_message})
+            # 使用异步LLM调用提高性能
+            result = await chain.ainvoke({"user_message": user_message})
             
             if isinstance(result, MultiStepTaskDetection):
                 detection = result
@@ -327,7 +328,7 @@ class TaskChainOrchestrator:
 
         return None
 
-    def create_task_chain(
+    async def create_task_chain(
         self,
         task_type: str,
         initial_state: MultiAgentState
@@ -351,7 +352,7 @@ class TaskChainOrchestrator:
         
         # LLM动态生成：未知的任务类型
         logger.info(f"使用LLM动态生成任务链: task_type={task_type}")
-        return self._llm_generate_task_chain(task_type, initial_state)
+        return await self._llm_generate_task_chain(task_type, initial_state)
 
     def _create_order_with_search_chain(
         self,
@@ -417,7 +418,7 @@ class TaskChainOrchestrator:
 
         return task_chain
 
-    def _llm_generate_task_chain(
+    async def _llm_generate_task_chain(
         self,
         task_type: str,
         initial_state: MultiAgentState
@@ -529,7 +530,8 @@ class TaskChainOrchestrator:
         chain = prompt | chain_plan_llm
         
         try:
-            plan = chain.invoke({
+            # 使用异步LLM调用提高性能
+            plan = await chain.ainvoke({
                 "task_type": task_type,
                 "user_message": user_message or "",
                 "available_steps": available_steps_desc,

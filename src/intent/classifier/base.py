@@ -33,3 +33,18 @@ class BaseIntentClassifier(ABC):
             - reasoning: Explanation of the classification
         """
         pass
+    
+    @abstractmethod
+    async def aclassify(self, query: str) -> QueryIntent:
+        """
+        Asynchronously classify the intent of a query.
+        
+        This method must be implemented by subclasses for async performance.
+
+        Args:
+            query: User query string
+
+        Returns:
+            QueryIntent object containing the classification result
+        """
+        pass

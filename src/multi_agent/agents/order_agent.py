@@ -651,7 +651,8 @@ class OrderAgent:
                 )
 
         followup_messages = agent_messages + [response] + tool_messages
-        final_response = self.llm.invoke(followup_messages)
+        # 使用异步LLM调用提高性能
+        final_response = await self.llm.ainvoke(followup_messages)
 
         result = {
             "messages": messages + [response] + tool_messages + [final_response],

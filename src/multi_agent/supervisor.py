@@ -155,12 +155,12 @@ class SupervisorAgent:
             if chain_result:
                 return chain_result
 
-            # 3. 尝试创建新任务链
-            create_result = self._try_create_task_chain(state)
+            # 2. 尝试创建新任务链
+            create_result = await self._try_create_task_chain(state)
             if create_result:
                 return create_result
 
-            # 4. LLM 单步路由
+            # 3. LLM 单步路由（降级路径）
             llm_result = await self._do_llm_routing(state, user_message)
             if needs_cleanup:
                 llm_result["task_chain"] = None
@@ -393,7 +393,7 @@ class SupervisorAgent:
 
         return "\n".join(context_parts)
 
-    def _check_if_supplementing_info(self, user_message: str, missing_fields: List[str], current_entities: Dict[str, Any]) -> bool:
+    async def _check_if_supplementing_info(self, user_message: str, missing_fields: List[str], current_entities: Dict[str, Any]) -> bool:
         """
         使用 LLM 判断用户是否在补充缺失的信息
 
@@ -426,7 +426,7 @@ class SupervisorAgent:
 如果用户输入提供了缺失字段的值（如手机号、数量、地址等），返回 True。
 注意：用户可能用各种方式表达，如"手机号是138..."、"就买2个"、"送到XXX"等。"""
 
-            result = structured_llm.invoke(prompt)
+            result = await structured_llm.ainvoke(prompt)
             if result.is_supplementing:
                 logger.info(f"LLM 检测到用户补充了字段: {result.provided_field}")
             return result.is_supplementing
@@ -540,8 +540,8 @@ class SupervisorAgent:
                 ("user", "问题: {question}")
             ])
 
-            # 使用更便宜的模型进行降级路由
-            routing_decision = self.fallback_structured_llm.invoke(
+            # 使用更便宜的模型进行降级路由（异步调用）
+            routing_decision = await self.fallback_structured_llm.ainvoke(
                 simple_prompt.format_messages(
                     agents=agents_description,
                     question=user_message
@@ -566,7 +566,7 @@ class SupervisorAgent:
             # 最终降级：如果LLM也失败，使用简单的启发式规则
             return self._final_fallback_routing(user_message)
 
-    def _try_create_task_chain(self, state: MultiAgentState) -> Optional[Dict[str, Any]]:
+    async def _try_create_task_chain(self, state: MultiAgentState) -> Optional[Dict[str, Any]]:
         """尝试创建新的任务链"""
         from src.multi_agent.task_orchestrator import get_task_orchestrator
         orchestrator = get_task_orchestrator()
@@ -580,11 +580,11 @@ class SupervisorAgent:
 
         logger.info(f"[任务链检测] 开始检测多步骤任务，用户消息: {user_message}")
 
-        task_type = orchestrator.detect_multi_step_task(state)
+        task_type = await orchestrator.detect_multi_step_task(state)
 
         if task_type:
             logger.info(f"[任务链检测] ✓ 检测到多步骤任务: {task_type}")
-            new_task_chain = orchestrator.create_task_chain(task_type, state)
+            new_task_chain = await orchestrator.create_task_chain(task_type, state)
             return {
                 "next_action": "execute_task_chain",
                 "selected_agent": None,
@@ -643,7 +643,8 @@ class SupervisorAgent:
         ])
 
         try:
-            routing_decision = self.structured_llm.invoke(
+            # 使用异步LLM调用提高性能
+            routing_decision = await self.structured_llm.ainvoke(
                 routing_prompt.format_messages(
                     agents=agents_description,
                     question=user_message,

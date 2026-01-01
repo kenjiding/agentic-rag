@@ -6,11 +6,14 @@ Based on 2025-2026 best practices for unified information extraction and query d
 from typing import Optional, List, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+import logging
 
 from src.intent.classifier.base import BaseIntentClassifier
 from src.intent.models.query_intent import QueryIntent, SubQuery, Entities
 from src.intent.models.types import PipelineOption, DecompositionType, IntentType, ComplexityLevel
 from src.intent.config.settings import IntentConfig
+
+logger = logging.getLogger(__name__)
 
 
 class IntentClassifier(BaseIntentClassifier):
@@ -220,14 +223,16 @@ sub_queries: []
             result = chain.invoke({"query": query})
             # with_structured_output 直接返回 QueryIntent 对象
             if isinstance(result, QueryIntent):
-                return result
+                intent = result
             elif isinstance(result, dict):
-                return QueryIntent(**result)
+                intent = QueryIntent(**result)
             else:
                 # 容错：使用 model_validate
-                return QueryIntent.model_validate(result)
+                intent = QueryIntent.model_validate(result)
+            
+            return intent
         except Exception as e:
-            print(f"[意图识别] 错误: {e}")
+            logger.error(f"[意图识别] 错误: {e}", exc_info=True)
             return self._fallback_intent(query)
 
     def _fallback_intent(self, query: str) -> QueryIntent:
@@ -438,3 +443,134 @@ sub_queries: []
             confidence=0.5,
             reasoning=f"回退模式：使用通用启发式规则。{decomposition_reason if needs_decomposition else '简单查询，无需分解。'}"
         )
+    
+    async def aclassify(self, query: str) -> QueryIntent:
+        """
+        Asynchronously classify query intent using LLM.
+        
+        2025-2026 最佳实践：
+        1. 使用异步LLM调用提高并发性能
+        2. 保持与同步方法相同的功能
+
+        Args:
+            query: User query
+
+        Returns:
+            QueryIntent object with complete classification
+        """
+        # 构建prompt chain（与同步版本相同）
+        template = """你是一个专业的查询意图分析器和查询分解专家。请分析以下查询，识别其意图类型、复杂度，并**自主判断是否需要将查询分解为多个子查询**以提高检索效果。
+
+# 分析要求
+
+1. **联合意图检测与槽位填充**：同时识别意图类型和提取关键信息
+2. **自主分解判断**：根据查询复杂度和特点，自动判断是否需要分解
+3. **通用性**：使用通用的方法识别意图，适用于任何领域和场景
+
+# 意图类型说明
+
+- factual: 事实性查询（询问具体事实、数据、定义）
+- comparison: 对比查询（比较两个或多个对象/时间点/状态）
+- analytical: 分析性查询（需要推理、分析、总结）
+- procedural: 程序性查询（询问如何做某事）
+- causal: 因果查询（询问原因、结果、影响）
+- temporal: 时间序列查询（询问变化趋势、历史）
+- multi_hop: 多跳查询（需要多个步骤推理）
+- other: 其他类型
+
+# 查询分解机制（核心功能）
+
+## 是否需要分解的判断标准
+
+**需要分解的信号**（满足任一条件）：
+1. 包含多个独立的信息需求点（如"介绍X的原理、应用和前景"）
+2. 需要对比多个对象/时间点（comparison）
+3. 需要多步推理，后续步骤依赖前序结果（multi_hop）
+4. 需要从多个维度分析（analytical）
+5. 时间跨度大，需要按时间段查询（temporal）
+6. 涉及因果链条，有多个层次（causal）
+7. 单次检索难以覆盖所有信息需求
+
+**不需要分解的信号**：
+1. 简单的单一事实查询（如"北京的人口是多少？"）
+2. 查询已经足够具体明确
+3. procedural类型查询（步骤是内容本身，不是检索单位）
+4. 分解会导致上下文信息丢失
+
+## 分解类型
+
+- comparison: 对比分解 - 按对比项分解（A vs B → 查A + 查B），可并行执行
+- multi_hop: 多跳分解 - 按推理步骤分解，有顺序依赖（先查X，再根据X查Y）
+- dimensional: 多维分解 - 按分析维度分解（分析原因 → 技术+商业+市场），可并行执行
+- temporal: 时间分解 - 按时间段分解（10年发展 → 多个时间段），可并行执行
+- causal_chain: 因果链分解 - 按因果关系分解（为什么 → 直接+间接+根本原因）
+- information_needs: 信息需求分解 - 按独立信息需求点分解，可并行执行
+
+## 子查询结构 SubQuery
+
+每个子查询包含：
+- query: 子查询文本
+- purpose: 该子查询的目的说明
+- recommended_strategy: 推荐的检索策略 ["semantic"] / ["hybrid"] / ["rerank"] / ["semantic", "rerank"]
+- recommended_k: 推荐的检索数量 (3-10)
+- order: 执行顺序（0=可并行，1/2/3...=按顺序执行）
+- depends_on: 依赖的子查询索引列表（用于multi_hop）
+
+## 检索策略选择指南
+
+- semantic: 简单事实查询，明确单一信息点
+- hybrid: 需要多角度信息，多样化信息片段
+- rerank: 专业术语，需要高精度匹配
+- 组合策略: 复杂专业查询可用 ["semantic", "rerank"]
+
+# 查询
+
+{query}
+
+# 输出要求
+
+请严格按照QueryIntent结构输出JSON：
+1. 准确识别意图类型
+2. 正确评估复杂度（simple/moderate/complex）
+3. **自主判断是否需要分解**（needs_decomposition）
+4. 如需分解，指定分解类型（decomposition_type）和原因（decomposition_reason）
+5. 生成子查询列表（sub_queries），每个子查询包含完整信息
+6. **提取所有实体**，统一存放在 entities 字典中：
+   - general_entities: List[str] - 通用实体（人名、地名、组织等）
+   - time_points: List[str] - 时间点（年份、日期等）
+   - user_phone: Optional[str] - 用户手机号（11位，1开头）
+   - quantity: Optional[int] - 购买数量
+   - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
+
+   **search_keyword 提取规则（重要）**：
+   - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
+   - 示例：
+     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"西门子产品"）
+     - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
+     - "查一下苹果手机" → search_keyword="苹果手机"
+     - "有没有冰箱" → search_keyword="冰箱"
+     - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
+7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
+
+输出JSON："""
+
+        prompt = ChatPromptTemplate.from_template(template)
+        chain = prompt | self._structured_llm
+
+        try:
+            # 使用异步调用
+            result = await chain.ainvoke({"query": query})
+            # with_structured_output 直接返回 QueryIntent 对象
+            if isinstance(result, QueryIntent):
+                intent = result
+            elif isinstance(result, dict):
+                intent = QueryIntent(**result)
+            else:
+                # 容错：使用 model_validate
+                intent = QueryIntent.model_validate(result)
+            
+            return intent
+        except Exception as e:
+            logger.error(f"[意图识别] 异步调用错误: {e}", exc_info=True)
+            # 降级到同步方法
+            return self.classify(query)

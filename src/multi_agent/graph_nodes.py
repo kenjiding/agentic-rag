@@ -52,7 +52,8 @@ class GraphNodeHandler:
             if not self.graph.intent_classifier:
                 return {"query_intent": None, "original_question": question}
             
-            intent = self.graph.intent_classifier.classify(question)
+            # 使用异步方法提高性能
+            intent = await self.graph.intent_classifier.aclassify(question)
 
             # 提取实体
             existing_entities = state.entities
