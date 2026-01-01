@@ -306,6 +306,8 @@ class AgenticRAG:
 
             if verbose:
                 print(f"答案: {final_state.get('answer', '')[:100]}...")
+            
+            # 所有数值字段在计算时已经是 Python 原生类型
             return {
                 "question": question,
                 "answer": final_state.get("answer", ""),
@@ -316,4 +318,9 @@ class AgenticRAG:
                 # ... 其他字段
             }
         except Exception as e:
+            # 记录完整的错误信息，包括堆栈跟踪，以便调试
+            import traceback
+            error_detail = f"{str(e)}\n{traceback.format_exc()}"
+            if verbose:
+                print(f"[错误] {error_detail}")
             return {"error": str(e)}

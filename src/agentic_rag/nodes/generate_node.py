@@ -71,7 +71,7 @@ def create_generate_node(
             print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 生成答案长度: {len(answer)} 字符{Style.RESET_ALL}")
             print(f"{Style.BRIGHT}{Fore.GREEN}🚢【generator节点】 答案预览: {answer[:300]}...{Style.RESET_ALL}")
             
-            # 评估答案质量
+            # 评估答案质量（返回的 quality 已经是 Python float 类型）
             quality_threshold = threshold_config.generation.answer_quality_threshold
             quality, meets_threshold, feedback, answer_type = generator.evaluate_answer_quality(
                 question,

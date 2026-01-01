@@ -589,5 +589,6 @@ class IntelligentRetriever:
             include_details=include_details
         )
 
+        # result.final_score 在计算时已经是 Python float 类型
         return result.final_score, result.meets_threshold
 

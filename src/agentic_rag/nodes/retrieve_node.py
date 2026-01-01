@@ -208,7 +208,7 @@ def create_retrieve_node(
 
             print(f"{Style.BRIGHT}{Fore.BLUE}🔍【retrieve】 检索到 {len(retrieved_docs)} 个文档{Style.RESET_ALL}")
 
-            # 评估检索质量
+            # 评估检索质量（返回的 quality 已经是 Python float 类型）
             quality, _ = retriever.evaluate_retrieval_quality(
                 question,
                 retrieved_docs,

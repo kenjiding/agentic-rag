@@ -52,13 +52,14 @@ class SemanticSimilarityCalculator:
             embedding1 = np.array(self.embeddings.embed_query(text1))
             embedding2 = np.array(self.embeddings.embed_query(text2))
             
-            # 计算余弦相似度
-            cosine_sim = self._cosine_similarity(embedding1, embedding2)
-            
-            # 如果需要，将[-1, 1]映射到[0, 1]
-            if normalize:
-                return (cosine_sim + 1) / 2
-            return cosine_sim
+        # 计算余弦相似度
+        cosine_sim = self._cosine_similarity(embedding1, embedding2)
+        
+        # 如果需要，将[-1, 1]映射到[0, 1]
+        # 注意：确保返回 Python 原生 float 类型，而不是 numpy 类型
+        if normalize:
+            return float((cosine_sim + 1) / 2)
+        return float(cosine_sim)
             
         except Exception as e:
             # 如果计算失败，返回0（表示不相似）
@@ -102,7 +103,7 @@ class SemanticSimilarityCalculator:
                 
                 # 计算余弦相似度
                 cosine_sim = self._cosine_similarity(query_embedding, doc_embedding)
-                similarity = (cosine_sim + 1) / 2  # 映射到[0, 1]
+                similarity = float((cosine_sim + 1) / 2)  # 映射到[0, 1]，确保是 Python float
                 
                 max_similarity = max(max_similarity, similarity)
             
@@ -149,7 +150,7 @@ class SemanticSimilarityCalculator:
                 
                 # 计算余弦相似度
                 cosine_sim = self._cosine_similarity(query_embedding, doc_embedding)
-                similarity = (cosine_sim + 1) / 2  # 映射到[0, 1]
+                similarity = float((cosine_sim + 1) / 2)  # 映射到[0, 1]，确保是 Python float
                 
                 similarities.append(similarity)
             
@@ -184,8 +185,8 @@ class SemanticSimilarityCalculator:
         if norm1 == 0 or norm2 == 0:
             return 0.0
         
-        # 计算余弦相似度
-        return dot_product / (norm1 * norm2)
+        # 计算余弦相似度，确保返回 Python float 类型
+        return float(dot_product / (norm1 * norm2))
     
     def batch_calculate_similarity(
         self,
@@ -215,7 +216,7 @@ class SemanticSimilarityCalculator:
             for doc_vec in document_embeddings:
                 doc_vec_array = np.array(doc_vec)
                 cosine_sim = self._cosine_similarity(query_vec, doc_vec_array)
-                similarity = (cosine_sim + 1) / 2  # 映射到[0, 1]
+                similarity = float((cosine_sim + 1) / 2)  # 映射到[0, 1]，确保是 Python float
                 similarities.append(similarity)
             
             return similarities

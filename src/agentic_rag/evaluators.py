@@ -9,9 +9,10 @@
 2. 可扩展：支持添加新的评估指标（如关键词覆盖率、文档长度等）
 3. 高效：优先使用语义相似度，失败时自动回退到文本重叠度
 4. 可解释：提供详细的评估结果和调试信息
+5. 类型安全：确保所有数值类型都是 Python 原生类型，与 LangGraph 序列化兼容
 """
 from typing import List, Tuple, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from langchain_core.documents import Document
 import numpy as np
 
@@ -28,6 +29,10 @@ class EvaluationResult:
     评估结果数据结构
     
     包含评估的所有关键信息，便于分析和调试
+    
+    注意：所有数值字段都必须是 Python 原生类型（float, int），
+    而不是 numpy 类型（numpy.float64, numpy.int64），以确保与
+    LangGraph 的状态序列化（msgpack）兼容。
     """
     final_score: float  # 最终综合评分 (0-1)
     meets_threshold: bool  # 是否满足阈值
@@ -37,12 +42,35 @@ class EvaluationResult:
     relevance_scores: List[float]  # 每个文档的相关性分数列表
     details: Optional[Dict] = None  # 详细信息（可选，用于调试和分析）
     
+    def __post_init__(self):
+        """
+        后处理：确保所有数值字段都是 Python 原生类型
+        
+        注意：由于我们在计算时已经转换了所有值，这里理论上不需要处理。
+        但为了安全，仍然检查 details 字典中是否有 numpy 类型。
+        """
+        # 由于所有计算时都已经转换，details 应该已经是 Python 类型
+        # 但为了安全，简单检查一下
+        if self.details:
+            import numpy as np
+            # 只处理嵌套结构，扁平值应该在计算时已经转换
+            if isinstance(self.details, dict):
+                for key, value in self.details.items():
+                    # 如果发现 numpy 类型，转换为 Python 类型
+                    if isinstance(value, np.generic):
+                        self.details[key] = float(value.item()) if isinstance(value, np.floating) else value.item()
+                    elif isinstance(value, dict):
+                        # 递归处理嵌套字典
+                        for sub_key, sub_value in value.items():
+                            if isinstance(sub_value, np.generic):
+                                self.details[key][sub_key] = float(sub_value.item()) if isinstance(sub_value, np.floating) else sub_value.item()
+    
     def to_dict(self) -> dict:
         """
         转换为字典格式
         
         Returns:
-            包含所有评估结果的字典
+            包含所有评估结果的字典（所有值都是 Python 原生类型）
         """
         result = {
             "final_score": self.final_score,
@@ -125,9 +153,9 @@ class RetrievalQualityEvaluator:
         # 计算每个文档的相关性分数
         relevance_scores = self._calculate_relevance_scores(query, retrieved_docs)
         
-        # 计算基础指标
-        avg_score = np.mean(relevance_scores) if relevance_scores else 0.0
-        max_score = max(relevance_scores) if relevance_scores else 0.0
+        # 计算基础指标（在计算时直接转换为 Python float）
+        avg_score = float(np.mean(relevance_scores)) if relevance_scores else 0.0
+        max_score = float(max(relevance_scores)) if relevance_scores else 0.0
         
         # 计算多样性奖励
         diversity_bonus = self._calculate_diversity_bonus(relevance_scores)
@@ -386,7 +414,8 @@ class RetrievalQualityEvaluator:
             self._calculate_length_penalty(doc.page_content)
             for doc in retrieved_docs
         ]
-        return np.mean(length_scores) if length_scores else 1.0
+        # 在计算时直接转换为 Python float
+        return float(np.mean(length_scores)) if length_scores else 1.0
     
     def _build_details(
         self,
