@@ -88,7 +88,7 @@ data: {"type": "done"}
 
 ## 后端要求
 
-确保后端 API 服务器运行在 `http://localhost:8000`，并支持：
+确保后端 API 服务器运行在 `http://localhost:8765`，并支持：
 
 1. CORS 跨域
 2. SSE 流式响应

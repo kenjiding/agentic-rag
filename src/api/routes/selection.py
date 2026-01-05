@@ -20,29 +20,35 @@ async def resolve_selection(request: SelectionResolveRequest):
         import json
         import asyncio
 
-        # 1. 记录用户选择到 selection_manager
+        # 1. 记录用户选择到 selection_manager（会验证选项ID并更新状态）
         manager = get_selection_manager()
         result = await manager.resolve_selection(
             request.selection_id,
             request.selected_option_id,
         )
 
-        session_id = result.metadata.get("session_id") if result.metadata else None
-        if not session_id:
-            # 从 selection_action 获取 session_id
-            selection_action = await manager.get_selection(request.selection_id)
-            if selection_action:
-                session_id = selection_action.session_id
+        # 验证选择结果状态
+        if result.status.value != "selected":
+            raise ValueError(f"选择状态异常: {result.status.value}")
 
-        if not session_id:
-            raise ValueError("无法获取 session_id")
+        # 2. 获取 session_id 以便恢复执行
+        # SelectionAction 本身就包含 session_id，直接从 selection_action 获取
+        selection_action = await manager.get_selection(request.selection_id)
+        if not selection_action:
+            raise ValueError(f"选择 {request.selection_id} 不存在")
+        
+        session_id = selection_action.session_id
 
+        # 记录选择结果（包含完整的选项数据）
         logger.info(
             f"用户选择已解析: selection_id={request.selection_id}, "
-            f"selected_option_id={request.selected_option_id}, session_id={session_id}"
+            f"selected_option_id={request.selected_option_id}, "
+            f"selection_type={result.selection_type}, "
+            f"session_id={session_id}, "
+            f"selected_option={result.selected_option}"
         )
 
-        # 2. 准备恢复执行
+        # 3. 准备恢复执行
         graph = await get_graph()
         config = {
             "configurable": {"thread_id": session_id, "session_id": session_id},
@@ -107,20 +113,78 @@ async def cancel_selection(request: SelectionCancelRequest):
 
     用户点击取消按钮后调用此接口：
     1. 取消选择（记录到 selection_manager，状态变为 CANCELLED）
-    2. 返回成功响应，前端关闭对话框
+    2. 清理任务链、确认数据和相关实体，避免污染后续运行环境
+    3. 返回成功响应，前端关闭对话框
 
     设计说明：
     - 取消操作不需要恢复图执行
-    - 用户未做出选择，任务链自然结束（等待下一个用户输入）
-    - 符合 LangGraph 1.x 最佳实践：无需 interrupt/resume 处理取消
+    - 用户未做出选择，需要清理所有相关状态数据
+    - 符合 LangGraph 1.x 最佳实践：清理状态以避免数据污染
     """
     try:
         manager = get_selection_manager()
 
-        # 执行取消
+        # 1. 执行取消
         result = await manager.cancel_selection(request.selection_id)
 
         logger.info(f"选择已取消: selection_id={request.selection_id}, status={result.status.value}")
+
+        # 2. 获取 session_id 以便清理状态
+        # SelectionAction 本身就包含 session_id，直接从 selection_action 获取
+        selection_action = await manager.get_selection(request.selection_id)
+        if not selection_action:
+            raise ValueError(f"选择 {request.selection_id} 不存在")
+        
+        session_id = selection_action.session_id
+
+        # 3. 清理任务链、确认数据和相关实体（如果找到 session_id）
+        if session_id:
+            try:
+                graph = await get_graph()
+                config = {"configurable": {"thread_id": session_id, "session_id": session_id}}
+
+                # 获取当前状态，以便安全地清理相关字段
+                try:
+                    from src.multi_agent.utils import state_to_dict
+                    
+                    existing_snapshot = graph.graph.get_state(config)
+                    current_state = {}
+                    if existing_snapshot and existing_snapshot.values:
+                        current_state = state_to_dict(existing_snapshot.values)
+                    
+                    # 清理 entities 中的相关字段（保留其他字段）
+                    # 注意：只清理选择操作产生的实体（selected_product_id），
+                    # 保留用户原始意图的实体（quantity、search_keyword），
+                    # 这样用户取消选择后再次购买时，仍能保留之前的购买意图
+                    entities = current_state.get("entities", {}).copy()
+                    entities.pop("selected_product_id", None)  # 只清理选择操作产生的实体
+                    # 不清理 quantity 和 search_keyword，这些是用户原始意图的一部分
+
+                    # 更新状态：清理任务链、确认数据和相关实体
+                    graph.graph.update_state(
+                        config,
+                        {
+                            "task_chain": None,
+                            "confirmation_pending": None,
+                            "pending_selection": None,
+                            "entities": entities,
+                            "next_action": "finish",
+                        },
+                        as_node="__start__"
+                    )
+
+                    logger.info(
+                        f"已清理状态数据: session_id={session_id}, "
+                        f"清理了 task_chain, confirmation_pending, 和 entities 中的 selected_product_id "
+                        f"（保留了用户原始意图的实体：quantity={entities.get('quantity')}, search_keyword={entities.get('search_keyword')}）"
+                    )
+                except Exception as state_error:
+                    # 状态清理失败不应该影响取消操作的返回
+                    logger.warning(f"清理状态时出错（可能状态不存在）: {state_error}")
+
+            except Exception as e:
+                # Graph 操作失败不应该影响取消操作的返回
+                logger.warning(f"清理状态时出错: {e}")
 
         return {
             "success": True,

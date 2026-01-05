@@ -34,7 +34,7 @@ def query_user_orders(
         str,
         Field(
             description="用户手机号（必填）",
-            examples=["13800138000", "13900139000"]
+            examples=["13800138765", "13900139000"]
         )
     ],
     status: Annotated[
@@ -265,7 +265,7 @@ def prepare_cancel_order(
         str,
         Field(
             description="用户手机号（用于验证权限）",
-            examples=["13800138000", "13900139000"]
+            examples=["13800138765", "13900139000"]
         )
     ],
     reason: Annotated[
@@ -343,7 +343,7 @@ def confirm_cancel_order(
         str,
         Field(
             description="用户手机号（用于验证权限）",
-            examples=["13800138000", "13900139000"]
+            examples=["13800138765", "13900139000"]
         )
     ],
 ) -> str:
@@ -423,7 +423,7 @@ def prepare_create_order(
         str,
         Field(
             description="用户手机号",
-            examples=["13800138000", "13900139000"]
+            examples=["13800138765", "13900139000"]
         )
     ],
     items: Annotated[
@@ -527,7 +527,7 @@ def confirm_create_order(
         str,
         Field(
             description="用户手机号",
-            examples=["13800138000", "13900139000"]
+            examples=["13800138765", "13900139000"]
         )
     ],
     items: Annotated[

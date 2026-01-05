@@ -78,8 +78,8 @@ def search_products_tool(
         bool,
         Field(
             default=False,
-            description="是否仅显示有货商品（默认False，显示所有商品包括无库存的）",
-            examples=[True, False]
+            description="是否仅显示有货商品（默认False，显示所有商品包括无库存的）。**重要规则**：只有当用户明确表达购买意图（如'购买'、'下单'、'订购'）时才设置为True；如果用户只是搜索、查看、了解商品（如'帮我搜一些产品'、'找找看'），必须设置为False（保持默认值），以便显示所有相关商品让用户了解完整信息。",
+            examples=[False, True]
         )
     ] = False,
     special_only: Annotated[

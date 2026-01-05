@@ -23,7 +23,7 @@ Usage:
     confirmation = await manager.request_confirmation(
         session_id="user-123",
         action_type="cancel_order",
-        action_data={"order_id": 1, "user_phone": "13800138000"},
+        action_data={"order_id": 1, "user_phone": "13800138765"},
         agent_name="order_agent",
         display_message="确认取消订单 #001？",
     )

@@ -49,6 +49,9 @@ class GraphNodeHandler:
             logger.info(f"🎯【意图识别+实体提取】分析查询: {question}")
 
             # 执行意图识别（Joint Intent Detection and Slot Filling）
+            # 注意：意图识别只分析当前查询，不包含历史上下文
+            # 历史上下文会在后续的 Supervisor 路由和 Agent 执行时使用（从 state.entities 中提取）
+            # 这样设计符合单一职责原则：意图识别专注于分析当前查询，上下文理解由后续组件处理
             if not self.graph.intent_classifier:
                 return {"query_intent": None, "original_question": question}
             
@@ -177,6 +180,18 @@ class GraphNodeHandler:
                 "current_agent": "product_agent",
                 "tools_used": result.get("tools_used", state.tools_used)
             }
+
+            # 保存产品搜索上下文，用于用户取消后重新发起请求时恢复
+            products = self._extract_products_from_result(result, state)
+            if products:
+                from datetime import datetime
+                updated_state["last_product_search_context"] = {
+                    "products": products,
+                    "search_keyword": state.entities.get("search_keyword"),
+                    "quantity": state.entities.get("quantity", 1),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                logger.info(f"[Product Agent节点] 保存产品搜索上下文: {len(products)} 个产品, keyword={state.entities.get('search_keyword')}")
 
             # 任务链模式：保存结果并继续执行
             task_chain = state.task_chain
@@ -336,14 +351,15 @@ class GraphNodeHandler:
         if step_type == "confirmation" and previous_confirmation_pending:
             logger.info("用户取消了 confirmation 步骤，清理任务链")
             entities = state.entities.copy()
-            entities.pop("selected_product_id", None)
-            entities.pop("quantity", None)
-            entities.pop("search_keyword", None)
+            entities.pop("selected_product_id", None)  # 只清理选择操作产生的实体
+            # 不清理 quantity 和 search_keyword，这些是用户原始意图的一部分
+            # 保留 last_product_search_context，用于用户重新发起购买请求时恢复上下文
             updated_state.update({
                 "task_chain": None,
                 "next_action": "finish",
                 "confirmation_pending": None,
-                "entities": entities
+                "entities": entities,
+                "last_product_search_context": state.last_product_search_context  # 保留搜索上下文
             })
             return updated_state
 

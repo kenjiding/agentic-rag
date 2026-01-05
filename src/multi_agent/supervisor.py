@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional, List, Literal
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.config import get_keywords_config
@@ -28,14 +28,18 @@ class RoutingDecision(BaseModel):
     """路由决策结构定义
 
     使用Pydantic模型定义路由决策的输出结构，确保LLM输出符合预期格式。
+    
+    关键约束（双向逻辑一致性）：
+    1. 当next_action为"finish"时，selected_agent必须为None
+    2. 当selected_agent不为None时，next_action不能为"finish"
     """
     next_action: Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "finish"] = Field(
         ...,
-        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，execute_task_chain表示执行任务链，finish表示结束"
+        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，tool_call表示工具调用，execute_task_chain表示执行任务链，finish表示结束。注意：如果设置为finish，则selected_agent必须为null。"
     )
-    selected_agent: Literal["rag_agent", "chat_agent", "product_agent", "order_agent", "task_orchestrator"] = Field(
+    selected_agent: Optional[Literal["rag_agent", "chat_agent", "product_agent", "order_agent", "task_orchestrator"]] = Field(
         None,
-        description="选中的Agent名称，如果next_action为finish则可以为null"
+        description="选中的Agent名称。CRITICAL CONSTRAINT: 如果next_action为finish，则selected_agent必须为null（None）。否则，必须指定一个有效的Agent名称。"
     )
     routing_reason: str = Field(
         ...,
@@ -47,6 +51,34 @@ class RoutingDecision(BaseModel):
         le=1.0,
         description="决策置信度，0.0-1.0之间的数值，表示对决策的把握程度"
     )
+    
+    @model_validator(mode='after')
+    def validate_action_agent_consistency(self):
+        """验证：next_action和selected_agent之间的逻辑一致性
+        
+        双向约束规则（这两个约束是等价的，表示同一个逻辑关系）：
+        1. 如果next_action为"finish"，则selected_agent必须为None
+        2. 如果selected_agent不为None，则next_action不能为"finish"
+        
+        业务逻辑：如果指定了selected_agent，说明需要路由到某个agent执行任务，
+        此时next_action应该是具体的动作（如"order_management"、"product_search"等），
+        而不是"finish"。反之，如果next_action为"finish"，表示任务结束，
+        不需要路由到任何agent，所以selected_agent必须为None。
+        
+        这是企业级最佳实践：使用Pydantic模型验证器强制字段间的逻辑一致性，
+        确保LLM输出的结构化数据符合业务规则。
+        """
+        # 检查逻辑不一致：next_action为"finish"但selected_agent有值
+        if self.next_action == "finish" and self.selected_agent is not None:
+            raise ValueError(
+                f"逻辑错误：next_action和selected_agent不一致。"
+                f"next_action为'finish'时，selected_agent必须为None（表示任务结束，不需要路由到任何agent）。"
+                f"但收到selected_agent={self.selected_agent}。"
+                f"解决方案：如果selected_agent有值，请将next_action设置为对应的动作（如'order_management'、'product_search'等）；"
+                f"如果确实要结束，请将selected_agent设置为null。"
+            )
+        
+        return self
 
 
 class SupervisorAgent:
@@ -383,13 +415,35 @@ class SupervisorAgent:
         """
         all_entities = self._collect_all_entities(state)
 
-        if not all_entities:
+        if not all_entities and not state.last_product_search_context:
             return "（无累积实体信息）"
 
-        context_parts = ["累积实体信息:"]
-        for key, value in all_entities.items():
-            if value is not None:
-                context_parts.append(f"  - {key}: {value}")
+        context_parts = []
+
+        # 累积实体信息
+        if all_entities:
+            context_parts.append("累积实体信息:")
+            for key, value in all_entities.items():
+                if value is not None:
+                    context_parts.append(f"  - {key}: {value}")
+
+        # 最近产品搜索上下文（用于用户取消后重新发起请求的场景）
+        if state.last_product_search_context:
+            search_ctx = state.last_product_search_context
+            context_parts.append("\n最近产品搜索记录:")
+            context_parts.append(f"  - 搜索关键词: {search_ctx.get('search_keyword')}")
+            context_parts.append(f"  - 数量: {search_ctx.get('quantity', 1)}")
+            products = search_ctx.get("products", [])
+            if products:
+                context_parts.append(f"  - 搜索到 {len(products)} 个产品:")
+                for p in products[:5]:  # 最多显示5个产品
+                    name = p.get("name", "N/A")
+                    pid = p.get("id") or p.get("product_id", "N/A")
+                    price = p.get("price", "")
+                    price_str = f" ¥{price}" if price else ""
+                    context_parts.append(f"    * ID:{pid} {name}{price_str}")
+                if len(products) > 5:
+                    context_parts.append(f"    ... 还有 {len(products) - 5} 个产品")
 
         return "\n".join(context_parts)
 
@@ -451,7 +505,28 @@ class SupervisorAgent:
 
         query_intent = state.query_intent
         if query_intent and query_intent.get("entities"):
-            all_entities.update(query_intent["entities"])
+            intent_entities = query_intent["entities"]
+            
+            # 处理 entities 可能是 Pydantic 模型或字典的情况
+            if hasattr(intent_entities, "model_dump"):
+                # 如果是 Pydantic 模型，使用 model_dump 并排除 None 值
+                entities_dict = intent_entities.model_dump(exclude_none=True)
+            elif isinstance(intent_entities, dict):
+                # 如果是字典，直接使用
+                entities_dict = intent_entities
+            else:
+                entities_dict = {}
+            
+            # 只更新有值的字段，避免空值覆盖已有值
+            for key, value in entities_dict.items():
+                if value is not None:
+                    # 对于列表类型（如 general_entities, time_points），只有非空列表才覆盖
+                    if isinstance(value, list):
+                        if len(value) > 0:
+                            all_entities[key] = value
+                    else:
+                        # 对于其他类型（str, int 等），直接更新
+                        all_entities[key] = value
 
         return all_entities
 
@@ -530,11 +605,13 @@ class SupervisorAgent:
 {agents}
 
 规则：
-- 商品搜索 → product_agent (next_action: "product_search")
-- 订单管理 → order_agent (next_action: "order_management")
-- 知识检索 → rag_agent (next_action: "rag_search")
-- 一般对话 → chat_agent (next_action: "chat")
-- 无法处理 → finish
+- 商品搜索 → product_agent (next_action: "product_search", selected_agent: "product_agent")
+- 订单管理 → order_agent (next_action: "order_management", selected_agent: "order_agent")
+- 知识检索 → rag_agent (next_action: "rag_search", selected_agent: "rag_agent")
+- 一般对话 → chat_agent (next_action: "chat", selected_agent: "chat_agent")
+- 无法处理 → finish (next_action: "finish", selected_agent: null)
+
+CRITICAL: 当next_action为"finish"时，selected_agent必须为null（None），不能指定任何Agent。
 
 快速决策。"""),
                 ("user", "问题: {question}")
@@ -550,6 +627,14 @@ class SupervisorAgent:
 
             # 验证选中的Agent是否存在
             selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
+            
+            # 防御性检查：确保next_action为finish时，selected_agent为None
+            if routing_decision.next_action == "finish" and selected_agent is not None:
+                logger.warning(
+                    f"降级策略检测到逻辑不一致：next_action='finish'但selected_agent={selected_agent}，"
+                    f"强制将selected_agent设置为None"
+                )
+                selected_agent = None
 
             result = {
                 "next_action": routing_decision.next_action,
@@ -597,7 +682,17 @@ class SupervisorAgent:
         return None
 
     async def _do_llm_routing(self, state: MultiAgentState, user_message: Optional[str]) -> Dict[str, Any]:
-        """执行 LLM 单步路由"""
+        """执行 LLM 单步路由
+        
+        设计说明：
+        - user_message 只包含当前查询（最后一条 HumanMessage），不包含历史消息
+        - 历史上下文通过 entity_context 提供（累积的实体信息）
+        - 这样设计的原因：
+          1. Supervisor 职责是路由决策，不是理解对话细节
+          2. entity_context 已包含累积实体信息，足以判断多轮补充场景
+          3. 保持 Supervisor 轻量级，避免增加 token 消耗
+          4. 指代消解等复杂理解由具体 Agent 处理（如 Order Agent 会从对话历史中提取信息）
+        """
         if not user_message:
             return {
                 "next_action": "finish",
@@ -618,21 +713,34 @@ class SupervisorAgent:
 {agents}
 
 路由规则（基于用户问题和上下文信息）：
-1. 商品相关：用户询问商品、搜索产品、比价等，选择 product_agent，next_action设为"product_search"
+1. 商品相关：用户询问商品、搜索产品、比价等，选择 product_agent，next_action设为"product_search"，selected_agent设为"product_agent"
 
 2. 订单相关：
-   - **查询/取消订单**：选择 order_agent，next_action设为"order_management"
-   - **创建订单**：如果用户提供了明确的 product_id（或累积状态中有），选择 order_agent
+   - **查询/取消订单**：选择 order_agent，next_action设为"order_management"，selected_agent设为"order_agent"
+   - **创建订单**：如果用户提供了明确的 product_id（或累积状态中有），选择 order_agent，next_action设为"order_management"，selected_agent设为"order_agent"
 
-3. 知识检索：如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"
+3. 知识检索：如果用户问题需要从知识库中检索信息，选择 rag_agent，next_action设为"rag_search"，selected_agent设为"rag_agent"
 
-4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"
+4. 一般对话：如果是一般性对话或简单问题，选择 chat_agent，next_action设为"chat"，selected_agent设为"chat_agent"
 
-5. 如果问题无法由现有Agent处理，next_action设为"finish"
+5. **结束处理**：如果问题无法由现有Agent处理，next_action设为"finish"，selected_agent设为null（None）
+   - **CRITICAL CONSTRAINT**: 当next_action为"finish"时，selected_agent必须为null（None），绝对不能指定任何Agent名称
+   - 这是一个硬性约束，违反此规则会导致系统错误和验证失败
 
-**重要**：用户可能分多轮提供信息。
+**字段一致性规则（必须严格遵守，这是系统级别的双向约束）**：
+- 如果next_action不是"finish"（即"rag_search"、"chat"、"product_search"、"order_management"、"tool_call"、"execute_task_chain"），则必须指定一个有效的selected_agent（不能为null）
+- 如果next_action是"finish"，则selected_agent必须为null（None），不能指定任何Agent名称
+- **反向约束（同样重要）**：如果selected_agent不为null（有具体的agent名称），则next_action不能为"finish"，必须设置为对应的动作（例如：selected_agent="order_agent"时，next_action应为"order_management"）
+- 这两个字段的值必须保持逻辑一致：不能出现next_action="finish"但selected_agent有值的情况，也不能出现selected_agent有值但next_action="finish"的情况
+
+**重要**：用户可能分多轮提供信息或重新发起购买请求。
 - 根据"累积实体信息"判断用户是否正在补充之前任务所需的信息。
 - 例如：用户之前选择了商品（有 selected_product_id），现在只说了手机号，这应该路由到 order_agent 而不是 chat_agent。
+
+**重新开始购买场景**：
+- 如果用户说"我还是想买"、"重新开始"、"刚才的产品"、"还是那个"、"再试试"等表达，且"最近产品搜索记录"中有产品信息，说明用户想基于之前的搜索结果继续购买流程。
+- 此时应该路由到 product_agent，next_action 设为 "product_search"，selected_agent 设为 "product_agent"，让产品代理重新展示产品列表。
+- 例如：用户之前搜索了"西门子"产品并点击取消，现在说"不好意思，我还是想买"，应该重新展示之前搜索到的西门子产品列表。
 
 **意图识别结果**（已由前置节点完成，仅供参考）：
 {intent_context}
@@ -644,6 +752,7 @@ class SupervisorAgent:
 
         try:
             # 使用异步LLM调用提高性能
+            # 注意：只传递当前 user_message，历史上下文通过 entity_context 提供
             routing_decision = await self.structured_llm.ainvoke(
                 routing_prompt.format_messages(
                     agents=agents_description,
@@ -654,7 +763,7 @@ class SupervisorAgent:
             )
 
             selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
-
+      
             result = {
                 "next_action": routing_decision.next_action,
                 "selected_agent": selected_agent,

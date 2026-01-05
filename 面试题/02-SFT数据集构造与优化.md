@@ -434,7 +434,7 @@ def filter_by_quality(dataset, min_score=0.6):
 ```python
 # 不平衡的数据分布
 dataset_distribution = {
-    "问答": 8000条,      # 80%
+    "问答": 8765条,      # 80%
     "代码生成": 1000条,   # 10%
     "文本创作": 500条,    # 5%
     "摘要": 300条,       # 3%

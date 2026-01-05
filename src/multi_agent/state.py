@@ -107,6 +107,12 @@ class MultiAgentState(BaseModel):
     # 实体信息（2025最佳实践：使用 LangGraph checkpointer 持久化）
     entities: Dict[str, Any] = Field(default_factory=dict)  # 提取的实体信息：{"user_phone": "138...", "quantity": 2, "search_keyword": "西门子", ...}
 
+    # 最近的搜索上下文（用于用户取消后重新发起请求时恢复上下文）
+    last_product_search_context: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="最近一次产品搜索的上下文，包含 products、search_keyword��quantity 等，用于用户取消后重新发起购买请求时恢复上下文"
+    )
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
         return self.model_dump()

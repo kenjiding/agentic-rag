@@ -13,7 +13,7 @@ import json
 import requests
 import time
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:8765"
 
 async def test_flow():
     print("=" * 60)
