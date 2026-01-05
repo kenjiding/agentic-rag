@@ -30,7 +30,7 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
             raise ValueError("确认不存在")
 
         session_id = confirmation.session_id
-        
+
         logger.info(
             f"用户确认请求: confirmation_id={request.confirmation_id}, "
             f"confirmed={request.confirmed}, session_id={session_id}"
@@ -41,30 +41,43 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
             "configurable": {"thread_id": session_id, "session_id": session_id},
             "recursion_limit": 25
         }
-        
+
         resume_data = {
             "confirmed": request.confirmed
         }
-        
+
         result = await manager.resolve_confirmation(
             request.confirmation_id,
             request.confirmed,
         )
-        
+
         logger.info(
             f"确认操作已执行: confirmation_id={request.confirmation_id}, "
             f"status={result.status}, success={result.execution_result is not None if result.execution_result else False}"
         )
+
+        # 【核心修复】确认解析后，立即清除 checkpoint 中的 confirmation_pending
+        # 这样后续的聊天请求不会收到过期的确认状态
+        try:
+            graph.graph.update_state(
+                config,
+                {"confirmation_pending": None},
+                as_node="__start__"
+            )
+            logger.info(f"已清除 checkpoint 中的 confirmation_pending: session_id={session_id}")
+        except Exception as e:
+            logger.warning(f"清除 confirmation_pending 失败: {e}")
+
         async def stream_response():
             """流式返回恢复执行的结果"""
             try:
                 action_text = "已确认" if request.confirmed else "已取消"
                 yield f"data: {json.dumps({'type': 'confirmation_resolved', 'message': f'{action_text}，正在继续处理...'}, ensure_ascii=False)}\n\n"
-                
+
                 if request.confirmed and result.execution_result:
                     success_text = result.execution_result.get("text", "操作已确认并完成！")
                     yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'text', 'response_data': {}, 'content': success_text, 'role': 'assistant'}}, ensure_ascii=False)}\n\n"
-                
+
                 resume_command = Command(resume=resume_data)
                 
                 async for formatted in accumulate_and_format_state_updates(

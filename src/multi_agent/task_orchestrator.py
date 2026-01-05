@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field
 
 from src.multi_agent.state import MultiAgentState, TaskChain, TaskStep
 from src.multi_agent.config import get_keywords_config
-from src.confirmation.selection_manager import get_selection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +75,6 @@ class TaskChainOrchestrator:
             "output": "products: List[Product]",
             "requires": ["search_keyword"]
         },
-        "user_selection": {
-            "description": "用户从选项中选择（需要用户交互）",
-            "agent_name": None,  # 需要用户交互
-            "output": "selected_item: Any",
-            "requires": ["options"]
-        },
         "order_creation": {
             "description": "准备订单信息（调用prepare_create_order准备订单详情，但不创建确认。订单信息会保存到result_data中，供后续confirmation步骤使用）",
             "agent_name": "order_agent",
@@ -117,9 +110,8 @@ class TaskChainOrchestrator:
             llm: 语言模型实例，用于 LLM-based 检测（如果为 None，则创建默认实例）
             use_fast_path: 是否使用规则作为快速路径（默认 True，提高性能）
         """
-        self.selection_manager = get_selection_manager()
         self.use_fast_path = use_fast_path
-        
+
         # 初始化 LLM（用于精确检测和动态生成）
         self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
         self.structured_llm = self.llm.with_structured_output(MultiStepTaskDetection)
@@ -187,7 +179,13 @@ class TaskChainOrchestrator:
         keywords_config = get_keywords_config()
 
         # 快速排除：已经有明确的 product_id
-        has_product_id = re.search(r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+", user_message_lower)
+        # 匹配多种格式: "product_id: 123", "产品 ID: 123", "产品ID:123", "购买产品 ID: 123" 等
+        has_product_id = re.search(
+            r"(product|产品|商品)[_\s]*id[:\s]*[:\=]*\s*\d+|"
+            r"购买\s*(产品|商品)\s*id[:\s]*[:\=]*\s*\d+",
+            user_message_lower,
+            re.IGNORECASE
+        )
         if has_product_id:
             logger.info(f"[快速路径] 检测到product_id，跳过多步骤任务检测")
             return None
@@ -317,9 +315,12 @@ class TaskChainOrchestrator:
         )
 
         # 检测是否已经有明确的 product_id
+        # 匹配多种格式: "product_id: 123", "产品 ID: 123", "产品ID:123", "购买产品 ID: 123" 等
         has_product_id = bool(re.search(
-            r"product[_\s]*id[:\s]*\d+|商品[_\s]*id[:\s]*\d+|商品编号[:\s]*\d+",
-            user_message_lower
+            r"(product|产品|商品)[_\s]*id[:\s]*[:\=]*\s*\d+|"
+            r"购买\s*(产品|商品)\s*id[:\s]*[:\=]*\s*\d+",
+            user_message_lower,
+            re.IGNORECASE
         ))
 
         if has_order_intent and has_product_keyword and not has_product_id:
@@ -388,22 +389,6 @@ class TaskChainOrchestrator:
                     result_data=None,
                     metadata=None
                 ),
-                TaskStep(
-                    step_id="select-1",
-                    step_type="user_selection",
-                    status="pending",
-                    agent_name=None,
-                    result_data=None,
-                    metadata=None
-                ),
-                TaskStep(
-                    step_id="order-1",
-                    step_type="order_creation",
-                    status="pending",
-                    agent_name="order_agent",
-                    result_data=None,
-                    metadata=None
-                )
             ],
             current_step_index=0,
             context_data=context_data,
@@ -503,14 +488,21 @@ class TaskChainOrchestrator:
 2. **confirmation 步骤的职责**：负责确认操作。如果上一步是 order_creation，则从 result_data 中读取订单信息并创建确认请求；确认后执行订单创建。
 3. **订单创建的标准流程**：order_creation → confirmation（必须按此顺序，遵循单一职责原则）
 
+# 【核心规则】产品搜索后等待用户交互
+4. **当任务类型为 order_with_search 时**：
+   - 只创建 product_search 一个步骤
+   - 产品搜索完成后，**任务链结束**，不自动继续到订单创建
+   - 用户需要在界面上点击"购买"按钮来触发订单创建流程
+   - 这是新的设计模式：产品搜索 → 用户点击购买 → 订单创建（作为独立的任务处理）
+5. **不要**在 order_with_search 任务链中包含 order_creation 或 confirmation 步骤
+
 # 要求
 1. 分析用户需求，确定需要哪些步骤来完成这个任务
 2. 按照逻辑顺序排列步骤，确保前一步的输出能满足下一步的输入需求
 3. 从可用步骤类型中选择，不要创建新的步骤类型
-4. 如果某个步骤需要用户交互（如选择），使用 user_selection
-5. **订单创建必须包含两个步骤**：order_creation（准备订单信息）→ confirmation（确认订单）
-6. 确保步骤之间的数据流是连贯的（前一步的输出要包含下一步需要的输入）
-7. 初始上下文数据应该包含从用户消息中提取的所有必要信息
+4. **order_with_search 类型只包含 product_search 步骤**，不包含订单相关步骤
+5. 确保步骤之间的数据流是连贯的（前一步的输出要包含下一步需要的输入）
+6. 初始上下文数据应该包含从用户消息中提取的所有必要信息
 
 # 输出要求
 请设计任务链，包括：
@@ -618,44 +610,68 @@ class TaskChainOrchestrator:
         initial_state: MultiAgentState
     ) -> TaskChain:
         """创建降级任务链（当LLM生成失败时使用）
-        
+
         Args:
             task_type: 任务类型
             initial_state: 初始状态
-            
+
         Returns:
             通用的降级任务链
         """
         entities = initial_state.entities
         context_data = entities.copy()
 
-        # 创建一个通用的任务链，包含基本的步骤
-        task_chain = TaskChain(
-            chain_id=str(uuid.uuid4()),
-            chain_type=f"fallback_{task_type}",
-            steps=[
-                TaskStep(
-                    step_id="rag-search-1",
-                    step_type="rag_search",  # type: ignore
-                    status="pending",
-                    agent_name="rag_agent",
-                    result_data=None,
-                    metadata={
-                        "description": "使用RAG搜索相关信息",
-                        "fallback": True
-                    }
-                )
-            ],
-            current_step_index=0,
-            context_data=context_data,
-            created_at=datetime.utcnow().isoformat()
-        )
-        
+        # 根据任务类型创建相应的降级任务链
+        if task_type == "order_with_search":
+            # 订单搜索任务：只包含产品搜索步骤
+            task_chain = TaskChain(
+                chain_id=str(uuid.uuid4()),
+                chain_type=f"fallback_{task_type}",
+                steps=[
+                    TaskStep(
+                        step_id="search-1",
+                        step_type="product_search",  # type: ignore
+                        status="pending",
+                        agent_name="product_agent",
+                        result_data=None,
+                        metadata={
+                            "description": "搜索商品",
+                            "fallback": True
+                        }
+                    )
+                ],
+                current_step_index=0,
+                context_data=context_data,
+                created_at=datetime.utcnow().isoformat()
+            )
+        else:
+            # 其他任务类型：使用RAG搜索
+            task_chain = TaskChain(
+                chain_id=str(uuid.uuid4()),
+                chain_type=f"fallback_{task_type}",
+                steps=[
+                    TaskStep(
+                        step_id="rag-search-1",
+                        step_type="rag_search",  # type: ignore
+                        status="pending",
+                        agent_name="rag_agent",
+                        result_data=None,
+                        metadata={
+                            "description": "使用RAG搜索相关信息",
+                            "fallback": True
+                        }
+                    )
+                ],
+                current_step_index=0,
+                context_data=context_data,
+                created_at=datetime.utcnow().isoformat()
+            )
+
         logger.warning(
             f"创建降级任务链: type={task_chain.chain_type}, "
             f"steps={len(task_chain.steps)}"
         )
-        
+
         return task_chain
 
     async def execute_current_step(
@@ -700,9 +716,6 @@ class TaskChainOrchestrator:
         if step_type == "product_search":
             logger.info(f"[execute_current_step] 路由到 product_search")
             return self._execute_product_search(state, task_chain, current_step)
-        elif step_type == "user_selection":
-            logger.info(f"[execute_current_step] 路由到 user_selection，准备执行用户选择步骤")
-            return await self._execute_user_selection(state, task_chain, current_step, session_id)
         elif step_type == "order_creation":
             return self._execute_order_creation(state, task_chain, current_step)
         elif step_type == "rag_search":
@@ -741,211 +754,6 @@ class TaskChainOrchestrator:
             "selected_agent": "product_agent",
             "task_chain": task_chain,
             "context_data": context_data
-        }
-
-    async def _execute_user_selection(
-        self,
-        state: MultiAgentState,
-        task_chain: TaskChain,
-        current_step: TaskStep,
-        session_id: str
-    ) -> Dict[str, Any]:
-        """执行用户选择步骤（LangGraph 1.x 最佳实践：使用 interrupt()）
-
-        工作流程：
-        1. 获取产品列表
-        2. 创建选择请求（selection_manager）
-        3. 调用 interrupt() 暂停图执行
-        4. 用户选择后，通过 /api/selection/resolve 提交
-        5. 使用 Command(resume=...) 恢复执行
-
-        LangGraph 1.x interrupt() 机制：
-        - interrupt() 会保存当前状态到 checkpointer
-        - 图执行暂停，等待 resume 值
-        - 恢复时 interrupt() 返回 resume 值
-        """
-        # 从任务链的上一步骤获取产品列表
-        products = None
-        current_index = task_chain.current_step_index
-        if current_index > 0:
-            prev_step = task_chain.steps[current_index - 1]
-            if prev_step.step_type == "product_search":
-                result_data = prev_step.result_data or {}
-                products = result_data.get("products")
-
-        # 降级：从 agent_results 获取
-        if not products:
-            agent_results = state.agent_results or {}
-            product_result = agent_results.get("product_agent", {})
-            products = product_result.get("products") if isinstance(product_result, dict) else None
-
-        # 降级：从 state.messages 中提取
-        if not products:
-            import json
-            from langchain_core.messages import ToolMessage
-
-            for msg in reversed(state.messages):
-                if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
-                    try:
-                        data = json.loads(msg.content)
-                        if isinstance(data, dict) and "products" in data:
-                            extracted_products = data["products"]
-                            if extracted_products:
-                                products = extracted_products
-                                logger.info(f"从 messages 中的 ToolMessage 提取到 {len(products)} 个产品")
-                                break
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-
-        if not products or not isinstance(products, list) or len(products) == 0:
-            logger.error("未找到产品列表，无法创建选择")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [
-                    AIMessage(content="抱歉，未找到相关商品，请更换关键词重试。")
-                ]
-            }
-
-        # 创建选择请求
-        search_keyword = task_chain.context_data.get("search_keyword", "商品")
-
-        # 构建选择信息供 interrupt() 使用
-        selection_info = {
-            "selection_id": str(uuid.uuid4()),
-            "selection_type": "product",
-            "options": products,
-            "display_message": f"请选择要购买的{search_keyword}:",
-            "metadata": {"task_chain_id": task_chain.chain_id, "session_id": session_id}
-        }
-
-        # 保存到 selection_manager（供前端查询）
-        selection = await self.selection_manager.request_selection(
-            session_id=session_id,
-            selection_type="product",
-            options=products,
-            display_message=selection_info["display_message"],
-            metadata={"task_chain_id": task_chain.chain_id}
-        )
-
-        # 更新 selection_info 中的 selection_id 为实际创建的 ID
-        selection_info["selection_id"] = selection.selection_id
-
-        logger.info(f"[用户选择步骤] 创建选择请求: selection_id={selection_info['selection_id']}, options_count={len(products)}")
-        logger.info(f"[用户选择步骤] 准备调用 interrupt()，当前 task_chain: chain_id={task_chain.chain_id}, current_step_index={task_chain.current_step_index}, session_id={session_id}")
-
-        # 【LangGraph 1.x】使用 interrupt() 暂停图执行
-        # interrupt() 的返回值在恢复时就是用户的选择结果
-        # 注意：interrupt() 会抛出 GraphInterrupt 异常，状态会在异常处理时保存到 checkpointer
-        from langgraph.types import interrupt
-
-        # 【关键调试】在调用 interrupt() 之前记录完整的状态
-        logger.info(f"[用户选择步骤] ========================================")
-        logger.info(f"[用户选择步骤] 准备调用 interrupt()")
-        logger.info(f"[用户选择步骤] 当前 task_chain.chain_id={task_chain.chain_id}")
-        logger.info(f"[用户选择步骤] 当前 task_chain.current_step_index={task_chain.current_step_index}")
-        logger.info(f"[用户选择步骤] 当前 task_chain.steps_count={len(task_chain.steps)}")
-        logger.info(f"[用户选择步骤] session_id={session_id}")
-        logger.info(f"[用户选择步骤] selection_id={selection_info['selection_id']}")
-        logger.info(f"[用户选择步骤] state 完整内容: {state.model_dump()}")
-
-        logger.info(f"[用户选择步骤] 调用 interrupt()，selection_info={selection_info}, session_id={session_id}")
-        logger.info(f"[用户选择步骤] interrupt() 将抛出 GraphInterrupt 异常，状态将保存到 checkpointer，thread_id 应该与 session_id 一致: {session_id}")
-        user_selection = interrupt(selection_info)
-        logger.warning(f"[用户选择步骤] interrupt() 返回（不应该执行到这里），这表明 interrupt() 没有抛出异常")
-
-        # 恢复执行后，user_selection 包含用户的选择
-        # 格式：{"selected_option_id": "1"}
-        logger.info(f"[用户选择步骤] interrupt() 恢复执行，收到用户选择: {user_selection}")
-
-        # 验证用户选择
-        selected_option_id = user_selection.get("selected_option_id") if isinstance(user_selection, dict) else None
-        if not selected_option_id:
-            logger.warning(f"[用户选择步骤] 用户选择无效: {user_selection}")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [
-                    AIMessage(content="选择无效，请重新开始。")
-                ]
-            }
-
-        logger.info(f"[用户选择步骤] 验证用户选择成功: selected_option_id={selected_option_id}")
-
-        # 查找选择的产品
-        selected_product = None
-        for product in products:
-            product_id = product.get("id") or product.get("product_id")
-            if str(product_id) == str(selected_option_id):
-                selected_product = product
-                break
-
-        if not selected_product:
-            logger.warning(f"[用户选择步骤] 选择的产品不存在: selected_option_id={selected_option_id}, products_count={len(products)}")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [
-                    AIMessage(content="选择的产品不存在，请重新开始。")
-                ]
-            }
-
-        logger.info(f"[用户选择步骤] 找到选择的产品: product_id={selected_product.get('id')}, product_name={selected_product.get('name')}")
-
-        # 更新步骤为完成状态（使用 model_copy 创建新实例，因为 Pydantic 模型不可变）
-        updated_step = current_step.model_copy(update={
-            "status": "completed",
-            "result_data": {
-                "selected_product": selected_product,
-                "selected_option_id": selected_option_id
-            }
-        })
-
-        # 更新任务链：先更新当前步骤，然后移动到下一步
-        current_index = task_chain.current_step_index
-        logger.info(f"[用户选择步骤] 更新任务链步骤: current_index={current_index}, steps_count={len(task_chain.steps)}")
-        updated_steps = list(task_chain.steps)
-        updated_steps[current_index] = updated_step
-        updated_task_chain = task_chain.model_copy(update={"steps": updated_steps})
-        
-        # 移动到下一步
-        updated_task_chain = self.move_to_next_step(updated_task_chain)
-        next_index = updated_task_chain.current_step_index
-        logger.info(f"[用户选择步骤] 移动到下一步: new_index={next_index}, steps_count={len(updated_task_chain.steps)}")
-
-        # 检查下一步是否需要路由到其他 agent
-        steps = updated_task_chain.steps
-
-        if next_index < len(steps):
-            next_step = steps[next_index]
-            next_step_type = next_step.step_type
-            logger.info(f"[用户选择步骤] 下一步类型: step_type={next_step_type}")
-
-            # 根据下一步类型设置 next_action
-            if next_step_type == "order_creation":
-                logger.info(f"[用户选择步骤] 路由到 order_agent 执行订单创建")
-                return {
-                    "task_chain": updated_task_chain,
-                    "next_action": "order_management",
-                    "selected_agent": "order_agent",
-                    "selected_product": selected_product
-                }
-            elif next_step_type == "confirmation":
-                logger.info(f"[用户选择步骤] 路由到 order_agent 执行确认")
-                return {
-                    "task_chain": updated_task_chain,
-                    "next_action": "order_management",
-                    "selected_agent": "order_agent",
-                    "selected_product": selected_product
-                }
-        else:
-            logger.warning(f"[用户选择步骤] 没有更多步骤，任务链已完成")
-
-        # 默认完成
-        logger.info(f"[用户选择步骤] 返回完成状态")
-        return {
-            "task_chain": updated_task_chain,
-            "next_action": "finish"
         }
 
     def _execute_order_creation(

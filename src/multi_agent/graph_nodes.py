@@ -7,13 +7,10 @@ from typing import Dict, Any, Optional
 from langgraph.errors import GraphInterrupt
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt
 import json
-import uuid
 
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.task_orchestrator import get_task_orchestrator
-from src.confirmation.selection_manager import get_selection_manager
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +206,24 @@ class GraphNodeHandler:
                     updated_steps = list(steps)
                     updated_steps[current_index] = updated_step
                     task_chain = task_chain.model_copy(update={"steps": updated_steps})
-                    task_chain = orchestrator.move_to_next_step(task_chain)
-                    updated_state.update({
-                        "task_chain": task_chain,
-                        "next_action": "execute_task_chain"
-                    })
-                    logger.info(f"产品搜索完成，找到 {len(products) if products else 0} 个产品")
+
+                    # 【核心修改】order_with_search 类型的任务链在 product_search 完成后结束
+                    # 等待用户点击"购买"按钮来触发新的订单流程
+                    if task_chain.chain_type == "order_with_search":
+                        # 任务链完成，等待用户交互
+                        updated_state.update({
+                            "task_chain": None,  # 清除任务链
+                            "next_action": "finish"
+                        })
+                        logger.info(f"order_with_search 产品搜索完成，找到 {len(products) if products else 0} 个产品。任务链结束，等待用户点击购买按钮")
+                    else:
+                        # 其他类型的任务链继续执行
+                        task_chain = orchestrator.move_to_next_step(task_chain)
+                        updated_state.update({
+                            "task_chain": task_chain,
+                            "next_action": "execute_task_chain"
+                        })
+                        logger.info(f"产品搜索完成，找到 {len(products) if products else 0} 个产品")
 
             return updated_state
         except Exception as e:
@@ -400,16 +409,9 @@ class GraphNodeHandler:
                     current_step = steps[current_index]
                     step_type = current_step.step_type
 
-                    if step_type == "user_selection":
-                        logger.info(f"[Task Orchestrator节点] 检测到 user_selection 步骤")
-                        return await self._handle_user_selection_at_node_level(
-                            state, task_chain, current_step, session_id, orchestrator
-                        )
-
             result = await orchestrator.execute_current_step(state, session_id)
             updated_state = {
                 "task_chain": result.get("task_chain", state.task_chain),
-                "pending_selection": result.get("pending_selection"),
                 "confirmation_pending": result.get("confirmation_pending"),
                 "next_action": result.get("next_action"),
                 "selected_agent": result.get("selected_agent"),
@@ -445,138 +447,4 @@ class GraphNodeHandler:
                 "error_message": f"Task Orchestrator错误: {str(e)}",
                 "task_chain": None
             }
-
-    async def _handle_user_selection_at_node_level(
-        self, state: MultiAgentState, task_chain, current_step, session_id: str, orchestrator
-    ) -> Dict[str, Any]:
-        """在节点层处理 user_selection 步骤"""
-        logger.info(f"[节点层-user_selection] 开始处理用户选择步骤")
-
-        # 获取产品列表
-        products = self._get_products_for_selection(state, task_chain)
-
-        if not products or not isinstance(products, list) or len(products) == 0:
-            logger.error("[节点层-user_selection] 未找到产品列表")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [AIMessage(content="抱歉，未找到相关商品，请更换关键词重试。")]
-            }
-
-        # 创建选择请求
-        search_keyword = task_chain.context_data.get("search_keyword", "商品")
-        selection = await get_selection_manager().request_selection(
-            session_id=session_id,
-            selection_type="product",
-            options=products,
-            display_message=f"请选择要购买的{search_keyword}:",
-            metadata={"task_chain_id": task_chain.chain_id}
-        )
-
-        selection_info = {
-            "selection_id": selection.selection_id,
-            "selection_type": "product",
-            "options": products,
-            "display_message": f"请选择要购买的{search_keyword}:",
-            "metadata": {"task_chain_id": task_chain.chain_id, "session_id": session_id}
-        }
-
-        logger.info(f"[节点层-user_selection] 调用 interrupt()")
-        user_selection = interrupt(selection_info)
-
-        logger.info(f"[节点层-user_selection] interrupt() 返回，恢复执行")
-        selected_option_id = user_selection.get("selected_option_id") if isinstance(user_selection, dict) else None
-        
-        if not selected_option_id:
-            logger.warning(f"[节点层-user_selection] 用户选择无效")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [AIMessage(content="选择无效，请重新开始。")]
-            }
-
-        # 查找选择的产品
-        selected_product = None
-        for product in products:
-            product_id = product.get("id") or product.get("product_id")
-            if str(product_id) == str(selected_option_id):
-                selected_product = product
-                break
-
-        if not selected_product:
-            logger.warning(f"[节点层-user_selection] 选择的产品不存在")
-            return {
-                "next_action": "finish",
-                "task_chain": None,
-                "messages": state.messages + [AIMessage(content="选择的产品不存在，请重新开始。")]
-            }
-
-        # 更新任务链
-        current_index = task_chain.current_step_index
-        updated_step = current_step.model_copy(update={
-            "status": "completed",
-            "result_data": {
-                "selected_product": selected_product,
-                "selected_option_id": selected_option_id
-            }
-        })
-
-        updated_steps = list(task_chain.steps)
-        updated_steps[current_index] = updated_step
-        updated_task_chain = task_chain.model_copy(update={"steps": updated_steps})
-        updated_task_chain = orchestrator.move_to_next_step(updated_task_chain)
-
-        # 检查下一步类型
-        next_index = updated_task_chain.current_step_index
-        if next_index < len(updated_task_chain.steps):
-            next_step = updated_task_chain.steps[next_index]
-            if next_step.step_type == "order_creation":
-                return {
-                    "task_chain": updated_task_chain,
-                    "next_action": "order_management",
-                    "selected_agent": "order_agent",
-                    "selected_product": selected_product,
-                    "pending_selection": None
-                }
-
-        return {
-            "task_chain": updated_task_chain,
-            "next_action": "finish",
-            "pending_selection": None
-        }
-
-    def _get_products_for_selection(self, state: MultiAgentState, task_chain) -> Optional[list]:
-        """获取用于选择的产品列表"""
-        # 从上一个步骤获取
-        current_index = task_chain.current_step_index
-        if current_index > 0:
-            prev_step = task_chain.steps[current_index - 1]
-            if prev_step.step_type == "product_search":
-                result_data = prev_step.result_data or {}
-                products = result_data.get("products")
-                if products:
-                    return products
-
-        # 从 agent_results 获取
-        agent_results = state.agent_results or {}
-        product_result = agent_results.get("product_agent", {})
-        if isinstance(product_result, dict):
-            products = product_result.get("products")
-            if products:
-                return products
-
-        # 从 state.messages 中提取
-        for msg in reversed(state.messages):
-            if isinstance(msg, ToolMessage) and isinstance(msg.content, str):
-                try:
-                    data = json.loads(msg.content)
-                    if isinstance(data, dict) and "products" in data:
-                        extracted_products = data["products"]
-                        if extracted_products:
-                            logger.info(f"[节点层-user_selection] 从 messages 提取到 {len(extracted_products)} 个产品")
-                            return extracted_products
-                except (json.JSONDecodeError, TypeError):
-                    continue
-
-        return None
 

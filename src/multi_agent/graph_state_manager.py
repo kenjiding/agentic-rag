@@ -38,8 +38,7 @@ class GraphStateManager:
             "max_iterations": self.graph.max_iterations,
             "next_action": None,
             "routing_reason": None,
-            "task_chain": None,
-            "pending_selection": None
+            "task_chain": None
         }
     
     def prepare_config(

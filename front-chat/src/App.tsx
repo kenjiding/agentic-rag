@@ -54,9 +54,6 @@ function App() {
     confirmAction,
     cancelConfirmation,
     isProcessingConfirmation,
-    selectProduct,
-    cancelSelection,
-    isProcessingSelection,
   } = useStreamingChat()
 
   // 包装 sendMessage，自动传入 sessionId
@@ -64,6 +61,16 @@ function App() {
     (content: string) => {
       if (sessionId) {
         sendMessage(content, sessionId)
+      }
+    },
+    [sendMessage, sessionId]
+  )
+
+  // 包装 buyProduct，自动传入 sessionId
+  const handleBuyProduct = useCallback(
+    (productId: number) => {
+      if (sessionId) {
+        sendMessage(`购买产品 ID: ${productId}`, sessionId)
       }
     },
     [sendMessage, sessionId]
@@ -91,9 +98,7 @@ function App() {
       onConfirm={confirmAction}
       onCancel={cancelConfirmation}
       isProcessingConfirmation={isProcessingConfirmation}
-      onSelectProduct={selectProduct}
-      onCancelSelection={cancelSelection}
-      isProcessingSelection={isProcessingSelection}
+      onBuyProduct={handleBuyProduct}
     />
   )
 }

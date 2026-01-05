@@ -106,6 +106,7 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
     - 如果当前节点没有产生新的 ToolMessage，response_data 保持为空
     - 避免任何历史数据污染
     - 支持购买流程中的产品选择列表
+    - 只在有实际结构化数据时设置 response_type，避免覆盖前端的现有状态
 
     Args:
         state_update: 完整的累积状态（包含历史消息）
@@ -118,12 +119,12 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
     result = {
         "type": "state_update",
         "data": {
-            "response_type": "text",
             "response_data": {}
         }
     }
 
     # 1. 提取工具结果（仅当 node_update 有新的工具调用时）
+    has_structured_data = False
     if node_update and isinstance(node_update, dict):
         tools_used = node_update.get("tools_used", [])
         node_messages = node_update.get("messages", [])
@@ -139,8 +140,10 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
 
             if "products" in tool_results:
                 result["data"]["response_data"]["products"] = tool_results["products"]
+                has_structured_data = True
             if "orders" in tool_results:
                 result["data"]["response_data"]["orders"] = tool_results["orders"]
+                has_structured_data = True
 
     # 2. 提取新增的 AI 消息内容
     messages = state_update.get("messages", [])
@@ -154,47 +157,6 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
                 result["data"]["content"] = last_ai_message.content
                 result["data"]["role"] = "assistant"
 
-    # 3. 处理 task_chain 中的 user_selection 步骤
-    # 当 task_chain 存在且当前步骤是 user_selection 时：
-    #   从 state_update 中获取 pending_selection（由 _execute_user_selection 设置）
-    #   如果有 pending_selection，设置 response_type 为 selection
-
-    task_chain = state_update.get("task_chain")
-    if task_chain:
-        # 辅助函数：兼容 Pydantic 模型和字典获取步骤属性
-        def _get_step_attr(step, attr, default=None):
-            if hasattr(step, attr):
-                return getattr(step, attr)
-            elif isinstance(step, dict):
-                return step.get(attr, default)
-            return default
-
-        # task_chain 可能是 Pydantic 模型或字典，需要兼容处理
-        if hasattr(task_chain, 'model_dump'):
-            current_step_index = task_chain.current_step_index
-            steps = task_chain.steps
-        else:
-            current_step_index = task_chain.get("current_step_index")
-            steps = task_chain.get("steps", [])
-
-        if current_step_index is not None and current_step_index < len(steps):
-            current_step = steps[current_step_index]
-            step_type = _get_step_attr(current_step, "step_type")
-
-            # 检测是否是 user_selection 步骤
-            if step_type == "user_selection":
-                logger.info(f"检测到 task_chain 中的 user_selection 步骤，index={current_step_index}")
-
-    # 4. 处理特殊状态（从 state_update 中获取 pending_selection）
-    # 如果 result 中还没有设置 pending_selection，则从 state_update 中获取
-    if result["data"].get("pending_selection") is None:
-        pending_selection = state_update.get("pending_selection")
-        if pending_selection:
-            result["data"]["pending_selection"] = pending_selection
-            result["data"]["response_type"] = "selection"
-            # 移除重复的 products 数据
-            result["data"]["response_data"].pop("products", None)
-
     # node_update 可能是 tuple（当 interrupt() 被调用时），需要类型检查
     node_confirmation = node_update.get("confirmation_pending") if isinstance(node_update, dict) else None
     confirmation_pending = node_confirmation or state_update.get("confirmation_pending")
@@ -202,6 +164,7 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
     if confirmation_pending:
         result["data"]["confirmation_pending"] = confirmation_pending
         result["data"]["response_type"] = "confirmation"
+        has_structured_data = True
 
         # 订单确认时，构建订单信息供前端使用
         if confirmation_pending.get("action_type") == "create_order":
@@ -213,19 +176,25 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
                     "user_phone": confirmation_pending.get("action_data", {}).get("user_phone", "")
                 }
 
-    # 5. 确定响应类型（仅在没有特殊状态时）
-    # 检查 result 中是否有特殊状态，而不是检查 state_update
-    has_pending_selection = result["data"].get("pending_selection") is not None
-    has_confirmation_pending = result["data"].get("confirmation_pending") is not None
+    # 4. 确定响应类型（仅在没有特殊状态且有结构化数据时）
+    # 【核心修改】只在有实际结构化数据时设置 response_type
+    # 避免空状态更新覆盖前端的 product_list/order_list 状态
+    if not has_structured_data:
+        # 没有结构化数据，不设置 response_type，让前端保持现有状态
+        pass
+    else:
+        # 有结构化数据，确定具体的响应类型
+        if confirmation_pending:
+            # 已经在上面设置为 "confirmation"
+            pass
+        else:
+            response_data = result["data"]["response_data"]
+            if "orders" in response_data:
+                result["data"]["response_type"] = "order_list"
+            elif "products" in response_data:
+                result["data"]["response_type"] = "product_list"
 
-    if not has_pending_selection and not has_confirmation_pending:
-        response_data = result["data"]["response_data"]
-        if "orders" in response_data:
-            result["data"]["response_type"] = "order_list"
-        elif "products" in response_data:
-            result["data"]["response_type"] = "product_list"
-
-    # 6. 添加其他元信息
+    # 5. 添加其他元信息
     if current_agent := state_update.get("current_agent"):
         result["data"]["current_agent"] = current_agent
     if tools_used := state_update.get("tools_used", []):

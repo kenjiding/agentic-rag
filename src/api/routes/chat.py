@@ -56,6 +56,40 @@ async def stream_chat_response(question: str, session_id: str):
         except Exception as e:
             logger.warning(f"从 checkpointer 获取状态失败: {e}，使用空状态初始化")
 
+        # 【核心修复】检查并清理过期的 confirmation_pending
+        # 问题根源：confirmation 可能通过 /api/confirmation/resolve 被解析，
+        # 但 checkpoint 中的 confirmation_pending 没有被清除
+        state_confirmation_pending = accumulated_state.get("confirmation_pending")
+        if state_confirmation_pending:
+            from src.confirmation import get_confirmation_manager
+            confirmation_manager = get_confirmation_manager()
+            confirmation_id = state_confirmation_pending.get("confirmation_id")
+
+            # 检查 confirmation 是否仍然有效
+            try:
+                pending_confirmation = await confirmation_manager.get_pending_confirmation(session_id)
+                if not pending_confirmation or pending_confirmation.confirmation_id != confirmation_id:
+                    # confirmation 已被解析或取消，但 checkpoint 中的状态未清除
+                    logger.info(f"检测到过期的 confirmation_pending (id={confirmation_id})，清理 checkpoint 状态")
+                    # 更新 checkpoint 清除 confirmation_pending
+                    graph.graph.update_state(
+                        config,
+                        {"confirmation_pending": None},
+                        as_node="__start__"
+                    )
+                    accumulated_state["confirmation_pending"] = None
+                else:
+                    logger.info(f"confirmation_pending 仍然有效 (id={confirmation_id})")
+            except Exception as e:
+                logger.warning(f"检查 confirmation 状态失败: {e}，清理 confirmation_pending")
+                # 出错时清理，避免 UI 显示过期的确认对话框
+                graph.graph.update_state(
+                    config,
+                    {"confirmation_pending": None},
+                    as_node="__start__"
+                )
+                accumulated_state["confirmation_pending"] = None
+
         # 使用 updates 模式获取每个节点的更新
         async for state_update in graph.astream(question, config=config, stream_mode="updates", session_id=session_id):
             # LangGraph 返回的格式是 {node_name: {updated_fields}}
@@ -125,19 +159,8 @@ async def stream_chat_response(question: str, session_id: str):
                 # 检查是否有待处理的 interrupt（LangGraph 1.x 将 interrupt 保存在 tasks 中）
                 for i, task in enumerate(final_snapshot.tasks):
                     logger.info(f"[chat路由] 检查 task[{i}]: {type(task)}")
-                    # 提取 interrupt 值
-                    for interrupt_obj in (task.interrupts or []):
-                        interrupt_value = interrupt_obj.value
-                        if interrupt_value and isinstance(interrupt_value, dict):
-                            selection_type = interrupt_value.get("selection_type")
-                            logger.info(f"[chat路由] interrupt selection_type: {selection_type}")
-                            if selection_type == "product":
-                                # 发送 pending_selection 到前端
-                                yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'selection', 'pending_selection': interrupt_value}}, ensure_ascii=False)}\n\n"
-                                logger.info(f"[chat路由] 已发送 pending_selection: selection_id={interrupt_value.get('selection_id')}")
-                        # 退出循环，只处理第一个 interrupt
-                        break
-                    if final_snapshot.tasks[0].interrupts:
+                    # 退出循环，只处理第一个 interrupt
+                    if task.interrupts:
                         break
             else:
                 logger.info(f"[chat路由] 没有 interrupt 任务")
@@ -175,7 +198,6 @@ async def clear_session(session_id: str):
                 {
                     "messages": [],
                     "task_chain": None,
-                    "pending_selection": None,
                     "confirmation_pending": None,
                     "entities": {}
                 },

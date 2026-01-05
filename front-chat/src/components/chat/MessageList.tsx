@@ -4,7 +4,6 @@ import { ProductGrid } from "@/components/business/ProductCard"
 import { OrderList } from "@/components/business/OrderTracker"
 import { ExecutionSteps } from "./ExecutionSteps"
 import { ConfirmationDialog } from "./ConfirmationDialog"
-import { ProductSelectionDialog } from "./ProductSelectionDialog"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { motion } from "framer-motion"
@@ -17,9 +16,7 @@ interface MessageListProps {
   onConfirm?: (confirmationId: string) => void
   onCancel?: (confirmationId: string) => void
   isProcessingConfirmation?: boolean
-  onSelectProduct?: (selectionId: string, productId: string) => void
-  onCancelSelection?: (selectionId: string) => void
-  isProcessingSelection?: boolean
+  onBuyProduct?: (productId: number) => void
 }
 
 export function MessageList({
@@ -27,9 +24,7 @@ export function MessageList({
   onConfirm,
   onCancel,
   isProcessingConfirmation = false,
-  onSelectProduct,
-  onCancelSelection,
-  isProcessingSelection = false,
+  onBuyProduct,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<ChatMessage | null>(null)
@@ -133,9 +128,7 @@ export function MessageList({
               onConfirm={onConfirm}
               onCancel={onCancel}
               isProcessingConfirmation={isProcessingConfirmation}
-              onSelectProduct={onSelectProduct}
-              onCancelSelection={onCancelSelection}
-              isProcessingSelection={isProcessingSelection}
+              onBuyProduct={onBuyProduct}
             />
           ))}
         </div>
@@ -150,9 +143,7 @@ interface MessageItemProps {
   onConfirm?: (confirmationId: string) => void
   onCancel?: (confirmationId: string) => void
   isProcessingConfirmation?: boolean
-  onSelectProduct?: (selectionId: string, productId: string) => void
-  onCancelSelection?: (selectionId: string) => void
-  isProcessingSelection?: boolean
+  onBuyProduct?: (productId: number) => void
 }
 
 function MessageItem({
@@ -161,9 +152,7 @@ function MessageItem({
   onConfirm,
   onCancel,
   isProcessingConfirmation = false,
-  onSelectProduct,
-  onCancelSelection,
-  isProcessingSelection = false,
+  onBuyProduct,
 }: MessageItemProps) {
   const isUser = message.role === "user"
 
@@ -199,9 +188,8 @@ function MessageItem({
         )}
       >
         {/* 产品列表 - 根据 responseType 渲染 */}
-        {/* 注意：如果有 pendingSelection，产品列表会在选择对话框中显示，不需要单独渲染 */}
-        {message.responseType === "product_list" && message.responseData?.products && !message.pendingSelection && (
-          <ProductGrid products={message.responseData.products} />
+        {message.responseType === "product_list" && message.responseData?.products && (
+          <ProductGrid products={message.responseData.products} onBuy={onBuyProduct} />
         )}
 
         {/* 订单列表 */}
@@ -213,7 +201,7 @@ function MessageItem({
         {message.responseType === "mixed" && message.responseData && (
           <>
             {message.responseData.products && (
-              <ProductGrid products={message.responseData.products} />
+              <ProductGrid products={message.responseData.products} onBuy={onBuyProduct} />
             )}
             {message.responseData.orders && (
               <OrderList orders={message.responseData.orders} />
@@ -329,24 +317,6 @@ function MessageItem({
             onConfirm={onConfirm}
             onCancel={onCancel}
             isProcessing={isProcessingConfirmation}
-          />
-        )}
-
-        {/* 产品选择对话框 */}
-        {(() => {
-          // 调试：打印选择状态
-          if (message.pendingSelection) {
-            console.log("🛍️ 消息包含 pendingSelection:", message.pendingSelection)
-            console.log("  onSelectProduct:", !!onSelectProduct, "onCancelSelection:", !!onCancelSelection)
-          }
-          return null
-        })()}
-        {message.pendingSelection && onSelectProduct && onCancelSelection && (
-          <ProductSelectionDialog
-            selection={message.pendingSelection}
-            onSelect={onSelectProduct}
-            onCancel={onCancelSelection}
-            isProcessing={isProcessingSelection}
           />
         )}
 

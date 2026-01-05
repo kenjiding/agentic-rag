@@ -6,7 +6,6 @@ export function useStreamingChat() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isProcessingConfirmation, setIsProcessingConfirmation] = useState(false)
-  const [isProcessingSelection, setIsProcessingSelection] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const currentMessageIdRef = useRef<string | null>(null)
 
@@ -48,7 +47,6 @@ export function useStreamingChat() {
         responseType: stateUpdateData?.response_type ?? existing.responseType ?? "text",
         responseData: stateUpdateData?.response_data ?? existing.responseData,
         confirmationPending: stateUpdateData?.confirmation_pending ?? existing.confirmationPending,
-        pendingSelection: stateUpdateData?.pending_selection ?? existing.pendingSelection,
         metadata: newMetadata,
         isStreaming: true,
       }
@@ -138,10 +136,6 @@ export function useStreamingChat() {
                 // 调试：打印确认数据
                 if (data.data.confirmation_pending) {
                   console.log("🔔 收到确认请求:", data.data.confirmation_pending)
-                }
-                // 调试：打印选择数据
-                if (data.data.pending_selection) {
-                  console.log("🛍️ 收到选择请求:", data.data.pending_selection)
                 }
 
                 updateMessageWithStateUpdate(assistantMessageId, data.data)
@@ -416,163 +410,11 @@ export function useStreamingChat() {
     }
   }, [])
 
-  // 选择产品
-  const selectProduct = useCallback(async (selectionId: string, productId: string) => {
-    setIsProcessingSelection(true)
-
-    // 先清除选择状态
-    setMessages((prev) =>
-      prev.map((msg) => ({
-        ...msg,
-        pendingSelection: undefined,
-      }))
-    )
-
-    // 创建新的助手消息来接收后续流式响应
-    const assistantMessageId = `assistant-${Date.now()}`
-    currentMessageIdRef.current = assistantMessageId
-    const assistantMessage: ChatMessage = {
-      id: assistantMessageId,
-      role: "assistant",
-      content: "已选择商品，正在为您创建订单...",
-      responseType: "text",
-      timestamp: new Date(),
-      isStreaming: true,
-    }
-    setMessages((prev) => [...prev, assistantMessage])
-
-    try {
-      const response = await fetch("/api/selection/resolve", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selection_id: selectionId, selected_option_id: productId }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || "选择产品失败")
-      }
-
-      // 处理流式响应（与sendMessage类似）
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-
-      if (!reader) {
-        throw new Error("No response body")
-      }
-
-      let buffer = ""
-      let isReading = true
-
-      while (isReading) {
-        const { done, value } = await reader.read()
-        if (done) {
-          isReading = false
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n\n")
-        buffer = lines.pop() || ""
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6)) as StreamEvent
-
-              if (data.type === "error") {
-                setError(data.error || "未知错误")
-                break
-              }
-
-              if (data.type === "selection_resolved") {
-                // 选择已解析，继续等待后续状态更新
-                console.log("✅ 选择已解析:", data.message)
-                continue
-              }
-
-              if (data.type === "state_update" && data.data) {
-                updateMessageWithStateUpdate(assistantMessageId, data.data)
-              }
-
-              if (data.type === "done") {
-                setMessages((prev) => {
-                  const updated = [...prev]
-                  const index = updated.findIndex((msg) => msg.id === assistantMessageId)
-                  if (index !== -1) {
-                    updated[index] = {
-                      ...updated[index],
-                      isStreaming: false,
-                    }
-                  }
-                  return updated
-                })
-                break
-              }
-            } catch (e) {
-              console.error("Failed to parse SSE data:", e)
-            }
-          }
-        }
-      }
-    } catch (err: any) {
-      setError(err.message || "选择产品失败")
-      setMessages((prev) => {
-        const updated = [...prev]
-        const index = updated.findIndex((msg) => msg.id === assistantMessageId)
-        if (index !== -1) {
-          updated[index] = {
-            ...updated[index],
-            content: `错误: ${err.message || "选择产品失败"}`,
-            isStreaming: false,
-          }
-        }
-        return updated
-      })
-    } finally {
-      setIsProcessingSelection(false)
-      currentMessageIdRef.current = null
-    }
-  }, [])
-
-  // 取消选择
-  const cancelSelection = useCallback(async (selectionId: string) => {
-    setIsProcessingSelection(true)
-    try {
-      const response = await fetch("/api/selection/cancel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selection_id: selectionId }),
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(errorData.detail || "取消选择失败")
-      }
-
-      // 清除消息中的选择状态，并添加取消消息
-      setMessages((prev) => {
-        const updated: ChatMessage[] = prev.map((msg) => ({
-          ...msg,
-          pendingSelection: undefined,
-        }))
-
-        updated.push({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: "已取消选择",
-          responseType: "text",
-          timestamp: new Date(),
-        })
-
-        return updated
-      })
-    } catch (err: any) {
-      setError(err.message || "取消选择失败")
-    } finally {
-      setIsProcessingSelection(false)
-    }
-  }, [])
+  // 购买产品
+  const buyProduct = useCallback(async (productId: number) => {
+    // 发送购买消息，让后端处理购买流程
+    await sendMessage(`购买产品 ID: ${productId}`)
+  }, [sendMessage])
 
   return {
     messages,
@@ -584,9 +426,7 @@ export function useStreamingChat() {
     confirmAction,
     cancelConfirmation,
     isProcessingConfirmation,
-    selectProduct,
-    cancelSelection,
-    isProcessingSelection,
+    buyProduct,
   }
 }
 

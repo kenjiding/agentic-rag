@@ -67,7 +67,7 @@ async def accumulate_and_format_state_updates(
                 
                 # 格式化状态更新
                 formatted = format_state_update(accumulated_state, node_data, messages_before_update)
-                
+
                 if isinstance(formatted, dict):
                     # 过滤空的 state_update（可选）
                     if filter_empty:
@@ -75,10 +75,9 @@ async def accumulate_and_format_state_updates(
                         has_content = bool(data.get("content"))
                         has_response_data = bool(data.get("response_data", {}))
                         has_special_state = bool(
-                            data.get("pending_selection") or 
                             data.get("confirmation_pending")
                         )
-                        
+
                         if has_content or has_response_data or has_special_state:
                             yield formatted
                         else:

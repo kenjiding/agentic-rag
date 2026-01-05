@@ -18,7 +18,7 @@ class TaskStep(BaseModel):
     用于任务链中的单个步骤，支持多步骤任务编排。
     """
     step_id: str  # 步骤唯一标识
-    step_type: Literal["product_search", "user_selection", "order_creation", "confirmation", "web_search", "rag_search"]  # 步骤类型（支持动态扩展）
+    step_type: Literal["product_search", "order_creation", "confirmation", "web_search", "rag_search"]  # 步骤类型（支持动态扩展）
     status: Literal["pending", "in_progress", "completed", "skipped"]  # 步骤状态
     agent_name: Optional[str] = None  # 执行该步骤的Agent名称（如果需要）
     result_data: Optional[Dict[str, Any]] = None  # 步骤执行结果数据
@@ -36,19 +36,6 @@ class TaskChain(BaseModel):
     current_step_index: int  # 当前步骤索引
     created_at: str  # 创建时间（ISO格式）
     context_data: Dict[str, Any] = Field(default_factory=dict)  # 任务链上下文数据
-
-
-class PendingSelection(BaseModel):
-    """待选择操作定义
-
-    用于需要用户从多个选项中选择的场景（如选择商品、地址等）。
-    类似于 ConfirmationPending，但用于选择而非确认。
-    """
-    selection_id: str  # 选择操作唯一标识
-    selection_type: str  # 选择类型（"product", "address", 等）
-    options: List[Dict[str, Any]]  # 可选项列表
-    display_message: str  # 展示给用户的提示消息
-    metadata: Optional[Dict[str, Any]] = None  # 额外的元数据
 
 
 class MultiAgentState(BaseModel):
@@ -89,8 +76,8 @@ class MultiAgentState(BaseModel):
     iteration_count: int = 0  # 当前迭代次数
     max_iterations: int = 10  # 最大迭代次数，默认10
 
-    # 路由决策
-    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "wait_for_selection", "finish"]] = None  # 下一步行动
+    # 路由���策
+    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "finish"]] = None  # 下一步行动
     routing_reason: Optional[str] = None  # 路由决策的原因说明
 
     # 意图识别
@@ -102,7 +89,6 @@ class MultiAgentState(BaseModel):
 
     # 多步骤任务编排
     task_chain: Optional[TaskChain] = None  # 活跃的任务链
-    pending_selection: Optional[PendingSelection] = None  # 等待用户选择的操作
 
     # 实体信息（2025最佳实践：使用 LangGraph checkpointer 持久化）
     entities: Dict[str, Any] = Field(default_factory=dict)  # 提取的实体信息：{"user_phone": "138...", "quantity": 2, "search_keyword": "西门子", ...}

@@ -196,7 +196,6 @@ class SupervisorAgent:
             llm_result = await self._do_llm_routing(state, user_message)
             if needs_cleanup:
                 llm_result["task_chain"] = None
-                llm_result["pending_selection"] = None
                 llm_result["routing_reason"] = f"[清理旧任务链后] {llm_result['routing_reason']}"
             return llm_result
 
@@ -211,42 +210,36 @@ class SupervisorAgent:
             (路由结果字典, 是否需要清理标记)
         """
         task_chain = state.task_chain
-        pending_selection = state.pending_selection
         query_intent = state.query_intent
 
         # 【调试日志】详细记录状态信息
         logger.info(
             f"[任务链处理] 检查现有任务链状态: "
             f"task_chain={task_chain is not None}, "
-            f"pending_selection={pending_selection is not None}, "
             f"user_message={user_message}, "
             f"query_intent={query_intent is not None}"
         )
-        
+
         if task_chain:
             logger.info(f"[任务链处理] task_chain 详情: chain_type={task_chain.chain_type}, current_index={task_chain.current_step_index}, steps_count={len(task_chain.steps)}")
 
-        if not (task_chain or pending_selection):
-            logger.info("[任务链处理] 没有活跃的任务链或待选择状态，返回 None")
+        if not task_chain:
+            logger.info("[任务链处理] 没有活跃的任务链，返回 None")
             return None, False
 
-        logger.info(f"检测到活跃任务链或待选择状态: task_chain={task_chain is not None}, pending_selection={pending_selection is not None}, user_message={user_message}")
+        logger.info(f"检测到活跃任务链: task_chain={task_chain is not None}, user_message={user_message}")
 
-        # 【关键修复】如果没有用户消息但有活跃的任务链，继续执行任务链
-        # 这处理了用户选择产品后的恢复执行场景：
-        # 1. 用户选择后，interrupt() 恢复执行，_execute_user_selection 处理用户选择并更新 task_chain
-        # 2. 如果恢复执行时重新从 entry point 开始，supervisor 应该检测到 task_chain 并路由到 task_orchestrator
-        # 3. 无论当前步骤是什么类型，只要有活跃的 task_chain 且没有新用户消息，都应该继续执行任务链
+        # 如果没有用户消息但有活跃的任务链，继续执行任务链
         if not user_message and task_chain:
             current_index = task_chain.current_step_index
             steps = task_chain.steps
-            
+
             logger.info(f"检测到活跃任务链，无用户消息: current_index={current_index}, steps_count={len(steps)}")
 
             if current_index < len(steps):
                 current_step = steps[current_index]
                 step_type = current_step.step_type
-                
+
                 logger.info(f"任务链当前步骤: step_type={step_type}, index={current_index}")
                 
                 # 【关键修复】无论当前步骤是什么类型，只要有活跃的 task_chain，都应该路由到 task_orchestrator
@@ -273,9 +266,6 @@ class SupervisorAgent:
             keywords_config = get_keywords_config()
             is_pure_number = bool(re.match(r'^\d+$', user_message.strip()))
             is_selection_response = is_pure_number or any(kw in user_message for kw in keywords_config.selection_keywords)
-
-            if pending_selection and not is_selection_response:
-                is_selection_response = any(re.search(p, user_message.strip()) for p in keywords_config.cancel_selection_patterns)
 
         # 如果不是选择响应，检查用户输入是否是补充信息
         if not is_selection_response:
@@ -328,25 +318,9 @@ class SupervisorAgent:
                     step_type = current_step.step_type
                     step_status = current_step.status
 
-                    if step_type == "user_selection" and step_status in ["pending", "in_progress"]:
-                        should_clear_task_chain = True
-                        clear_reason = "用户跳过商品选择，发起新问题"
-
-            if pending_selection and not should_clear_task_chain:
-                should_clear_task_chain = True
-                clear_reason = "用户跳过选择，发起新问题"
-
         # 执行清理
         if should_clear_task_chain:
-            logger.info(f"🧹 自动清理任务链和待选择状态: {clear_reason}")
-
-            if pending_selection:
-                from src.confirmation.selection_manager import get_selection_manager
-                selection_manager = get_selection_manager()
-                try:
-                    await selection_manager.cancel_selection(pending_selection.selection_id)
-                except Exception as e:
-                    logger.warning(f"清理 pending_selection 失败: {e}")
+            logger.info(f"🧹 自动清理任务链: {clear_reason}")
 
             logger.info("任务链已清理，继续执行正常路由流程")
             return None, True

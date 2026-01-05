@@ -10,9 +10,10 @@ import { useState, useEffect } from "react"
 interface ProductCardProps {
   product: Product
   onViewDetails?: (productId: number) => void
+  onBuy?: (productId: number) => void
 }
 
-export function ProductCard({ product, onViewDetails }: ProductCardProps) {
+export function ProductCard({ product, onViewDetails, onBuy }: ProductCardProps) {
   const isInStock = product.stock > 0
   const priceDisplay = product.price ? `¥${product.price.toFixed(2)}` : "价格面议"
 
@@ -145,16 +146,17 @@ export function ProductCard({ product, onViewDetails }: ProductCardProps) {
             onClick={() => onViewDetails?.(product.id)}
           >
             <Eye className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-            <span className="ml-1 sm:ml-1.5 truncate">详情</span>
+            <span className="ml-1 sm:ml-1.5 truncate">查看</span>
           </Button>
           <Button
             variant="default"
             size="sm"
             className="flex-1 text-[10px] sm:text-xs h-7 sm:h-8 px-2 sm:px-3 min-w-0 overflow-hidden"
             disabled={!isInStock}
+            onClick={() => isInStock && onBuy?.(product.id)}
           >
             <ShoppingCart className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
-            <span className="ml-1 sm:ml-1.5 truncate">{isInStock ? "加购" : "缺货"}</span>
+            <span className="ml-1 sm:ml-1.5 truncate">{isInStock ? "购买" : "缺货"}</span>
           </Button>
         </CardFooter>
       </Card>
@@ -165,9 +167,10 @@ export function ProductCard({ product, onViewDetails }: ProductCardProps) {
 interface ProductGridProps {
   products: Product[]
   onViewDetails?: (productId: number) => void
+  onBuy?: (productId: number) => void
 }
 
-export function ProductGrid({ products, onViewDetails }: ProductGridProps) {
+export function ProductGrid({ products, onViewDetails, onBuy }: ProductGridProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const [itemsPerPage, setItemsPerPage] = useState(() => {
     // 初始化时根据窗口大小设置
@@ -259,6 +262,7 @@ export function ProductGrid({ products, onViewDetails }: ProductGridProps) {
             key={product.id}
             product={product}
             onViewDetails={onViewDetails}
+            onBuy={onBuy}
           />
         ))}
       </div>

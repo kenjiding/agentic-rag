@@ -15,9 +15,7 @@ interface ChatLayoutProps {
   onConfirm?: (confirmationId: string) => void
   onCancel?: (confirmationId: string) => void
   isProcessingConfirmation?: boolean
-  onSelectProduct?: (selectionId: string, productId: string) => void
-  onCancelSelection?: (selectionId: string) => void
-  isProcessingSelection?: boolean
+  onBuyProduct?: (productId: number) => void
 }
 
 export function ChatLayout({
@@ -30,9 +28,7 @@ export function ChatLayout({
   onConfirm,
   onCancel,
   isProcessingConfirmation,
-  onSelectProduct,
-  onCancelSelection,
-  isProcessingSelection,
+  onBuyProduct,
 }: ChatLayoutProps) {
   return (
     <div className="flex flex-col h-screen bg-background relative">
@@ -81,9 +77,7 @@ export function ChatLayout({
         onConfirm={onConfirm}
         onCancel={onCancel}
         isProcessingConfirmation={isProcessingConfirmation}
-        onSelectProduct={onSelectProduct}
-        onCancelSelection={onCancelSelection}
-        isProcessingSelection={isProcessingSelection}
+        onBuyProduct={onBuyProduct}
       />
 
       {/* 输入框 */}
