@@ -10,7 +10,7 @@ from src.intent.models.types import PipelineOption, DecompositionType, IntentTyp
 
 class Entities(BaseModel):
     """实体信息模型 - 统一存放所有实体
-    
+
     用于从用户消息中提取结构化的实体信息。
     使用 Pydantic 模型确保类型安全和 OpenAI structured output 兼容性。
     """
@@ -35,6 +35,11 @@ class Entities(BaseModel):
     search_keyword: Optional[str] = Field(
         default=None,
         description="搜索关键词（品牌名、产品名或型号），用于商品模糊搜索。注意：只提取核心关键词，不要包含'产品'、'商品'、'东西'等通用词汇"
+    )
+    product_id: Optional[int] = Field(
+        default=None,
+        description="用户明确指定的产品ID（整数）。用于用户直接说'产品ID:1'、'购买1号产品'等场景",
+        ge=1
     )
 
 

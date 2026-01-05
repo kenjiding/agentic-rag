@@ -1,6 +1,11 @@
-"""Graph路由处理器 - 封装所有路由决策逻辑
+"""Graph路由处理器 - 封装所有路由决策逻辑（一步一步智能模式）
 
 将路由决策逻辑从主图类中分离，提高代码可维护性。
+
+2025-2026 最佳实践：
+- 每次请求都重新进行意图识别和路由决策
+- 通过 entities 字段存储上下文信息
+- Supervisor 根据 entities 智能路由到对应 Agent
 """
 import logging
 from src.multi_agent.state import MultiAgentState
@@ -9,23 +14,22 @@ logger = logging.getLogger(__name__)
 
 
 class GraphRouter:
-    """图路由处理器 - 封装所有路由决策逻辑"""
-    
+    """图路由处理器 - 封装所有路由决策逻辑（一步一步智能模式）"""
+
     def __init__(self, graph_instance):
-        """初始化路由处理器
-        
+        """
+        初始化路由处理器
+
         Args:
             graph_instance: MultiAgentGraph实例，用于访问配置
         """
         self.graph = graph_instance
-    
+
     def route_after_supervisor(self, state: MultiAgentState) -> str:
-        """Supervisor后的路由决策"""
+        """Supervisor后的路由决策（一步一步智能模式）"""
         next_action = state.next_action or "finish"
 
-        if next_action == "execute_task_chain":
-            return "task_orchestrator"
-        elif next_action == "rag_search":
+        if next_action == "rag_search":
             return "rag_agent"
         elif next_action == "chat":
             return "chat_agent"
@@ -35,16 +39,11 @@ class GraphRouter:
             return "order_agent"
         else:
             return "finish"
-    
+
     def route_after_agent(self, state: MultiAgentState) -> str:
-        """Agent执行后的路由决策"""
+        """Agent执行后的路由决策（一步一步智能模式）"""
         if state.error_message or state.iteration_count >= self.graph.max_iterations:
             return "finish"
-
-        # 任务链模式：继续执行任务链
-        if state.task_chain and state.next_action == "execute_task_chain":
-            if state.current_agent in ["product_agent", "order_agent"]:
-                return "task_orchestrator"
 
         # RAG降级：答案质量低时切换到Chat Agent
         current_agent = state.current_agent
@@ -59,19 +58,3 @@ class GraphRouter:
                         return "chat_agent"
 
         return "finish"
-
-    def route_after_orchestrator(self, state: MultiAgentState) -> str:
-        """Task Orchestrator后的路由决策"""
-        next_action = state.next_action or "finish"
-        logger.info(f"[路由决策] Task Orchestrator后: next_action={next_action}, enable_business_agents={self.graph.enable_business_agents}")
-
-        if next_action == "product_search" and self.graph.enable_business_agents:
-            logger.info("[路由决策] 路由到 product_agent")
-            return "product_agent"
-        elif next_action == "order_management" and self.graph.enable_business_agents:
-            logger.info("[路由决策] 路由到 order_agent")
-            return "order_agent"
-        else:
-            logger.info(f"[路由决策] 任务链结束: next_action={next_action}")
-            return "finish"
-

@@ -204,7 +204,7 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
 
 
 def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
-    """格式化执行步骤名称"""
+    """格式化执行步骤名称（一步一步智能模式）"""
     step_map = {
         "intent_recognition": "🎯 意图识别",
         "supervisor": "🧠 路由决策",
@@ -212,7 +212,6 @@ def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
         "chat_agent": "💬 对话处理",
         "product_agent": "🛍️ 商品搜索",
         "order_agent": "📦 订单管理",
-        "task_orchestrator": "🔗 任务编排",
     }
 
     # 检查是否有路由决策信息
@@ -226,7 +225,7 @@ def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
 
 
 def format_step_detail(node_name: str, node_update: Any) -> str:
-    """格式化执行步骤的详细描述"""
+    """格式化执行步骤的详细描述（一步一步智能模式）"""
     detail_map = {
         "intent_recognition": "正在分析您的问题意图...",
         "supervisor": "智能路由正在选择最合适的助手...",
@@ -234,7 +233,6 @@ def format_step_detail(node_name: str, node_update: Any) -> str:
         "chat_agent": "正在生成回答...",
         "product_agent": "正在搜索商品信息...",
         "order_agent": "正在查询订单信息...",
-        "task_orchestrator": "正在协调多步骤任务...",
     }
 
     # 特殊处理：supervisor 路由决策

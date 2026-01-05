@@ -77,11 +77,11 @@ class ProductAgent:
         return "商品搜索专家 - 处理商品查询、搜索、比价等请求"
 
     def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
-        """构建系统提示的上下文信息
-        
+        """构建系统提示的上下文信息（一步一步智能模式）
+
         企业级最佳实践：通过 system prompt 提示 LLM 上下文信息，
         让 LLM 自己判断如何使用工具，而不是硬编码工具调用。
-        
+
         Args:
             state: 当前多Agent状态
 
@@ -89,21 +89,17 @@ class ProductAgent:
             上下文提示字符串
         """
         hints = []
-
-        # 检查任务链上下文
-        task_chain = state.task_chain
         entities = state.entities
 
-        # 如果有任务链或实体信息，提示 LLM
-        if task_chain and entities:
-            hints.append("\n\n=== 任务链上下文 ===")
+        # 如果有实体信息，提示 LLM
+        if entities:
+            hints.append("\n\n=== 上下文信息 ===")
             if entities.get("search_keyword"):
                 search_keyword = entities["search_keyword"]
-                hints.append(f"当前处于任务链的商品搜索步骤。")
-                hints.append(f"需要搜索关键词：{search_keyword}")
+                hints.append(f"搜索关键词：{search_keyword}")
                 hints.append("请使用 search_products_tool 工具执行搜索，根据工具描述选择合适的参数。")
 
-            # 显示其他��下文信息
+            # 显示其他上下文信息
             other_context = {k: v for k, v in entities.items() if k != "search_keyword" and v is not None}
             if other_context:
                 hints.append("\n其他上下文信息：")
@@ -207,6 +203,8 @@ class ProductAgent:
                 "messages": messages + [response] + tool_messages + [final_response],
                 "current_agent": self.name,
                 "tools_used": state.tools_used + tool_used_info,
+                # 如果搜索到了产品，设置对话阶段为 product_selecting
+                "conversation_phase": "product_selecting" if structured_result and "products" in structured_result else state.conversation_phase,
             }
 
             return result

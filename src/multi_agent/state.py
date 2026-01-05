@@ -1,41 +1,26 @@
 """多Agent系统状态定义 - 2025-2026 企业级最佳实践
 
 本模块定义了多Agent系统的全局状态结构，采用Pydantic模型确保类型安全和数据验证。
-状态设计遵循以下原则：
-1. 清晰的状态字段，便于各Agent访问和更新
-2. 支持消息历史，实现对话上下文管理
-3. 记录Agent执行历史，便于调试和追踪
-4. 工具使用追踪，支持审计和分析
+
+一步一步智能模式设计原则：
+1. 每次请求都重新进行意图识别和路由决策
+2. 通过 entities 字段存储上下文信息，实现多轮对话状态管理
+3. Supervisor 根据 entities 状态智能路由到对应 Agent
+4. 支持消息历史，实现对话上下文管理
+5. 记录Agent执行历史，便于调试和追踪
 """
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage
 
 
-class TaskStep(BaseModel):
-    """任务步骤定义
-
-    用于任务链中的单个步骤，支持多步骤任务编排。
-    """
-    step_id: str  # 步骤唯一标识
-    step_type: Literal["product_search", "order_creation", "confirmation", "web_search", "rag_search"]  # 步骤类型（支持动态扩展）
-    status: Literal["pending", "in_progress", "completed", "skipped"]  # 步骤状态
-    agent_name: Optional[str] = None  # 执行该步骤的Agent名称（如果需要）
-    result_data: Optional[Dict[str, Any]] = None  # 步骤执行结果数据
-    metadata: Optional[Dict[str, Any]] = None  # 额外的元数据
-
-
-class TaskChain(BaseModel):
-    """任务链定义
-
-    用于编排多步骤任务，如"搜索商品 → 用户选择 → 创建订单"。
-    """
-    chain_id: str  # 任务链唯一标识
-    chain_type: str  # 任务链类型（如 "order_with_search"）
-    steps: List[TaskStep]  # 任务步骤列表
-    current_step_index: int  # 当前步骤索引
-    created_at: str  # 创建时间（ISO格式）
-    context_data: Dict[str, Any] = Field(default_factory=dict)  # 任务链上下文数据
+# 对话阶段类型定义
+ConversationPhase = Literal[
+    "idle",              # 空闲状态，没有正在进行的任务
+    "product_selecting", # 正在选择产品
+    "order_creating",    # 正在创建订单（等待确认）
+    "order_completed",   # 订单已完成
+]
 
 
 class MultiAgentState(BaseModel):
@@ -46,6 +31,11 @@ class MultiAgentState(BaseModel):
     - 支持消息历史管理
     - 记录Agent执行轨迹
     - 支持工具调用追踪
+
+    一步一步智能模式：
+    - 每次请求都重新进行意图识别和路由决策
+    - 通过 entities 字段存储上下文信息
+    - Supervisor 根据 entities 智能路由到对应 Agent
 
     Attributes:
         messages: 对话消息历史，包含用户输入和Agent回复
@@ -76,8 +66,8 @@ class MultiAgentState(BaseModel):
     iteration_count: int = 0  # 当前迭代次数
     max_iterations: int = 10  # 最大迭代次数，默认10
 
-    # 路由���策
-    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "tool_call", "execute_task_chain", "finish"]] = None  # 下一步行动
+    # 路由决策（一步一步智能模式：基于 entities 智能路由）
+    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "finish"]] = None
     routing_reason: Optional[str] = None  # 路由决策的原因说明
 
     # 意图识别
@@ -87,16 +77,22 @@ class MultiAgentState(BaseModel):
     # 业务功能扩展
     confirmation_pending: Optional[Dict[str, Any]] = None  # 等待用户确认的操作
 
-    # 多步骤任务编排
-    task_chain: Optional[TaskChain] = None  # 活跃的任务链
-
-    # 实体信息（2025最佳实践：使用 LangGraph checkpointer 持久化）
-    entities: Dict[str, Any] = Field(default_factory=dict)  # 提取的实体信息：{"user_phone": "138...", "quantity": 2, "search_keyword": "西门子", ...}
+    # 实体信息（一步一步智能模式核心：通过 entities 存储上下文，实现多轮对话状态管理）
+    entities: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="提取的实体信息，用于多轮对话状态管理"
+    )
 
     # 最近的搜索上下文（用于用户取消后重新发起请求时恢复上下文）
     last_product_search_context: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="最近一次产品搜索的上下文，包含 products、search_keyword��quantity 等，用于用户取消后重新发起购买请求时恢复上下文"
+        description="最近一次产品搜索的上下文，包含 products、search_keyword、quantity 等"
+    )
+
+    # 对话阶段（用于跟踪当前对话状态，实现任务完成后的状态清理）
+    conversation_phase: ConversationPhase = Field(
+        default="idle",
+        description="当前对话阶段：idle=空闲, product_selecting=选择产品中, order_creating=创建订单中, order_completed=订单已完成"
     )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -107,4 +103,3 @@ class MultiAgentState(BaseModel):
     def from_dict(cls, data: Dict[str, Any]) -> "MultiAgentState":
         """从字典创建实例"""
         return cls(**data)
-

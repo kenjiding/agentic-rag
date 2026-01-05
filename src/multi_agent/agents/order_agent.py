@@ -511,22 +511,24 @@ class OrderAgent:
             for key, value in all_entities.items():
                 if value is not None:
                     hints.append(f"- {key}: {value}")
-        else:
-            hints.append("（当前没有已收集的上下文信息）")
-        
+
+        # 【场景处理】当用户提供手机号且有 product_id 时
+        if all_entities.get("product_id") and all_entities.get("user_phone"):
+            hints.append("\n=== 当前场景：订单创建 ===")
+            hints.append("检测到用户已选定产品（product_id存���）并提供了手机号（user_phone存在）。")
+            hints.append("你应该立即调用 prepare_create_order 工具来创建订单，不需要再询问用户。")
+            hints.append(f"- 产品ID: {all_entities.get('product_id')}")
+            hints.append(f"- 手机号: {all_entities.get('user_phone')}")
+            hints.append(f"- 数量: {all_entities.get('quantity', 1)}")
+        # 【场景处理】当有 product_id 但没有 user_phone 时
+        elif all_entities.get("product_id") and not all_entities.get("user_phone"):
+            hints.append("\n=== 当前场景：等待用户信息 ===")
+            hints.append("检测到用户已选定产品（product_id存在），但还缺少手机号。")
+            hints.append("你应该询问用户的手机号，以便创建订单。")
+            hints.append(f"- 产品ID: {all_entities.get('product_id')}")
+
         hints.append("\n请根据对话历史、上下文信息和工具描述，判断是否可以执行操作，或需要向用户询问什么信息。")
-        
-        # 如果有任务链，添加任务链上下文
-        task_chain = state.task_chain
-        if task_chain:
-            current_index = task_chain.current_step_index
-            steps = task_chain.steps
-            if current_index < len(steps):
-                current_step = steps[current_index]
-                step_type = current_step.step_type
-                if step_type == "order_creation":
-                    hints.append("\n当前处于任务链的订单创建步骤。请根据对话历史和上下文判断是否可以创建订单，或需要用户提供什么信息。")
-        
+
         return "\n".join(hints)
 
     async def _handle_with_llm(
@@ -665,6 +667,8 @@ class OrderAgent:
             result.update(order_info_dict)
 
         if needs_confirmation and confirmation_data:
+            # 设置 conversation_phase 为 order_creating，表示正在等待用户确认
+            result["conversation_phase"] = "order_creating"
             confirmation = await self.confirmation_manager.request_confirmation(
                 session_id=session_id,
                 action_type=confirmation_data["action_type"],
@@ -731,11 +735,12 @@ class OrderAgent:
                         # 【关键修复】根据执行结果决定是否清理 confirmation_pending
                         # 如果订单创建失败，保留 confirmation_pending，让 AI 能够继续处理错误
                         if execution_success:
-                            # 执行成功：清理 confirmation_pending
+                            # 执行成功：清理 confirmation_pending，设置 conversation_phase 为 order_completed
                             return {
                                 "messages": messages + [AIMessage(content=message)],
                                 "current_agent": self.name,
                                 "confirmation_pending": None,
+                                "conversation_phase": "order_completed" if result.action_type == "create_order" else "idle",
                             }
                         else:
                             # 执行失败：保留 confirmation_pending，让 AI 继续处理错误

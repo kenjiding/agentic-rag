@@ -30,9 +30,9 @@ def get_state_value(state: Union[Mapping[str, Any], object], key: str, default: 
 
     Examples:
         >>> # Pydantic 实例
-        >>> value = get_state_value(snapshot.values, "task_chain")
+        >>> value = get_state_value(snapshot.values, "entities")
         >>> # 字典
-        >>> value = get_state_value(snapshot.values, "task_chain")
+        >>> value = get_state_value(snapshot.values, "entities")
     """
     # 如果是字典或 Mapping
     if isinstance(state, Mapping):

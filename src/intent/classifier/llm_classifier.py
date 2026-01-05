@@ -203,15 +203,29 @@ sub_queries: []
    - user_phone: Optional[str] - 用户手机号（11位，1开头）
    - quantity: Optional[int] - 购买数量
    - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
+   - product_id: Optional[int] - 用户明确指定的产品ID
 
-   **search_keyword 提取规则（重要）**：
+   **实体提取规则（优先级从高到低）**：
+
+   **优先级1：product_id 提取规则（最高优先级）**
+   - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
+   - 示例：
+     - "产品ID: 1" → product_id=1
+     - "购买1号产品" → product_id=1, quantity=1
+     - "ID是5的产品" → product_id=5
+     - "我要买3号" → product_id=3
+     - "就选第一个" → product_id=1
+   - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
+
+   **优先级2：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
    - 示例：
-     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"西门子产品"）
+     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
      - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
      - "查一下苹果手机" → search_keyword="苹果手机"
      - "有没有冰箱" → search_keyword="冰箱"
      - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
+
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
 
 输出JSON："""
@@ -325,13 +339,46 @@ sub_queries: []
         # Only set search_keyword if there's meaningful content left
         search_keyword_value: Optional[str] = search_keyword if search_keyword and len(search_keyword) >= 2 else None
 
+        # Extract product_id (优先级高于 search_keyword)
+        # 匹配模式：产品ID:1, 产品ID：1, ID:1, 1号产品, 第1个, 第一个, 我要买3号 等
+        product_id_patterns = [
+            r'(?:产品(?:ID|编号)|产品|ID)[：:]\s*(\d+)',  # "产品ID: 1", "产品编号：1"
+            r'(\d+)号产品',  # "1号产品"
+            r'(?:买|购买|要)?(?:我要|我想|想要)?(?:买|购买|要)?(?:第?)([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]|10|\d+)号(?:产品)?$',  # "我要买3号", "买3号", "3号"
+            r'第([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]|10|\d+)个',  # "第1个", "第一个"
+            r'就选第?([一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾]|10|\d+)个?',  # "就选1", "就选第一个"
+        ]
+        product_id: Optional[int] = None
+        for pattern in product_id_patterns:
+            match = re.search(pattern, query)
+            if match:
+                try:
+                    pid_str = match.group(1)
+                    # 处理中文数字
+                    chinese_nums = {'一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+                                   '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                                   '壹': 1, '贰': 2, '叁': 3, '肆': 4, '伍': 5,
+                                   '陆': 6, '柒': 7, '捌': 8, '玖': 9, '拾': 10}
+                    if pid_str in chinese_nums:
+                        product_id = chinese_nums[pid_str]
+                    else:
+                        product_id = int(pid_str)
+                    break
+                except ValueError:
+                    pass
+
+        # 如果提取到 product_id，清空 search_keyword（避免冲突）
+        if product_id is not None:
+            search_keyword_value = None
+
         # Create Entities model instance
         entities = Entities(
             general_entities=general_entities,
             time_points=time_points,
             user_phone=user_phone,
             quantity=quantity,
-            search_keyword=search_keyword_value
+            search_keyword=search_keyword_value,
+            product_id=product_id
         )
 
         # ==================== Universal Query Decomposition ====================
@@ -541,15 +588,29 @@ sub_queries: []
    - user_phone: Optional[str] - 用户手机号（11位，1开头）
    - quantity: Optional[int] - 购买数量
    - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
+   - product_id: Optional[int] - 用户明确指定的产品ID
 
-   **search_keyword 提取规则（重要）**：
+   **实体提取规则（优先级从高到低）**：
+
+   **优先级1：product_id 提取规则（最高优先级）**
+   - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
+   - 示例：
+     - "产品ID: 1" → product_id=1
+     - "购买1号产品" → product_id=1, quantity=1
+     - "ID是5的产品" → product_id=5
+     - "我要买3号" → product_id=3
+     - "就选第一个" → product_id=1
+   - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
+
+   **优先级2：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
    - 示例：
-     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"西门子产品"）
+     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
      - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
      - "查一下苹果手机" → search_keyword="苹果手机"
      - "有没有冰箱" → search_keyword="冰箱"
      - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
+
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
 
 输出JSON："""

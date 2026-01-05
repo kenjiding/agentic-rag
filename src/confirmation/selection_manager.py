@@ -36,7 +36,7 @@ class SelectionManager:
                 {"id": "2", "name": "产品B", "price": 200}
             ],
             display_message="请选择要购买的产品:",
-            metadata={"task_chain_id": "chain-123"}
+            metadata={"search_keyword": "chain-123"}
         )
 
         # 用户选择后
@@ -79,7 +79,7 @@ class SelectionManager:
             selection_type: 选择类型（如 "product", "address"）
             options: 可选项列表，每个选项是一个字典（需包含唯一的id字段）
             display_message: 展示给用户的提示消息
-            metadata: 额外的元数据（如关联的task_chain_id等）
+            metadata: 额外的元数据（如关联的search_keyword等）
             ttl_seconds: 自定义过期时间
 
         Returns:

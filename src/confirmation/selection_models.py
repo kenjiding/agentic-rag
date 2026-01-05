@@ -30,7 +30,7 @@ class SelectionAction:
         selection_type: 选择类型（如 "product", "address"）
         options: 可选项列表，每个选项是一个字典（通常包含id、name等字段）
         display_message: 展示给用户的提示消息
-        metadata: 额外的元数据（如关联的task_chain_id等）
+        metadata: 额外的元数据（如关联的search_keyword等）
         status: 选择状态
         created_at: 创建时间
         expires_at: 过期时间

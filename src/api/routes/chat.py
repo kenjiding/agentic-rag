@@ -43,16 +43,16 @@ async def stream_chat_response(question: str, session_id: str):
         }
 
         # 【关键修复】在流式处理之前，先从 checkpointer 获取完整的状态作为基础
-        # 这样 accumulated_state 会包含 task_chain、entities 等关键字段
+        # 这样 accumulated_state 会包含 entities、last_product_search_context 等关键字段
         accumulated_state = {}
         try:
             existing_snapshot = graph.graph.get_state(config)
             if existing_snapshot and existing_snapshot.values:
-                # 使用现有状态作为基础（保留 task_chain 等关键数据）
+                # 使用现有状态作为基础（保留 entities 等关键数据）
                 # Pydantic 模型使用 model_dump() 转换为字典，不能使用 .copy()
                 from src.multi_agent.utils import state_to_dict
                 accumulated_state = state_to_dict(existing_snapshot.values)
-                logger.info(f"从 checkpointer 初始化 accumulated_state: task_chain={'task_chain' in accumulated_state and accumulated_state.get('task_chain') is not None}")
+                logger.info(f"从 checkpointer 初始化 accumulated_state: entities={accumulated_state.get('entities', {})}")
         except Exception as e:
             logger.warning(f"从 checkpointer 获取状态失败: {e}，使用空状态初始化")
 
@@ -197,9 +197,9 @@ async def clear_session(session_id: str):
                 config,
                 {
                     "messages": [],
-                    "task_chain": None,
                     "confirmation_pending": None,
-                    "entities": {}
+                    "entities": {},
+                    "last_product_search_context": None
                 },
                 as_node="__start__"
             )
