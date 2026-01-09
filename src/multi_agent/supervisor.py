@@ -9,9 +9,10 @@ Supervisor负责分析用户意图，决定调用哪个Agent或工具。
 - 支持动态Agent注册
 - 提供路由决策的可解释性
 - 错误处理和降级策略
+- 支持AgentRegistry集成
 """
 import re
-from typing import Dict, Any, Optional, List, Literal
+from typing import Dict, Any, Optional, List, Literal, TYPE_CHECKING
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -20,6 +21,9 @@ from src.multi_agent.state import MultiAgentState, ConversationPhase
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.config import get_keywords_config
 import logging
+
+if TYPE_CHECKING:
+    from src.multi_agent.agent_registry import AgentRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +90,8 @@ class SupervisorAgent:
         self,
         llm: Optional[ChatOpenAI] = None,
         agents: Optional[List[BaseAgent]] = None,
-        fallback_llm: Optional[ChatOpenAI] = None
+        fallback_llm: Optional[ChatOpenAI] = None,
+        agent_registry: Optional["AgentRegistry"] = None
     ):
         """
         初始化Supervisor
@@ -95,9 +100,11 @@ class SupervisorAgent:
             llm: 语言模型实例，用于路由决策
             agents: 可用的Agent列表
             fallback_llm: 降级策略使用的LLM（可选，如果为None则使用更便宜的模型）
+            agent_registry: Agent注册表（可选，用于获取Agent描述）
         """
         self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
         self.agents: Dict[str, BaseAgent] = {}
+        self.agent_registry = agent_registry
 
         # 创建结构化输出的LLM（使用with_structured_output）
         self.structured_llm = self.llm.with_structured_output(RoutingDecision)
@@ -119,8 +126,33 @@ class SupervisorAgent:
         self.agents[agent.get_name()] = agent
         logger.info(f"Supervisor注册Agent: {agent.get_name()}")
 
+    def set_agent_registry(self, registry: "AgentRegistry"):
+        """设置Agent注册表
+
+        允许在初始化后设置注册表，用于从注册表获取Agent描述。
+
+        Args:
+            registry: Agent注册表实例
+        """
+        self.agent_registry = registry
+        logger.info("Supervisor设置Agent注册表")
+
     def get_available_agents(self) -> List[Dict[str, str]]:
-        """获取可用Agent列表及其描述"""
+        """获取可用Agent列表及其描述
+
+        优先从AgentRegistry获取，如果未设置则从本地agents字典获取。
+        """
+        # 如果有注册表，使用注册表获取Agent描述
+        if self.agent_registry:
+            return [
+                {
+                    "name": descriptor.name,
+                    "description": descriptor.description
+                }
+                for descriptor in self.agent_registry.get_enabled_agents()
+            ]
+
+        # 否则从本地agents字典获取
         return [
             {
                 "name": agent.get_name(),
@@ -294,11 +326,26 @@ class SupervisorAgent:
         else:
             context_parts.append("  ✗ 用户未选定产品 (product_id不存在)")
 
-        # 检查是否有 user_phone（用户已提供手机号）
+        # 检查是否有 user_phone（用户���提供手机号）
         if all_entities.get("user_phone"):
             context_parts.append("  ✓ 用户已提供手机号")
         else:
             context_parts.append("  ✗ 用户未提供手机号")
+
+        # 【路由决策逻辑】帮助 LLM 做出正确的路由决策
+        context_parts.append("\n【路由决策逻辑】")
+        has_product_id = bool(all_entities.get("product_id"))
+        has_user_phone = bool(all_entities.get("user_phone"))
+
+        if not has_product_id:
+            context_parts.append("  ⚠️ 关键：用户未选定产品（product_id=None）")
+            context_parts.append("  → 无论是否提供了手机号，都必须先路由到 product_agent 搜索产品！")
+        elif has_product_id and has_user_phone:
+            context_parts.append("  ✓ 用户已选定产品且提供了手机号")
+            context_parts.append("  → 可以路由到 order_agent 创建订单")
+        elif has_product_id and not has_user_phone:
+            context_parts.append("  ⚠️ 用户已选定产品但未提供手机号")
+            context_parts.append("  → 路由到 order_agent 引导用户提供手机号")
 
         # 累积实体信息（详细）
         if all_entities:
@@ -398,11 +445,25 @@ class SupervisorAgent:
 路由规则（基于用户问题和上下文信息）：
 
 【核心规则 - 购买流程】（最高优先级）：
-- **用户想购买但没有选定具体产品（entities中无product_id）**：必须先路由到 product_agent 搜索产品！
-  - 例如："帮我购买3个西门子产品"、"买2台华为手机"、"我要下单买冰箱"
-  - next_action设为"product_search"，selected_agent设为"product_agent"
-- **用户已选定产品（entities中有product_id）且提供了手机号**：路由到 order_agent 创建订单
-  - next_action设为"order_management"，selected_agent设为"order_agent"
+
+**规则1：搜索产品**（以下情况路由到 product_agent）：
+- ✗ 用户未选定产品（entities中无product_id）
+- **关键判断：只要 product_id 为 None，无论用户是否提供了手机号，都必须先路由到 product_agent 搜索产品！**
+- 例如："帮我购买3个西门子产品"、"买2台华为手机"、"我要下单买冰箱"
+- **即使用户说"我的电话是XXX"，只要没有选定产品，也要先搜索产品！**
+- next_action设为"product_search"，selected_agent设为"product_agent"
+
+**规则2：创建订单**（以下情况路由到 order_agent）：
+- ✓ 用户已选定产品（entities中有product_id）
+- ✓ 且用户已提供手机号（entities中有user_phone）
+- **必须同时满足以上两个条件！缺一不可！**
+- next_action设为"order_management"，selected_agent设为"order_agent"
+
+**规则3：继续订单流程**（以下情况路由到 order_agent）：
+- ✓ 用户已选定产品（entities中有product_id）
+- ✗ 但用户未提供手机号
+- 目的：引导用户提供手机号
+- next_action设为"order_management"，selected_agent设为"order_agent"
 
 【商品查询规则】：
 - 用户询问商品信息、价格、参数等（但没有购买意图）：选择 product_agent

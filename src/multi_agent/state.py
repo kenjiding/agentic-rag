@@ -22,6 +22,21 @@ ConversationPhase = Literal[
     "order_completed",   # 订单已完成
 ]
 
+# 前端响应类型（SSE state_update.data.response_type）
+# 说明：
+# - "text"：普通文本回复（前端默认渲染）
+# - "product_list" / "order_list" / "mixed"：结构化卡片渲染
+# - "interrupt" / "confirmation" / "error"：系统事件/确认流/错误（前端可按需处理）
+ResponseType = Literal[
+    "text",
+    "product_list",
+    "order_list",
+    "mixed",
+    "interrupt",
+    "confirmation",
+    "error",
+]
+
 
 class MultiAgentState(BaseModel):
     """多Agent系统全局状态定义
@@ -76,6 +91,24 @@ class MultiAgentState(BaseModel):
 
     # 业务功能扩展
     confirmation_pending: Optional[Dict[str, Any]] = None  # 等待用户确认的操作
+
+    # 前端展示数据（必须进入 LangGraph state，才能被 stream 输出）
+    response_type: Optional[ResponseType] = Field(
+        default=None,
+        description="前端响应类型（SSE state_update.data.response_type）"
+    )
+    response_data: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="前端结构化展示数据（SSE state_update.data.response_data）"
+    )
+    content: Optional[str] = Field(
+        default=None,
+        description="AI消息内容（SSE state_update.data.content）"
+    )
+    role: str = Field(
+        default="assistant",
+        description="角色标识（SSE state_update.data.role）"
+    )
 
     # 实体信息（一步一步智能模式核心：通过 entities 存储上下文，实现多轮对话状态管理）
     entities: Dict[str, Any] = Field(

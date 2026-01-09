@@ -10,6 +10,7 @@ from langchain.agents import create_agent
 from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.tools.tool_registry import ToolRegistry
+from src.multi_agent.utils import clean_messages_for_llm
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,12 +103,13 @@ class ChatAgent(ToolEnabledAgent):
             )
         return self._agent
     
-    async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
+    async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """
         执行对话处理
         
         Args:
             state: 当前的多Agent系统状态
+            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
             
         Returns:
             包含以下字段的字典：
@@ -154,11 +156,14 @@ class ChatAgent(ToolEnabledAgent):
             
             # LangChain 1.x 最佳实践：
             # create_agent返回的agent是一个Runnable，可以直接处理状态
-            # 它会自动处理消息格式，无需手动清理
+            # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
             try:
+                # 清理消息历史，移除孤立的 ToolMessage 和 tool_calls
+                cleaned_messages = clean_messages_for_llm(state.messages, keep_recent_n=20)
+                
                 # 构建agent输入状态
                 # create_agent期望的输入格式：{"messages": [...]}
-                agent_input = {"messages": state.messages}
+                agent_input = {"messages": cleaned_messages}
 
                 # 如果RAG失败，在系统提示中添加搜索引导
                 if should_use_web_search:
@@ -168,7 +173,7 @@ class ChatAgent(ToolEnabledAgent):
                     # 在消息列表开头添加增强的系统消息
                     agent_input["messages"] = [
                         SystemMessage(content=enhanced_system)
-                    ] + [msg for msg in state.messages if isinstance(msg, HumanMessage)]
+                    ] + [msg for msg in cleaned_messages if isinstance(msg, HumanMessage)]
                 
                 # 执行Agent（create_agent返回的agent支持异步调用）
                 if hasattr(agent, 'ainvoke'):
@@ -215,17 +220,20 @@ class ChatAgent(ToolEnabledAgent):
             # 获取可用工具数量
             available_tools = self.get_available_tools()
             tools_count = len(available_tools) if available_tools else 0
-            
+
+            # 使用TextResponse构建完整的前端数据
+            response_model = TextResponse(content=ai_message.content)
             result = {
                 "result": {"response": ai_message.content},
                 "messages": [ai_message],
+                **response_model.to_full_response(),
                 "metadata": {
                     "agent": self.name,
                     "tools_available": tools_count,
                     "tool_names": [t.name for t in available_tools] if available_tools else []
                 }
             }
-            
+
             logger.info("Chat Agent执行完成")
             return result
             
@@ -234,6 +242,7 @@ class ChatAgent(ToolEnabledAgent):
             return {
                 "result": None,
                 "messages": [AIMessage(content=f"处理消息时出现错误: {str(e)}")],
+                "response_type": "error",
                 "metadata": {"error": str(e)},
                 "error": str(e)
             }

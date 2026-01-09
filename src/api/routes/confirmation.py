@@ -1,4 +1,9 @@
-"""确认相关路由"""
+"""确认相关路由
+
+支持 LangGraph 1.x interrupt() 机制：
+- 确认后使用 Command(resume=...) 恢复执行
+- interrupt() 会返回 resume 的值给 Agent
+"""
 import logging
 import json
 from fastapi import APIRouter, HTTPException
@@ -9,6 +14,7 @@ from src.confirmation import (
     ConfirmationNotFoundError,
     ConfirmationExpiredError,
     ConfirmationAlreadyResolvedError,
+    ConfirmationStatus,
 )
 from src.api.streaming_utils import accumulate_and_format_state_updates
 from langgraph.types import Command
@@ -20,7 +26,13 @@ router = APIRouter()
 
 @router.post("/confirmation/resolve")
 async def resolve_confirmation(request: ConfirmationResolveRequest):
-    """解析确认操作并恢复执行"""
+    """解析确认操作并恢复执行
+
+    LangGraph 1.x interrupt() 机制：
+    1. 使用 Command(resume=...) 恢复被中断的图
+    2. interrupt() 调用会返回 resume 的值
+    3. 图从中断点继续执行
+    """
     try:
         from src.api.graph_manager import get_graph
 
@@ -32,7 +44,7 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
         session_id = confirmation.session_id
 
         logger.info(
-            f"用户确认请求: confirmation_id={request.confirmation_id}, "
+            f"[interrupt] 用户确认请求: confirmation_id={request.confirmation_id}, "
             f"confirmed={request.confirmed}, session_id={session_id}"
         )
 
@@ -42,31 +54,26 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
             "recursion_limit": 25
         }
 
+        # 【LangGraph interrupt() 机制】resume 数据
+        # 这个值会被 interrupt() 调用返回给 Agent
         resume_data = {
-            "confirmed": request.confirmed
+            "confirmed": request.confirmed,
+            "confirmation_id": request.confirmation_id
         }
 
-        result = await manager.resolve_confirmation(
+        # 【关键修复】只标记确认状态，不执行操作
+        # 操作由 Agent 在 graph resume 后执行（符合 LangGraph interrupt/resume 机制）
+        confirmation_action = await manager.get_confirmation(request.confirmation_id)
+        await manager._storage.update_status(
             request.confirmation_id,
-            request.confirmed,
+            ConfirmationStatus.CONFIRMED if request.confirmed else ConfirmationStatus.CANCELLED
         )
-
+        
         logger.info(
-            f"确认操作已执行: confirmation_id={request.confirmation_id}, "
-            f"status={result.status}, success={result.execution_result is not None if result.execution_result else False}"
+            f"[interrupt] 确认状态已更新: confirmation_id={request.confirmation_id}, "
+            f"confirmed={request.confirmed}"
         )
 
-        # 【核心修复】确认解析后，立即清除 checkpoint 中的 confirmation_pending
-        # 这样后续的聊天请求不会收到过期的确认状态
-        try:
-            graph.graph.update_state(
-                config,
-                {"confirmation_pending": None},
-                as_node="__start__"
-            )
-            logger.info(f"已清除 checkpoint 中的 confirmation_pending: session_id={session_id}")
-        except Exception as e:
-            logger.warning(f"清除 confirmation_pending 失败: {e}")
 
         async def stream_response():
             """流式返回恢复执行的结果"""
@@ -74,12 +81,11 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
                 action_text = "已确认" if request.confirmed else "已取消"
                 yield f"data: {json.dumps({'type': 'confirmation_resolved', 'message': f'{action_text}，正在继续处理...'}, ensure_ascii=False)}\n\n"
 
-                if request.confirmed and result.execution_result:
-                    success_text = result.execution_result.get("text", "操作已确认并完成！")
-                    yield f"data: {json.dumps({'type': 'state_update', 'data': {'response_type': 'text', 'response_data': {}, 'content': success_text, 'role': 'assistant'}}, ensure_ascii=False)}\n\n"
-
+                # 【核心】使用 Command(resume=...) 恢复被 interrupt() 暂停的图
                 resume_command = Command(resume=resume_data)
-                
+
+                logger.info(f"[interrupt] 调用 graph.astream(resume={resume_data})")
+
                 async for formatted in accumulate_and_format_state_updates(
                     graph.astream(
                         command=resume_command,
@@ -90,13 +96,14 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
                 ):
                     json_str = json.dumps(formatted, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
-                
+
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-                
+                logger.info(f"[interrupt] resume 流结束")
+
             except Exception as e:
-                logger.error(f"流式执行任务链失败: {e}", exc_info=True)
+                logger.error(f"[interrupt] 流式执行失败: {e}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
-        
+
         return StreamingResponse(
             stream_response(),
             media_type="text/event-stream",

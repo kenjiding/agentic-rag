@@ -2,7 +2,14 @@
 export type MessageRole = "user" | "assistant" | "system";
 
 /** 响应内容类型 */
-export type ResponseType = "text" | "product_list" | "order_list" | "mixed";
+export type ResponseType =
+  | "text"
+  | "product_list"
+  | "order_list"
+  | "mixed"
+  | "interrupt"
+  | "confirmation"
+  | "error";
 
 /** 产品信息 */
 export interface Product {

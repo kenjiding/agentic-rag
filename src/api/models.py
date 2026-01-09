@@ -6,7 +6,7 @@ from typing import Optional
 class ChatRequest(BaseModel):
     """聊天请求"""
     message: str
-    session_id: Optional[str] = "default"
+    session_id: str = "default"
     stream: bool = True
 
 

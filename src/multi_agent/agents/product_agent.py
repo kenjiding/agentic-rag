@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from src.tools.product_tools import get_product_tools
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
+from src.multi_agent.response_models import ProductListResponse, TextResponse
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class ProductAgent:
 
         return "\n".join(hints) if hints else ""
 
-    async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
+    async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行商品查询（异步接口，符合LangGraph 1.x规范）
 
         企业级最佳实践：让 LLM 自己决定使用哪些工具，而不是硬编码工具调用。
@@ -116,14 +117,16 @@ class ProductAgent:
 
         Args:
             state: 当前多 Agent 状态
+            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
 
         Returns:
-            更新后的状态片段
+            更新后的状态片段（遵循统一的返回格式规范）
         """
         # 获取最新消息
         messages = state.messages
         if not messages:
             return {
+                "result": {},  # Agent执行结果（必需）
                 "messages": [
                     AIMessage(content="您好！我是商品查询助手，请问有什么可以帮您？")
                 ],
@@ -133,12 +136,12 @@ class ProductAgent:
         # 构建系统提示（包含任务链上下文）
         hints = self._build_system_prompt_hints(state)
         system_prompt = PRODUCT_AGENT_SYSTEM_PROMPT + hints
-        
+
         # 构建 Agent 消息
         # 使用最新的用户消息和最近的几轮对话
         # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
         cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=5)
-        
+
         agent_messages = [SystemMessage(content=system_prompt)]
         agent_messages.extend(cleaned_messages)
 
@@ -198,21 +201,47 @@ class ProductAgent:
                 followup_messages = agent_messages + [response] + tool_messages
                 final_response = await self.llm.ainvoke(followup_messages)
 
-            # 返回结果（只添加新的 AIMessage 和 ToolMessage）
-            result = {
-                "messages": messages + [response] + tool_messages + [final_response],
-                "current_agent": self.name,
-                "tools_used": state.tools_used + tool_used_info,
-                # 如果搜索到了产品，设置对话阶段为 product_selecting
-                "conversation_phase": "product_selecting" if structured_result and "products" in structured_result else state.conversation_phase,
-            }
+            # 返回结果（使用ResponseModel构建完整的前端数据）
+            # 企业级规范（2025-2026终极重构）：ResponseModel包含所有前端显示字段
+            if structured_result and "products" in structured_result:
+                # 【关键修复】使用工具返回的原始 text（structured_result["text"]）作为 content
+                # 而不是 LLM 重新生成的 final_response.content
+                # 这样前端可以看到工具返回的格式化商品列表
+                content_text = structured_result.get("text", final_response.content)
+                response_model = ProductListResponse(
+                    products=structured_result.get("products", []),
+                    total=structured_result.get("total", 0),
+                    query_summary=structured_result.get("query_summary", ""),
+                    content=content_text  # 使用工具返回的原始 text
+                )
+                result = {
+                    "result": structured_result,  # 必需：权威数据源
+                    "messages": messages + [response] + tool_messages + [final_response],  # 必需：新增消息
+                    "current_agent": self.name,
+                    "tools_used": state.tools_used + tool_used_info,
+                    "conversation_phase": "product_selecting",  # 设置对话阶段
+                    **response_model.to_full_response()
+                }
+            else:
+                # 使用TextResponse构建文本响应
+                response_model = TextResponse(content=final_response.content)
+                result = {
+                    "result": {"response": final_response.content},
+                    "messages": messages + [response] + tool_messages + [final_response],
+                    "current_agent": self.name,
+                    "tools_used": state.tools_used + tool_used_info,
+                    **response_model.to_full_response()
+                }
 
             return result
 
         # 无工具调用，直接返回响应
+        response_model = TextResponse(content=response.content)
         result = {
-            "messages": messages + [response],
+            "result": {"response": response.content},  # 必需字段：Agent执行结果
+            "messages": messages + [response],  # 必需字段：新增消息
             "current_agent": self.name,
+            **response_model.to_full_response()
         }
 
         return result

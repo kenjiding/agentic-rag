@@ -18,6 +18,7 @@ from src.tools.order_tools import get_order_tools
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.config import get_keywords_config
+from src.multi_agent.response_models import OrderListResponse, TextResponse, ConfirmationResponse, ErrorResponse
 from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
 
 logger = logging.getLogger(__name__)
@@ -384,6 +385,12 @@ class OrderAgent:
             for order in orders:
                 logger.info(f"  - 订单ID: {order.get('id')}, 订单号: {order.get('order_number')}, 状态: {order.get('status')}")
 
+            # 使用OrderListResponse构建完整响应（包含AI消息content）
+            response_model = OrderListResponse(
+                orders=orders,
+                total=len(orders),
+                content=order_text  # AI消息内容
+            )
             return {
                 "messages": messages + [ai_message_with_tool] + [tool_message] + [final_ai_message],
                 "current_agent": self.name,
@@ -391,7 +398,8 @@ class OrderAgent:
                     "agent": self.name,
                     "tool": "query_user_orders",
                     "args": {"user_phone": user_phone}
-                }]
+                }],
+                **response_model.to_full_response()
             }
         except Exception as e:
             logger.error(f"查询订单失败: {e}", exc_info=True)
@@ -439,9 +447,11 @@ class OrderAgent:
             result_data = self._parse_tool_result(prepare_result)
 
             if not result_data.get("can_cancel", False):
+                response_model = TextResponse(content=result_data.get("text", "无法取消订单"))
                 return {
-                    "messages": messages + [AIMessage(content=result_data.get("text", "无法取消订单"))],
+                    "messages": messages + [AIMessage(content=response_model.content)],
                     "current_agent": self.name,
+                    **response_model.to_full_response()
                 }
 
             display_message = result_data.get("text", "请确认是否取消订单")
@@ -461,6 +471,14 @@ class OrderAgent:
 
             logger.info(f"创建取消订单确认: confirmation_id={confirmation.confirmation_id}")
 
+            # 使用ConfirmationResponse构建完整响应（包含AI消息content）
+            response_model = ConfirmationResponse(
+                confirmation_id=confirmation.confirmation_id,
+                action_type="cancel_order",
+                display_message=display_message,
+                display_data=display_data,
+                content=display_message  # AI消息内容
+            )
             return {
                 "messages": messages + [AIMessage(content=display_message)],
                 "current_agent": self.name,
@@ -474,7 +492,8 @@ class OrderAgent:
                     "agent": self.name,
                     "tool": "prepare_cancel_order",
                     "args": {"order_id": order_id, "user_phone": user_phone}
-                }]
+                }],
+                **response_model.to_full_response()
             }
         except Exception as e:
             logger.error(f"prepare_cancel_order 失败: {e}", exc_info=True)
@@ -656,10 +675,13 @@ class OrderAgent:
         # 使用异步LLM调用提高性能
         final_response = await self.llm.ainvoke(followup_messages)
 
+        # 默认使用TextResponse
+        response_model = TextResponse(content=final_response.content)
         result = {
             "messages": messages + [response] + tool_messages + [final_response],
             "current_agent": self.name,
             "tools_used": state.tools_used + tool_used_info,
+            **response_model.to_full_response()
         }
 
         # 如果提取了 order_info，添加到结果中（供任务链使用）
@@ -685,6 +707,16 @@ class OrderAgent:
                 "display_data": confirmation.display_data,
             }
 
+            # 使用ConfirmationResponse覆盖默认的text类型（包含AI消息content）
+            confirmation_model = ConfirmationResponse(
+                confirmation_id=confirmation.confirmation_id,
+                action_type=confirmation.action_type,
+                display_message=confirmation.display_message,
+                display_data=confirmation.display_data,
+                content=final_response.content  # AI消息内容
+            )
+            result.update(confirmation_model.to_full_response())  # 更新所有前端字段
+
         return result
 
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
@@ -699,11 +731,13 @@ class OrderAgent:
         """
         messages = state.messages
         if not messages:
+            response_model = TextResponse(
+                content="您好！我是订单管理助手。查询订单需要提供手机号，请问有什么可以帮您？"
+            )
             return {
-                "messages": [
-                    AIMessage(content="您好！我是订单管理助手。查询订单需要提供手机号，请问有什么可以帮您？")
-                ],
+                "messages": [AIMessage(content=response_model.content)],
                 "current_agent": self.name,
+                **response_model.to_full_response()
             }
 
         # 获取最新消息
@@ -736,9 +770,11 @@ class OrderAgent:
                         # 如果订单创建失败，保留 confirmation_pending，让 AI 能够继续处理错误
                         if execution_success:
                             # 执行成功：清理 confirmation_pending，设置 conversation_phase 为 order_completed
+                            response_model = TextResponse(content=message)
                             return {
-                                "messages": messages + [AIMessage(content=message)],
+                                "messages": messages + [AIMessage(content=response_model.content)],
                                 "current_agent": self.name,
+                                **response_model.to_full_response(),
                                 "confirmation_pending": None,
                                 "conversation_phase": "order_completed" if result.action_type == "create_order" else "idle",
                             }
@@ -747,18 +783,20 @@ class OrderAgent:
                             # 添加错误提示消息，引导用户重新下单
                             error_message = f"{message}\n\n订单创建出错了，需要重新下单吗？"
                             logger.warning(f"订单创建失败，保留 confirmation_pending 以便 AI 处理错误: session={session_id}")
+                            response_model = TextResponse(content=error_message)
                             return {
-                                "messages": messages + [AIMessage(content=error_message)],
+                                "messages": messages + [AIMessage(content=response_model.content)],
                                 "current_agent": self.name,
+                                **response_model.to_full_response()
                                 # 不设置 confirmation_pending，保留原有的值
                             }
                     elif result.status == ConfirmationStatus.CANCELLED:
                         # 用户取消
+                        response_model = TextResponse(content="👌 已取消操作，请问还有其他需要帮助的吗？")
                         return {
-                            "messages": messages + [
-                                AIMessage(content="👌 已取消操作，请问还有其他需要帮助的吗？")
-                            ],
+                            "messages": messages + [AIMessage(content=response_model.content)],
                             "current_agent": self.name,
+                            **response_model.to_full_response(),
                             "confirmation_pending": None,
                         }
                 # result 为 None 表示用户输入不是确认响应

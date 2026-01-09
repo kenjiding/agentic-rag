@@ -1,0 +1,80 @@
+# Multi-Agent系统配置文件
+#
+# 此文件定义了所有Agent的���数据和路由配置。
+# 新增Agent时，只需在此文件中添加配置即可，无需修改代码。
+#
+# 2025-2026 企业级最佳实践：
+# - 声明式配置：所有Agent配置集中管理
+# - 路由即配置：通过配置定义Agent的行为和切换规则
+# - 开闭原则：新增Agent只需添加配置，不修改现有代码
+
+agents:
+  # RAG Agent - 知识检索Agent
+  - name: rag_agent
+    description: "知识检索专家 - 从向量数据库中检索相关信息并生成答案，适用于需要基于文档内容回答的问题"
+    enabled: true
+    priority: 10
+    route_config:
+      # RAG检索失败时可以降级到Chat Agent
+      can_handoff_to: [chat_agent]
+      on_complete: "finish"
+      # 允许升级：当RAG��案质量低时，系统可以自动切换到Chat Agent
+      allow_escalation: true
+    metadata:
+      category: "knowledge"
+      capabilities: ["retrieval", "generation", "web_search"]
+
+  # Chat Agent - 通用对话Agent
+  - name: chat_agent
+    description: "通用对话助手 - 处理一般性对话、问候、感谢等交流场景，支持工具调用"
+    enabled: true
+    priority: 0
+    route_config:
+      # Chat Agent是终点，不再切换到其他Agent
+      can_handoff_to: []
+      on_complete: "finish"
+      allow_escalation: false
+    metadata:
+      category: "general"
+      capabilities: ["conversation", "tool_calling"]
+
+  # Product Agent - 商品搜索Agent
+  - name: product_agent
+    description: "商品搜索专家 - 处理商品查询、搜索、比价等请求，支持多条件筛选"
+    enabled: true
+    priority: 20
+    route_config:
+      can_handoff_to: []
+      on_complete: "finish"
+      allow_escalation: false
+    metadata:
+      category: "business"
+      capabilities: ["product_search", "product_detail", "brand_query"]
+
+  # Order Agent - 订单管理Agent
+  - name: order_agent
+    description: "订单管理专家 - 处理订单查询、取消、创建等操作（含用户确认机制）"
+    enabled: true
+    priority: 20
+    route_config:
+      can_handoff_to: []
+      on_complete: "finish"
+      allow_escalation: false
+    metadata:
+      category: "business"
+      capabilities: ["order_query", "order_cancel", "order_create"]
+
+# 全局路由配置
+routing:
+  # Supervisor路由策略
+  supervisor:
+    # 默认路由：当Supervisor无法决策时使用的默认Agent
+    default_route: "chat_agent"
+    # 是否允许finish：Supervisor是否可以直接结束对话
+    allow_finish: true
+
+  # 最大迭代次数
+  max_iterations: 10
+
+  # 超时配置（秒）
+  timeout: 120

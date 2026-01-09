@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.state import MultiAgentState
 from src.agentic_rag.agentic_rag import AgenticRAG
+from src.multi_agent.response_models import TextResponse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ class RAGAgent(BaseAgent):
                 skip_intent_classification=True  # 从multi_agent进入，已做过意图识别
             )
     
-    async def execute(self, state: MultiAgentState) -> Dict[str, Any]:
+    async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """
         执行RAG搜索和生成
         
@@ -79,6 +80,7 @@ class RAGAgent(BaseAgent):
         
         Args:
             state: 当前的多Agent系统状态
+            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
             
         Returns:
             包含以下字段的字典：
@@ -137,11 +139,13 @@ class RAGAgent(BaseAgent):
             
             # 创建AI消息
             ai_message = AIMessage(content=answer)
-            
-            # 构建返回结果
+
+            # 使用TextResponse构建完整的前端数据
+            response_model = TextResponse(content=answer)
             result = {
                 "result": rag_result,
                 "messages": [ai_message],
+                **response_model.to_full_response(),
                 "metadata": {
                     "agent": self.name,
                     "question": user_message,
@@ -152,9 +156,9 @@ class RAGAgent(BaseAgent):
                     "web_search_used": rag_result.get("web_search_used", False)
                 }
             }
-            
+
             logger.info(f"RAG Agent执行完成，答案质量: {rag_result.get('answer_quality', 0.0):.2f}")
-            
+
             return result
             
         except Exception as e:
@@ -162,6 +166,7 @@ class RAGAgent(BaseAgent):
             return {
                 "result": None,
                 "messages": [AIMessage(content=f"执行RAG搜索时出现错误: {str(e)}")],
+                "response_type": "error",
                 "metadata": {"error": str(e)},
                 "error": str(e)
             }

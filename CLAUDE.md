@@ -1,5 +1,14 @@
 This is a production-grade multi-agent intelligent customer service system.
 
+## 要求
+ - 必须首先完全理解代码逻辑和架构后, 然后输出修改步骤后(但需要认真审查新增的功能代码是否是冗余的,或者其他功能已经存在了相关的功能, 不要引入重复的, 冗余的功能代码), 再使用企业级最佳实践开始有条理的修改
+ - 修改不能有补丁代码，不能有堆叠代码, 不要使用魔术代码, 包括不能使用魔术字符串, 不能使用hack代码临时解决问题
+ - 不需要写兼容代码, 不需要写向后兼容代码
+ - 不能只针对某个问题做兼容修复, 要通用的实现方案
+ - 必须是要从源头找到根源问题, 再从根源到发生问题的链路上解决问题
+ - 不要写重复的代码,代码需要一开始就设计好架构,然后按照功能去抽象和封装
+ - 对于中断,恢复机制的需求请使用langgraph 1.x的 interrupt和Command实现
+
 Project Context:
 - Domain: TV / E-commerce intelligent customer support
 - Architecture: Multi-Agent System
