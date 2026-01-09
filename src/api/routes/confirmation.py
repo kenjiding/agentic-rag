@@ -84,8 +84,6 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
                 # 【核心】使用 Command(resume=...) 恢复被 interrupt() 暂停的图
                 resume_command = Command(resume=resume_data)
 
-                logger.info(f"[interrupt] 调用 graph.astream(resume={resume_data})")
-
                 async for formatted in accumulate_and_format_state_updates(
                     graph.astream(
                         command=resume_command,
@@ -94,14 +92,23 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
                         session_id=session_id
                     )
                 ):
+                    # 【关键修复】过滤掉不可序列化的字段（如 messages 中的 LangChain 对象）
+                    if isinstance(formatted, dict) and "data" in formatted:
+                        data = formatted["data"]
+                        # 排除无法序列化的字段
+                        filtered_data = {
+                            k: v for k, v in data.items()
+                            if k != 'messages' and k != 'result'
+                        }
+                        formatted["data"] = filtered_data
+                    
                     json_str = json.dumps(formatted, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
 
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
-                logger.info(f"[interrupt] resume 流结束")
 
             except Exception as e:
-                logger.error(f"[interrupt] 流式执行失败: {e}", exc_info=True)
+                logger.error(f"流式执行失败: {e}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(

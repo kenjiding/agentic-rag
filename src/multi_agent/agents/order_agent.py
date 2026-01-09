@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
+from langgraph.types import interrupt
+from langgraph.errors import GraphInterrupt
 
 from src.tools.order_tools import get_order_tools
 from src.multi_agent.state import MultiAgentState
@@ -20,6 +22,11 @@ from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.config import get_keywords_config
 from src.multi_agent.response_models import OrderListResponse, TextResponse, ConfirmationResponse, ErrorResponse
 from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
+from src.multi_agent.interrupt_framework import (
+    create_confirmation_interrupt,
+    is_resume_confirm,
+    InterruptType
+)
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +261,157 @@ class OrderAgent:
                 return {"text": result}
         return result if isinstance(result, dict) else {}
 
+    async def _build_error_response(
+        self,
+        messages: list,
+        content: str,
+        session_id: str,
+        conversation_phase: str = "idle",
+        cleanup_confirmation: bool = True
+    ) -> Dict[str, Any]:
+        """构建错误/取消响应的通用方法
+        
+        Args:
+            messages: 当前消息列表
+            content: 响应内容
+            session_id: 用户会话ID
+            conversation_phase: 对话阶段（默认 "idle"）
+            cleanup_confirmation: 是否清理确认数据（默认 True）
+            
+        Returns:
+            更新后的状态片段
+        """
+        if cleanup_confirmation:
+            # 清理确认数据
+            await self.confirmation_manager.cancel_pending(session_id)
+        
+        response_model = TextResponse(content=content)
+        return {
+            "messages": [AIMessage(content=content)],  # 只返回新增消息
+            "current_agent": self.name,
+            "confirmation_pending": None,
+            "conversation_phase": conversation_phase,
+            **response_model.to_full_response()
+        }
+
+    def _normalize_items_to_json(self, items: Any) -> str:
+        """将 items 参数标准化为 JSON 字符串
+        
+        处理 items 参数的不同格式：
+        - 如果已经是 JSON 字符串，直接返回
+        - 如果是列表，转换为 JSON 字符串
+        - 其他类型，尝试转换为列表再编码
+        
+        Args:
+            items: items 参数（可能是字符串、列表或其他类型）
+            
+        Returns:
+            JSON 字符串格式的 items
+        """
+        if isinstance(items, str):
+            # 如果已经是 JSON 字符串，直接使用
+            return items
+        elif isinstance(items, list):
+            # 如果是列表，转换为 JSON 字符串
+            return json.dumps(items, ensure_ascii=False)
+        else:
+            # 其他类型，尝试转换为列表再编码
+            return json.dumps(list(items) if items else [], ensure_ascii=False)
+
+    async def _execute_confirmation_action(
+        self,
+        state: MultiAgentState,
+        action_type: str,
+        action_data: Dict[str, Any],
+        tool_name: str,
+        session_id: str,
+        success_phase: str = "idle"
+    ) -> Dict[str, Any]:
+        """执行确认操作的通用方法
+        
+        Args:
+            state: 当前多Agent状态
+            action_type: 操作类型（create_order 或 cancel_order）
+            action_data: 操作数据
+            tool_name: 工具名称（confirm_create_order 或 confirm_cancel_order）
+            session_id: 用户会话ID
+            success_phase: 成功后的对话阶段（create_order 使用 "order_completed"，其他使用 "idle"）
+            
+        Returns:
+            更新后的状态片段
+        """
+        messages = state.messages
+        
+        # 获取工具
+        confirm_tool = self._get_tool(tool_name)
+        if not confirm_tool:
+            raise ValueError(f"未找到 {tool_name} 工具")
+        
+        # 准备工具参数
+        if action_type == "create_order":
+            # 处理 items 参数
+            items_json = self._normalize_items_to_json(action_data.get("items", []))
+            tool_args = {
+                "user_phone": action_data.get("user_phone"),
+                "items": items_json,
+            }
+            if "notes" in action_data:
+                tool_args["notes"] = action_data.get("notes")
+        elif action_type == "cancel_order":
+            tool_args = {
+                "order_id": action_data.get("order_id"),
+                "user_phone": action_data.get("user_phone"),
+            }
+        else:
+            raise ValueError(f"未知的操作类型: {action_type}")
+        
+        # 执行工具
+        tool_result = await confirm_tool.ainvoke(tool_args)
+        result_data = self._parse_tool_result(tool_result)
+        
+        execution_success = result_data.get("success", False)
+        default_message = "订单创建完成" if action_type == "create_order" else "订单取消完成"
+        message = result_data.get("text", default_message)
+        
+        # 清理确认数据
+        await self.confirmation_manager.cancel_pending(session_id)
+        
+        # 构建返回结果
+        if execution_success:
+            # 执行成功
+            response_model = TextResponse(content=message)
+            return {
+                "messages": [AIMessage(content=message)],  # 只返回新增消息
+                "current_agent": self.name,
+                "confirmation_pending": None,
+                "conversation_phase": success_phase,
+                "tools_used": state.tools_used + [{
+                    "agent": self.name,
+                    "tool": tool_name,
+                    "args": tool_args
+                }],
+                **response_model.to_full_response()
+            }
+        else:
+            # 执行失败
+            if action_type == "create_order":
+                error_message = f"{message}\n\n订单创建出错了，需要重新下单吗？"
+            else:
+                error_message = message
+            response_model = TextResponse(content=error_message)
+            return {
+                "messages": [AIMessage(content=error_message)],  # 只返回新增消息
+                "current_agent": self.name,
+                "confirmation_pending": None,
+                "conversation_phase": "idle",
+                "tools_used": state.tools_used + [{
+                    "agent": self.name,
+                    "tool": tool_name,
+                    "args": tool_args
+                }],
+                **response_model.to_full_response()
+            }
+
     def _get_tool(self, tool_name: str):
         """获取指定名称的工具
 
@@ -392,7 +550,7 @@ class OrderAgent:
                 content=order_text  # AI消息内容
             )
             return {
-                "messages": messages + [ai_message_with_tool] + [tool_message] + [final_ai_message],
+                "messages": [ai_message_with_tool] + [tool_message] + [final_ai_message],  # 只返回新增消息
                 "current_agent": self.name,
                 "tools_used": state.tools_used + [{
                     "agent": self.name,
@@ -449,7 +607,7 @@ class OrderAgent:
             if not result_data.get("can_cancel", False):
                 response_model = TextResponse(content=result_data.get("text", "无法取消订单"))
                 return {
-                    "messages": messages + [AIMessage(content=response_model.content)],
+                    "messages": [AIMessage(content=response_model.content)],  # 只返回新增消息
                     "current_agent": self.name,
                     **response_model.to_full_response()
                 }
@@ -480,7 +638,7 @@ class OrderAgent:
                 content=display_message  # AI消息内容
             )
             return {
-                "messages": messages + [AIMessage(content=display_message)],
+                "messages": [AIMessage(content=display_message)],  # 只返回新增消息
                 "current_agent": self.name,
                 "confirmation_pending": {
                     "confirmation_id": confirmation.confirmation_id,
@@ -589,7 +747,7 @@ class OrderAgent:
             )
         else:
             result = {
-                "messages": messages + [response],
+                "messages": [response],  # 只返回新增消息
                 "current_agent": self.name,
             }
 
@@ -678,7 +836,7 @@ class OrderAgent:
         # 默认使用TextResponse
         response_model = TextResponse(content=final_response.content)
         result = {
-            "messages": messages + [response] + tool_messages + [final_response],
+            "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
             "current_agent": self.name,
             "tools_used": state.tools_used + tool_used_info,
             **response_model.to_full_response()
@@ -717,7 +875,152 @@ class OrderAgent:
             )
             result.update(confirmation_model.to_full_response())  # 更新所有前端字段
 
+            # 【核心修复】使用 interrupt() 中断图执行，等待用户确认
+            # 创建标准化的中断数据
+            interrupt_data = create_confirmation_interrupt(
+                action_type=confirmation_data["action_type"],
+                action_data=confirmation_data["action_data"],
+                display_message=confirmation_data["display_message"],
+                display_data=confirmation_data["display_data"],
+                confirmation_id=confirmation.confirmation_id
+            )
+            
+            # 【关键修复】将 result 中的所有前端展示信息添加到中断数据中
+            # 因为 interrupt() 抛出异常后，result 中的信息不会自动传递
+            # 需要将这些信息包含在 interrupt_data 中，以便前端正确显示
+            interrupt_data["confirmation_pending"] = result["confirmation_pending"]
+            interrupt_data["conversation_phase"] = result.get("conversation_phase", "order_creating")
+            interrupt_data["content"] = result.get("content", final_response.content)
+            interrupt_data["response_type"] = result.get("response_type", "confirmation")
+            interrupt_data["role"] = result.get("role", "assistant")
+            # 如果有 response_data，也包含进去
+            if "response_data" in result:
+                interrupt_data["response_data"] = result["response_data"]
+            
+            # 调用 interrupt() 中断执行
+            # 第一次调用（中断时）：会抛出 GraphInterrupt 异常
+            # 恢复执行时：会返回 resume_data 值
+            try:
+                resume_value = interrupt(interrupt_data)
+                # 如果 interrupt() 返回了值，说明这是恢复执行
+                # 恢复执行时，直接处理 resume 值并执行确认操作
+                resume_result = await self._handle_resume_execution(state, resume_value, session_id)
+                # 返回恢复执行的结果，不再继续执行后续代码
+                return resume_result
+            except GraphInterrupt as e:
+                # 第一次调用（中断时）：抛出 GraphInterrupt 异常
+                raise
+            except Exception as e:
+                # 记录其他异常
+                logger.error(f"interrupt() 调用失败: {e}", exc_info=True)
+                raise
+
         return result
+
+    async def _handle_resume_execution(
+        self,
+        state: MultiAgentState,
+        resume_value: Any,
+        session_id: str
+    ) -> Dict[str, Any]:
+        """处理恢复执行后的逻辑
+        
+        当用户确认/取消后，图恢复执行，interrupt() 返回 resume_data 值。
+        根据 resume_data 中的 confirmed 状态执行相应操作。
+        
+        Args:
+            state: 当前多Agent状态
+            resume_value: interrupt() 返回的 resume 值
+            session_id: 用户会话ID
+            
+        Returns:
+            更新后的状态片段
+        """
+        messages = state.messages
+        
+        # 解析 resume 值
+        confirmed = is_resume_confirm(resume_value)
+        
+        if confirmed is None:
+            # resume 值无效，取消操作
+            return await self._build_error_response(
+                messages=messages,
+                content="操作已取消，请重新开始",
+                session_id=session_id,
+                conversation_phase="idle"
+            )
+        
+        # 获取待确认操作信息（从 resume_value 或 state 中）
+        resume_dict = resume_value if isinstance(resume_value, dict) else {}
+        confirmation_id = resume_dict.get("confirmation_id")
+        
+        # 获取确认信息
+        confirmation = None
+        if confirmation_id:
+            confirmation = await self.confirmation_manager.get_confirmation(confirmation_id)
+        
+        if not confirmation:
+            # 确认信息不存在，可能已过期或被清理
+            return await self._build_error_response(
+                messages=messages,
+                content="确认信息已过期，请重新开始",
+                session_id=session_id,
+                conversation_phase="idle"
+            )
+        
+        action_type = confirmation.action_type
+        action_data = confirmation.action_data
+        
+        if not confirmed:
+            # 用户取消操作
+            return await self._build_error_response(
+                messages=messages,
+                content="👌 已取消操作，请问还有其他需要帮助的吗？",
+                session_id=session_id,
+                conversation_phase="idle"
+            )
+        
+        # 用户确认，执行操作
+        try:
+            if action_type == "create_order":
+                # 执行创建订单
+                return await self._execute_confirmation_action(
+                    state=state,
+                    action_type=action_type,
+                    action_data=action_data,
+                    tool_name="confirm_create_order",
+                    session_id=session_id,
+                    success_phase="order_completed"
+                )
+            elif action_type == "cancel_order":
+                # 执行取消订单
+                return await self._execute_confirmation_action(
+                    state=state,
+                    action_type=action_type,
+                    action_data=action_data,
+                    tool_name="confirm_cancel_order",
+                    session_id=session_id,
+                    success_phase="idle"
+                )
+            else:
+                # 未知的操作类型
+                return await self._build_error_response(
+                    messages=messages,
+                    content="未知的操作类型，请重新开始",
+                    session_id=session_id,
+                    conversation_phase="idle"
+                )
+                
+        except Exception as e:
+            # 执行失败
+            logger.error(f"执行操作失败: action_type={action_type}, error={e}", exc_info=True)
+            error_message = f"操作执行失败: {str(e)}"
+            return await self._build_error_response(
+                messages=messages,
+                content=error_message,
+                session_id=session_id,
+                conversation_phase="idle"
+            )
 
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行订单操作
@@ -743,7 +1046,9 @@ class OrderAgent:
         # 获取最新消息
         latest_message = messages[-1]
 
-        # 首先检查是否有待确认操作（通过 ConfirmationManager）
+        # 【已废弃】旧的确认机制（通过 ConfirmationManager 和文本解析）
+        # 现在使用 interrupt/resume 机制，恢复执行在 _handle_llm_tool_calls 中处理
+        # 这里只保留作为后备（用于文本确认）
         pending_confirmation = await self.confirmation_manager.get_pending_confirmation(session_id)
         if pending_confirmation and pending_confirmation.agent_name == self.name:
             # 有待确认操作，检查用户输入是否为确认响应
@@ -772,7 +1077,7 @@ class OrderAgent:
                             # 执行成功：清理 confirmation_pending，设置 conversation_phase 为 order_completed
                             response_model = TextResponse(content=message)
                             return {
-                                "messages": messages + [AIMessage(content=response_model.content)],
+                                "messages": [AIMessage(content=response_model.content)],  # 只返回新增消息
                                 "current_agent": self.name,
                                 **response_model.to_full_response(),
                                 "confirmation_pending": None,
@@ -785,7 +1090,7 @@ class OrderAgent:
                             logger.warning(f"订单创建失败，保留 confirmation_pending 以便 AI 处理错误: session={session_id}")
                             response_model = TextResponse(content=error_message)
                             return {
-                                "messages": messages + [AIMessage(content=response_model.content)],
+                                "messages": [AIMessage(content=response_model.content)],  # 只返回新增消息
                                 "current_agent": self.name,
                                 **response_model.to_full_response()
                                 # 不设置 confirmation_pending，保留原有的值
@@ -794,7 +1099,7 @@ class OrderAgent:
                         # 用户取消
                         response_model = TextResponse(content="👌 已取消操作，请问还有其他需要帮助的吗？")
                         return {
-                            "messages": messages + [AIMessage(content=response_model.content)],
+                            "messages": [AIMessage(content=response_model.content)],  # 只返回新增消息
                             "current_agent": self.name,
                             **response_model.to_full_response(),
                             "confirmation_pending": None,

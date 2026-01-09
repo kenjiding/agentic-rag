@@ -11,6 +11,7 @@ from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.tools.tool_registry import ToolRegistry
 from src.multi_agent.utils import clean_messages_for_llm
+from src.multi_agent.response_models import TextResponse, ErrorResponse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -126,9 +127,12 @@ class ChatAgent(ToolEnabledAgent):
                     break
             
             if not user_message:
+                response_model = TextResponse(content="未找到用户消息")
                 return {
-                    "result": None,
+                    "result": {"response": "未找到用户消息"},
                     "messages": [AIMessage(content="未找到用户消息")],
+                    "current_agent": self.name,
+                    **response_model.to_full_response(),
                     "metadata": {"error": "未找到用户消息"}
                 }
             
@@ -226,6 +230,7 @@ class ChatAgent(ToolEnabledAgent):
             result = {
                 "result": {"response": ai_message.content},
                 "messages": [ai_message],
+                "current_agent": self.name,
                 **response_model.to_full_response(),
                 "metadata": {
                     "agent": self.name,
@@ -239,10 +244,17 @@ class ChatAgent(ToolEnabledAgent):
             
         except Exception as e:
             logger.error(f"Chat Agent执行错误: {str(e)}", exc_info=True)
+            error_message = f"处理消息时出现错误: {str(e)}"
+            response_model = ErrorResponse(
+                error_message=error_message,
+                error_code="CHAT_AGENT_ERROR",
+                content=error_message
+            )
             return {
                 "result": None,
-                "messages": [AIMessage(content=f"处理消息时出现错误: {str(e)}")],
-                "response_type": "error",
+                "messages": [AIMessage(content=error_message)],
+                "current_agent": self.name,
+                **response_model.to_full_response(),
                 "metadata": {"error": str(e)},
                 "error": str(e)
             }

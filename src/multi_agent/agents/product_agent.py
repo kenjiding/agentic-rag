@@ -216,7 +216,7 @@ class ProductAgent:
                 )
                 result = {
                     "result": structured_result,  # 必需：权威数据源
-                    "messages": messages + [response] + tool_messages + [final_response],  # 必需：新增消息
+                    "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
                     "current_agent": self.name,
                     "tools_used": state.tools_used + tool_used_info,
                     "conversation_phase": "product_selecting",  # 设置对话阶段
@@ -227,7 +227,7 @@ class ProductAgent:
                 response_model = TextResponse(content=final_response.content)
                 result = {
                     "result": {"response": final_response.content},
-                    "messages": messages + [response] + tool_messages + [final_response],
+                    "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
                     "current_agent": self.name,
                     "tools_used": state.tools_used + tool_used_info,
                     **response_model.to_full_response()
@@ -239,7 +239,7 @@ class ProductAgent:
         response_model = TextResponse(content=response.content)
         result = {
             "result": {"response": response.content},  # 必需字段：Agent执行结果
-            "messages": messages + [response],  # 必需字段：新增消息
+            "messages": [response],  # 只返回新增消息
             "current_agent": self.name,
             **response_model.to_full_response()
         }

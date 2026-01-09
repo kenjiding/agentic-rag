@@ -171,15 +171,10 @@ class GraphNodeHandler:
             # 所有Agent统一接受session_id参数
             result = await agent.execute(state, session_id=session_id)
 
-            # 【关键修复】如果 agent 的 result 包含 text 字段，将其作为 AIMessage 添加到 messages 中
-            # 这样前端就能看到工具返回的原始文本（如商品列表、订单详情等）
+            # Agent 已经在 messages 中添加了所有需要的新消息
+            # result["result"] 中的字段只是用于存储数据，不应该再次添加为消息
             additional_messages = result.get("messages", [])
             agent_result = result.get("result")
-            if agent_result and isinstance(agent_result, dict) and "text" in agent_result:
-                # 将工具返回的 text 添加为 AIMessage
-                from langchain_core.messages import AIMessage
-                additional_messages.append(AIMessage(content=agent_result["text"]))
-                logger.info(f"[DEBUG] {agent_name} result.text 添加为 AIMessage: {agent_result['text'][:100]}...")
 
             # 合并基础状态更新
             updated_state = {
@@ -199,19 +194,6 @@ class GraphNodeHandler:
             for key, value in result.items():
                 if key not in ["messages", "result", "metadata"]:
                     updated_state[key] = value
-
-            # 调试日志：确认关键字段是否被正确合并
-            if agent_name == "product_agent":
-                logger.info(f"[DEBUG] product_agent updated_state keys: {list(updated_state.keys())}")
-                logger.info(f"[DEBUG] response_type in updated_state: {'response_type' in updated_state}")
-                logger.info(f"[DEBUG] content in updated_state: {'content' in updated_state}")
-                logger.info(f"[DEBUG] products in updated_state: {'products' in updated_state}")
-                if "response_type" in updated_state:
-                    logger.info(f"[DEBUG] response_type value: {updated_state['response_type']}")
-                if "content" in updated_state:
-                    logger.info(f"[DEBUG] content value: {updated_state['content'][:100] if updated_state['content'] else None}...")
-                if "products" in updated_state:
-                    logger.info(f"[DEBUG] products count: {len(updated_state.get('products', []))}")
 
             logger.info(f"{agent_name} 执行完成")
             return updated_state
@@ -237,26 +219,13 @@ class GraphNodeHandler:
                 if hasattr(first_element, 'value'):
                     # Interrupt 对象，获取其 value 属性
                     interrupt_value = first_element.value
-                    logger.info(f"{agent_name} 从 tuple 中提取 Interrupt.value")
                 elif isinstance(first_element, dict):
                     # 直接是字典
                     interrupt_value = first_element
-                    logger.info(f"{agent_name} 从 tuple 中提取 dict")
-
-            logger.info(f"{agent_name} 触发 interrupt: {type(interrupt_value)}")
-
-            # 【调试日志】记录 interrupt 信息
-            if isinstance(interrupt_value, dict):
-                logger.info(f"[graph_nodes] interrupt_value 是 dict，keys: {list(interrupt_value.keys())}")
-                if "confirmation_pending" in interrupt_value:
-                    logger.info(f"[graph_nodes] ✅ interrupt_value 包含 confirmation_pending")
-            else:
-                logger.warning(f"[graph_nodes] ❌ interrupt_value 不是 dict，type: {type(interrupt_value)}")
 
             # 【关键修复】GraphInterrupt 会被 LangGraph 捕获，不会将返回值包含在 stream 输出中
             # 所以我们需要重新抛出异常，让 LangGraph 处理
             # LangGraph 会将 interrupt 信息保存到 checkpointer，客户端可以通过 get_state() 获取
-            logger.info(f"[graph_nodes] 重新抛出 GraphInterrupt 异常，让 LangGraph 处理")
             raise
 
         except Exception as e:

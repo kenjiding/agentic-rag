@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.state import MultiAgentState
 from src.agentic_rag.agentic_rag import AgenticRAG
-from src.multi_agent.response_models import TextResponse
+from src.multi_agent.response_models import TextResponse, ErrorResponse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -97,9 +97,12 @@ class RAGAgent(BaseAgent):
                     break
             
             if not user_message:
+                response_model = TextResponse(content="未找到用户问题")
                 return {
                     "result": None,
-                    "messages": [],
+                    "messages": [AIMessage(content="未找到用户问题")],
+                    "current_agent": self.name,
+                    **response_model.to_full_response(),
                     "metadata": {"error": "未找到用户问题"},
                     "error": "未找到用户问题"
                 }
@@ -145,6 +148,7 @@ class RAGAgent(BaseAgent):
             result = {
                 "result": rag_result,
                 "messages": [ai_message],
+                "current_agent": self.name,
                 **response_model.to_full_response(),
                 "metadata": {
                     "agent": self.name,
@@ -163,10 +167,17 @@ class RAGAgent(BaseAgent):
             
         except Exception as e:
             logger.error(f"RAG Agent执行错误: {str(e)}", exc_info=True)
+            error_message = f"执行RAG搜索时出现错误: {str(e)}"
+            response_model = ErrorResponse(
+                error_message=error_message,
+                error_code="RAG_AGENT_ERROR",
+                content=error_message
+            )
             return {
                 "result": None,
-                "messages": [AIMessage(content=f"执行RAG搜索时出现错误: {str(e)}")],
-                "response_type": "error",
+                "messages": [AIMessage(content=error_message)],
+                "current_agent": self.name,
+                **response_model.to_full_response(),
                 "metadata": {"error": str(e)},
                 "error": str(e)
             }

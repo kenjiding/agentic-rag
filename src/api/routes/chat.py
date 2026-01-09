@@ -63,18 +63,41 @@ async def stream_chat_response(question: str, session_id: str):
                 if node_name in ("__start__", "__end__"):
                     continue
 
+                # 【核心修复】处理 __interrupt__ 节点
+                # 当 interrupt() 被调用时，LangGraph 生成一个 __interrupt__ 节点
+                # node_update 是一个 tuple，包含 Interrupt 对象
+                if node_name == "__interrupt__":
+                    # 从 tuple 中提取 Interrupt 对象
+                    interrupt_value = None
+                    if isinstance(node_update, tuple) and len(node_update) > 0:
+                        interrupt_obj = node_update[0]
+                        if hasattr(interrupt_obj, 'value'):
+                            interrupt_value = interrupt_obj.value
+                        elif isinstance(interrupt_obj, dict):
+                            interrupt_value = interrupt_obj
+                    elif isinstance(node_update, dict):
+                        interrupt_value = node_update
+                    
+                    # 格式化并发送 interrupt 信息
+                    if isinstance(interrupt_value, dict):
+                        # 构建前端数据，包含所有必要的信息
+                        frontend_data = {
+                            k: v for k, v in interrupt_value.items()
+                            if k != 'messages' and k != 'result'
+                        }
+                        # 添加步骤信息
+                        frontend_data["execution_steps"] = execution_steps
+                        frontend_data["step_details"] = step_details
+                        # 确保 response_type 设置为 confirmation
+                        if "response_type" not in frontend_data:
+                            frontend_data["response_type"] = "confirmation"
+                        
+                        yield f"data: {json.dumps({'type': 'state_update', 'data': frontend_data}, ensure_ascii=False)}\n\n"
+                        continue  # 跳过后续处理
+
                 # 格式化步骤名称和详情
                 step_name = format_step_name(node_name, node_update)
                 step_detail = format_step_detail(node_name, node_update)
-
-                # 调试日志：检查node_update是否包含前端所需字段
-                if node_name == "product_agent":
-                    logger.info(f"[DEBUG chat.py] product_agent node_update keys: {list(node_update.keys()) if isinstance(node_update, dict) else 'not dict'}")
-                    if isinstance(node_update, dict):
-                        logger.info(f"[DEBUG chat.py] response_type in node_update: {'response_type' in node_update}")
-                        logger.info(f"[DEBUG chat.py] products in node_update: {'products' in node_update}")
-                        if "response_type" in node_update:
-                            logger.info(f"[DEBUG chat.py] response_type value: {node_update.get('response_type')}")
 
                 if step_name:
                     is_new_step = add_step(step_name, step_detail)
