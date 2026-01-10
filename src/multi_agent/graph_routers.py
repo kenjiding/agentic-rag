@@ -37,6 +37,8 @@ class GraphRouter:
             return "product_agent"
         elif next_action == "order_management" and self.graph.enable_business_agents:
             return "order_agent"
+        elif next_action == "consultation" and self.graph.enable_business_agents:
+            return "consultation_agent"
         else:
             return "finish"
 

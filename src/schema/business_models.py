@@ -138,9 +138,9 @@ class ProductListResult(BaseModel):
 class OrderQueryArgs(BaseModel):
     """订单查询参数"""
 
-    user_phone: Optional[str] = Field(
+    user_id: Optional[str] = Field(
         default=None,
-        description="用户手机号"
+        description="用户ID（session_id）"
     )
     order_id: Optional[int] = Field(
         default=None,
@@ -216,8 +216,8 @@ class OrderCancelArgs(BaseModel):
         default=None,
         description="取消原因"
     )
-    user_phone: str = Field(
-        description="用户手机号，用于验证权限"
+    user_id: str = Field(
+        description="用户ID（session_id），用于验证权限"
     )
 
 
@@ -231,7 +231,7 @@ class OrderCreateItem(BaseModel):
 class OrderCreateArgs(BaseModel):
     """订单创建参数"""
 
-    user_phone: str = Field(description="用户手机号")
+    user_id: str = Field(description="用户ID（session_id）")
     items: List[OrderCreateItem] = Field(description="商品列表")
     notes: Optional[str] = Field(default=None, description="订单备注")
 

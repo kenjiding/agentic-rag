@@ -28,6 +28,7 @@ from src.multi_agent.agents.rag_agent import RAGAgent
 from src.multi_agent.agents.chat_agent import ChatAgent
 from src.multi_agent.agents.product_agent import ProductAgent
 from src.multi_agent.agents.order_agent import OrderAgent
+from src.multi_agent.agents.consultation_agent import ConsultationAgent
 from src.multi_agent.tools.tool_registry import ToolRegistry
 from src.multi_agent.agent_registry import (
     AgentRegistry,
@@ -171,6 +172,7 @@ class MultiAgentGraph:
         if self.enable_business_agents:
             agents.append(ProductAgent(llm=self.llm))
             agents.append(OrderAgent(llm=self.llm))
+            agents.append(ConsultationAgent(llm=self.llm))
 
         return agents
 

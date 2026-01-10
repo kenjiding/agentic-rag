@@ -2,12 +2,16 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.routes import api_router
 from src.api.graph_manager import get_graph
 from src.api.executors import register_confirmation_executors
 from src.confirmation import get_confirmation_manager
+
+# 首先加载环境变量（必须在导入其他模块之前）
+load_dotenv()
 
 # 配置日志级别
 logging.basicConfig(

@@ -7,8 +7,9 @@
 
 from .product_tools import get_product_tools
 from .order_tools import get_order_tools
+from .consultation_tools import get_consultation_tools
 
-__all__ = ["get_product_tools", "get_order_tools"]
+__all__ = ["get_product_tools", "get_order_tools", "get_consultation_tools"]
 
 
 def load_all_tools() -> list:
@@ -16,4 +17,5 @@ def load_all_tools() -> list:
     tools = []
     tools.extend(get_product_tools())
     tools.extend(get_order_tools())
+    tools.extend(get_consultation_tools())
     return tools

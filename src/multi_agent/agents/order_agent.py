@@ -40,48 +40,51 @@ ORDER_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 订单�
 3. 创建新订单（需要用户确认）
 
 工具使用指南：
-- query_user_orders: 查询用户订单列表
-  * user_phone: 用户手机号（必填）
-  * status: 按状态筛选（可选）
-  * limit: 返回数量限制
-
-- query_order_detail: 查询订单详细信息
-  * order_id: 订单ID（二选一）
-  * order_number: 订单号（二选一）
+- query_order: 统一的订单查询工具
+  * user_id: 系统会自动填充为当前 session_id，你不需要提供此参数（工具定义要求，但会被系统自动覆盖）
+  * order_id: 订单ID（可选），支持订单号格式如ORD123456或纯数字字符串如'123'
+    - 如果提供 order_id：优先查询特定订单详情，并验证订单归属权限
+    - 如果不提供 order_id：查询用户所有订单列表
+  * status: 订单状态筛选（仅在查询所有订单时生效，可选）
+  * limit: 返回结果数量限制（仅在查询所有订单时生效）
 
 取消订单流程（两步）：
 1. prepare_cancel_order: 准备取消，显示确认信息
-   * order_id: 订单ID
-   * user_phone: 用户手机号
+   * order_id: 订单ID（必填）
    * reason: 取消原因（可选）
+   * user_id: 系统会自动填充为当前 session_id，你不需要提供此参数
+   * 注意：系统会自动验证订单归属
 2. confirm_cancel_order: 用户确认后执行取消
-   * order_id: 订单ID
-   * user_phone: 用户手机号
+   * order_id: 订单ID（必填）
+   * user_id: 系统会自动填充为当前 session_id，你不需要提供此参数
+   * 注意：系统会自动验证订单归属
 
 创建订单流程（两步）：
 1. prepare_create_order: 准备创建，显示确认信息
-   * user_phone: 用户手机号
    * items: 商品列表 JSON，如: [{"product_id": 1, "quantity": 2}]
    * notes: 备注（可选）
+   * user_id: 系统会自动填充为当前 session_id，你不需要提供此参数（工具定义要求，但会被系统自动覆盖）
+   * 注意：系统会自动识别用户身份
 2. confirm_create_order: 用户确认后执行创建
-   * 同上参数
+   * items: 商品列表 JSON
+   * notes: 备注（可选）
+   * user_id: 系统会自动填充为当前 session_id，你不需要提供此参数
 
 重要注意事项：
 - 取消和创建订单前必须先调用 prepare_* 方法展示确认信息
 - 用户明确确认（说"确认"、"是"、"好的"等）后，才调用 confirm_* 方法
 - 如果用户说"不"、"取消"等，则中止操作
-- 需要用户提供手机号来验证身份
+- **用户已登录，无需提供手机号，系统会自动从session中获取用户信息**
 
 上下文理解（重要）：
-- 用户可能分多轮提供信息（如先选择商品，后提供手机号、地址等）
+- 用户可能分多轮提供信息（如先选择商品，后确认购买等）
 - **必须仔细分析完整的对话历史**，从所有历史消息中提取用户已提供的信息
-- **如果工具所需的参数（如 user_phone、items、order_id 等）在对话历史中已经出现过，必须直接使用，不要重复询问**
+- **如果工具所需的参数（如 items、order_id 等）在对话历史中已经出现过，必须直接使用，不要重复询问**
 - 提取信息的优先级：
-  1. 首先检查对话历史中用户明确提供的信息（如"我的手机号是138..."、"我要买3个"等）
-  2. 其次检查上下文信息（entities）
+  1. 首先检查对话历史中用户明确提供的信息（如"我要买3个"、"订单ID是123"等）
+  2. 其次检查上下文信息（entities，如 product_id、order_id 等）
   3. 如果都没有，才询问用户
 - 特别关注任务链上下文：如果处于多步骤流程中，要结合之前的步骤结果来理解用户意图
-- 示例：如果用户之前说过"我的手机号是13444444343"，后续需要手机号时，必须从历史消息中提取使用，不要再次询问
 
 回复风格：
 - 使用友好的语气，用 emoji 让回复更生动
@@ -178,24 +181,31 @@ class OrderAgent:
         return entities.get(key, default)
 
     def _find_order_id_from_context(self, state: MultiAgentState, messages: list) -> int | None:
-        """从上下文中查找订单ID
+        """从上下文中查找订单ID（数据库主键，整数）
 
         查找顺序：
-        1. entities 中的 order_id
-        2. agent_results 中的单一订单
-        3. 消息历史中的 ToolMessage 中的单一订单
+        1. entities 中的 order_id（可能是字符串格式的订单号，需要转换）
+        2. agent_results 中的单一订单（数据库主键ID）
+        3. 消息历史中的 ToolMessage 中的单一订单（数据库主键ID）
 
         Args:
             state: 多Agent状态
             messages: 消息列表
 
         Returns:
-            订单ID，如果未找到返回 None
+            订单ID（数据库主键，整数），如果未找到返回 None
         """
         # 首先从 entities 中获取
         order_id = self._get_entity(state, "order_id")
         if order_id:
-            return int(order_id)
+            # 如果是纯数字字符串，直接转换为整数（数据库主键ID）
+            if isinstance(order_id, str) and order_id.isdigit():
+                return int(order_id)
+            # 如果是字符串格式的订单号（如 "ORD465577"），需要通过查询数据库获取主键ID
+            # 这里返回 None，让调用方通过查询订单详情获取数据库主键ID
+            # 注意：这需要在 _handle_cancel_intent 中处理
+            logger.info(f"检测到字符串格式的订单号: {order_id}，需要通过查询获取数据库主键ID")
+            return None
 
         # 从 agent_results 中查找
         order_result = state.agent_results.get("order_agent", {})
@@ -203,23 +213,67 @@ class OrderAgent:
             orders = order_result.get("orders", [])
             if orders and len(orders) == 1:
                 order_id = orders[0].get("id")
-                logger.info(f"从 agent_results 获取到单一订单: id={order_id}")
-                return order_id
+                if order_id:
+                    logger.info(f"从 agent_results 获取到单一订单: id={order_id}")
+                    return int(order_id) if isinstance(order_id, (int, str)) and str(order_id).isdigit() else None
 
         # 从消息历史中的 ToolMessage 查找
         for msg in reversed(messages):
             if isinstance(msg, ToolMessage):
                 try:
                     tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-                    if isinstance(tool_result, dict) and "orders" in tool_result:
-                        orders = tool_result.get("orders", [])
-                        if orders and len(orders) == 1:
-                            order_id = orders[0].get("id")
-                            logger.info(f"从历史消息获取到单一订单: id={order_id}")
-                            return order_id
+                    if isinstance(tool_result, dict):
+                        # 优先查找单个订单详情
+                        if "order" in tool_result and isinstance(tool_result["order"], dict):
+                            order_id = tool_result["order"].get("id")
+                            if order_id:
+                                logger.info(f"从历史消息（订单详情）获取到订单: id={order_id}")
+                                return int(order_id) if isinstance(order_id, (int, str)) and str(order_id).isdigit() else None
+                        # 其次查找订单列表
+                        if "orders" in tool_result:
+                            orders = tool_result.get("orders", [])
+                            if orders and len(orders) == 1:
+                                order_id = orders[0].get("id")
+                                if order_id:
+                                    logger.info(f"从历史消息（订单列表）获取到单一订单: id={order_id}")
+                                    return int(order_id) if isinstance(order_id, (int, str)) and str(order_id).isdigit() else None
                 except (json.JSONDecodeError, TypeError):
                     continue
 
+        return None
+    
+    def _resolve_order_id_to_db_key(self, order_id_str: str, session_id: str) -> int | None:
+        """将订单号（字符串格式）转换为数据库主键ID（整数）
+        
+        通过查询订单详情获取数据库主键ID。
+        
+        Args:
+            order_id_str: 订单号（字符串格式，如 "ORD465577"）
+            session_id: 会话ID（用于权限验证）
+            
+        Returns:
+            数据库主键ID（整数），如果未找到返回 None
+        """
+        from src.tools.order_tools import query_order
+        
+        try:
+            # 同步调用统一的订单查询工具
+            result = query_order.invoke({
+                "user_id": session_id,
+                "order_id": order_id_str
+            })
+            
+            result_data = self._parse_tool_result(result)
+            # 统一 tool 返回格式：如果有 order_id，返回 order 字段和 orders 数组
+            order = result_data.get("order") or (result_data.get("orders", [{}])[0] if result_data.get("orders") else None)
+            
+            if order and order.get("id"):
+                db_id = order.get("id")
+                logger.info(f"通过订单号 {order_id_str} 查询到数据库主键ID: {db_id}")
+                return int(db_id) if isinstance(db_id, (int, str)) and str(db_id).isdigit() else None
+        except Exception as e:
+            logger.error(f"查询订单详情失败（订单号转主键ID）: {e}", exc_info=True)
+        
         return None
 
     def _find_order_info_from_messages(self, messages: list, order_id: int) -> Dict[str, Any] | None:
@@ -348,20 +402,24 @@ class OrderAgent:
             raise ValueError(f"未找到 {tool_name} 工具")
         
         # 准备工具参数
+        # 【重要】始终使用真实的 session_id，覆盖 action_data 中可能存在的错误值
+        # 这样可以确保即使用户在准备阶段错误地传递了 "seesion_id" 等字符串，也能被纠正
         if action_type == "create_order":
             # 处理 items 参数
             items_json = self._normalize_items_to_json(action_data.get("items", []))
             tool_args = {
-                "user_phone": action_data.get("user_phone"),
+                "user_id": session_id,  # 强制使用真实的 session_id，忽略 action_data 中的值
                 "items": items_json,
             }
             if "notes" in action_data:
                 tool_args["notes"] = action_data.get("notes")
+            logger.info(f"✅ [ORDER_AGENT] 确认创建订单，使用 session_id: {session_id}")
         elif action_type == "cancel_order":
             tool_args = {
                 "order_id": action_data.get("order_id"),
-                "user_phone": action_data.get("user_phone"),
+                "user_id": session_id,  # 强制使用真实的 session_id，忽略 action_data 中的值
             }
+            logger.info(f"✅ [ORDER_AGENT] 确认取消订单，使用 session_id: {session_id}")
         else:
             raise ValueError(f"未知的操作类型: {action_type}")
         
@@ -459,103 +517,113 @@ class OrderAgent:
             text += f"\n订单号: {order.get('order_number')} - {status_emoji} - ¥{order.get('total_amount', 0):.2f}"
         return text
 
-    def _detect_intent(self, content: str) -> Dict[str, bool]:
-        """检测用户意图
+    def _detect_order_intent(self, state: MultiAgentState) -> Dict[str, bool]:
+        """基于意图识别结果检测订单相关意图
+
+        完全依赖意图识别节点的结果，从 state.query_intent 和 state.entities 中提取订单意图信息。
+        不再使用关键词匹配，所有意图判断都在意图识别阶段完成。
 
         Args:
-            content: 用户输入内容
+            state: 多Agent状态（包含意图识别结果）
 
         Returns:
-            包含意图检测结果的字典
+            包含意图检测结果的字典：{"is_query": bool, "is_cancel": bool}
         """
-        keywords_config = get_keywords_config()
+        query_intent = state.query_intent or {}
+        entities = state.entities or {}
         
-        # 使用正则表达式模式匹配意图
-        def _match_intent(patterns: List[str]) -> bool:
-            """匹配意图：使用正则表达式模式匹配"""
-            if not patterns:
-                return False
-            
-            # 合并所有模式为一个正则表达式（用 | 连接）
-            combined_pattern = '|'.join(patterns)
-            return bool(re.search(combined_pattern, content, re.IGNORECASE))
+        # 从 entities 中获取 order_id
+        order_id = entities.get("order_id")
+        
+        # 从 query_intent 中获取 reasoning（包含业务意图标识）
+        reasoning = query_intent.get("reasoning", "").lower() if query_intent else ""
+        
+        # 基于 reasoning 中的业务意图标识判断（意图识别节点已在 prompt 中要求明确标识）
+        is_query = "订单查询意图" in reasoning
+        is_cancel = "订单取消意图" in reasoning
+        
+        # 如果 reasoning 中没有明确标识但有 order_id，则基于实体和意图类型进行推断
+        # 如果提取到 order_id，通常默认是查询意图（除非明确标识为取消意图）
+        if order_id and not is_query and not is_cancel:
+            # 有订单号但意图不明确，默认视为查询意图
+            is_query = True
         
         return {
-            "is_query": _match_intent(
-                getattr(keywords_config, 'query_order_patterns', [])
-            ),
-            "is_cancel": _match_intent(
-                getattr(keywords_config, 'cancel_order_patterns', [])
-            ),
+            "is_query": is_query,
+            "is_cancel": is_cancel,
         }
 
     async def _handle_query_intent(
-        self, state: MultiAgentState, messages: list, content: str
+        self, state: MultiAgentState, messages: list, content: str, session_id: str
     ) -> Dict[str, Any] | None:
         """处理查询订单意图
+
+        使用统一的 query_order 工具，业务逻辑已收敛到 tool 中。
+        - 如果提供了 order_id：tool 会优先查询特定订单并验证权限
+        - 如果没有提供 order_id：tool 会查询用户所有订单
 
         Args:
             state: 多Agent状态
             messages: 消息列表
             content: 用户输入内容
+            session_id: 会话ID（作为用户标识）
 
         Returns:
             如果成功处理返回结果字典，否则返回 None
         """
-        logger.info(f"检测到查询订单意图: {content[:50]}...")
+        logger.info(f"检测到查询订单意图: {content[:50]}...，使用session_id: {session_id}")
 
-        user_phone = self._get_entity(state, "user_phone")
-        if not user_phone:
-            logger.info("查询意图但缺少手机号，继续正常处理")
-            return None
+        # 从意图识别结果中提取 order_id
+        entities = state.entities or {}
+        order_id = entities.get("order_id")
 
-        query_tool = self._get_tool("query_user_orders")
+        query_tool = self._get_tool("query_order")
         if not query_tool:
-            logger.warning("未找到 query_user_orders 工具")
+            logger.warning("未找到 query_order 工具")
             return None
 
         try:
+            # 调用统一的查询工具，业务逻辑在 tool 中处理
             query_result = await query_tool.ainvoke({
-                "user_phone": user_phone,
+                "user_id": session_id,
+                "order_id": order_id,  # 可选，如果提供则查询特定订单，否则查询所有订单
                 "status": None,
                 "limit": 20
             })
 
             result_data = self._parse_tool_result(query_result)
             orders = result_data.get("orders", [])
+            order_text = result_data.get("text", "")
 
             # 构建消息序列
-            tool_call_id = f"call_query_{user_phone}_{hash(content) % 100000}"
+            tool_call_id = f"call_query_{session_id}_{hash(content) % 100000}"
             ai_message_with_tool = AIMessage(
                 content="",
                 tool_calls=[{
                     "id": tool_call_id,
-                    "name": "query_user_orders",
-                    "args": {"user_phone": user_phone, "status": None, "limit": 20}
+                    "name": "query_order",
+                    "args": {"user_id": session_id, "order_id": order_id, "status": None, "limit": 20}
                 }]
             )
 
             tool_message = ToolMessage(content=query_result, tool_call_id=tool_call_id)
-            order_text = self._build_order_list_text(orders)
             final_ai_message = AIMessage(content=order_text)
 
-            logger.info(f"查询完成: 找到{len(orders)}个订单")
-            for order in orders:
-                logger.info(f"  - 订单ID: {order.get('id')}, 订单号: {order.get('order_number')}, 状态: {order.get('status')}")
+            logger.info(f"查询订单完成: 找到{len(orders)}个订单，order_id={order_id}")
 
             # 使用OrderListResponse构建完整响应（包含AI消息content）
             response_model = OrderListResponse(
                 orders=orders,
                 total=len(orders),
-                content=order_text  # AI消息内容
+                content=order_text
             )
             return {
-                "messages": [ai_message_with_tool] + [tool_message] + [final_ai_message],  # 只返回新增消息
+                "messages": [ai_message_with_tool] + [tool_message] + [final_ai_message],
                 "current_agent": self.name,
                 "tools_used": state.tools_used + [{
                     "agent": self.name,
-                    "tool": "query_user_orders",
-                    "args": {"user_phone": user_phone}
+                    "tool": "query_order",
+                    "args": {"user_id": session_id, "order_id": order_id}
                 }],
                 **response_model.to_full_response()
             }
@@ -577,16 +645,27 @@ class OrderAgent:
         Returns:
             如果成功处理返回结果字典，否则返回 None
         """
-        logger.info(f"检测到取消订单意图: {content[:50]}...")
+        logger.info(f"检测到取消订单意图: {content[:50]}...，使用session_id: {session_id}")
 
         order_id = self._find_order_id_from_context(state, messages)
-        user_phone = self._get_entity(state, "user_phone")
 
-        if not order_id or not user_phone:
-            logger.info(f"取消意图但缺少信息: order_id={order_id}, user_phone={user_phone}，使用 LLM 处理")
+        # 如果未找到数据库主键ID，但 entities 中有字符串格式的订单号，尝试转换
+        if not order_id:
+            entities = state.entities or {}
+            order_id_str = entities.get("order_id")
+            if order_id_str and isinstance(order_id_str, str) and not order_id_str.isdigit():
+                # 字符串格式的订单号（如 "ORD465577"），需要通过查询获取数据库主键ID
+                logger.info(f"检测到字符串格式的订单号: {order_id_str}，正在查询数据库主键ID...")
+                order_id = self._resolve_order_id_to_db_key(order_id_str, session_id)
+                if not order_id:
+                    logger.warning(f"无法将订单号 {order_id_str} 转换为数据库主键ID，使用 LLM 处理")
+                    return None
+
+        if not order_id:
+            logger.info(f"取消意图但缺少订单ID，使用 LLM 处理")
             return None
 
-        logger.info(f"调用 prepare_cancel_order: order_id={order_id}, phone={user_phone}")
+        logger.info(f"调用 prepare_cancel_order: order_id={order_id}, session_id={session_id}")
 
         order_info = self._find_order_info_from_messages(messages, order_id)
         prepare_tool = self._get_tool("prepare_cancel_order")
@@ -598,7 +677,7 @@ class OrderAgent:
         try:
             prepare_result = await prepare_tool.ainvoke({
                 "order_id": int(order_id),
-                "user_phone": user_phone,
+                "user_id": session_id,  # 使用 session_id 作为用户标识
                 "reason": "用户请求取消"
             })
 
@@ -621,7 +700,7 @@ class OrderAgent:
             confirmation = await self.confirmation_manager.request_confirmation(
                 session_id=session_id,
                 action_type="cancel_order",
-                action_data={"order_id": int(order_id), "user_phone": user_phone},
+                action_data={"order_id": int(order_id), "user_id": session_id},
                 agent_name=self.name,
                 display_message=display_message,
                 display_data=display_data
@@ -649,7 +728,7 @@ class OrderAgent:
                 "tools_used": state.tools_used + [{
                     "agent": self.name,
                     "tool": "prepare_cancel_order",
-                    "args": {"order_id": order_id, "user_phone": user_phone}
+                    "args": {"order_id": order_id, "user_id": session_id}
                 }],
                 **response_model.to_full_response()
             }
@@ -689,20 +768,20 @@ class OrderAgent:
                 if value is not None:
                     hints.append(f"- {key}: {value}")
 
-        # 【场景处理】当用户提供手机号且有 product_id 时
-        if all_entities.get("product_id") and all_entities.get("user_phone"):
-            hints.append("\n=== 当前场景：订单创建 ===")
-            hints.append("检测到用户已选定产品（product_id存���）并提供了手机号（user_phone存在）。")
+        # 【场景处理】当有 order_id 时（查询订单详情）
+        if all_entities.get("order_id"):
+            hints.append("\n=== 当前场景：查询订单详情 ===")
+            hints.append("检测到用户提供了订单ID（订单号），应该调用 query_order 工具查询订单详情。")
+            hints.append(f"- 订单ID: {all_entities.get('order_id')}（使用 order_id 参数，字符串类型）")
+            hints.append("注意：query_order 工具接受 user_id（必填）和 order_id（可选）参数。如果提供 order_id，会优先查询特定订单并验证权限；如果不提供 order_id，会查询用户所有订单。")
+
+        # 【场景处理】当有 product_id 时（用户已登录，无需手机号）
+        if all_entities.get("product_id"):
+            hints.append("\n=== 当前场景：可以创建订单 ===")
+            hints.append("检测到用户已选定产品（product_id存在）。用户已登录，系统会自动识别用户身份。")
             hints.append("你应该立即调用 prepare_create_order 工具来创建订单，不需要再询问用户。")
             hints.append(f"- 产品ID: {all_entities.get('product_id')}")
-            hints.append(f"- 手机号: {all_entities.get('user_phone')}")
             hints.append(f"- 数量: {all_entities.get('quantity', 1)}")
-        # 【场景处理】当有 product_id 但没有 user_phone 时
-        elif all_entities.get("product_id") and not all_entities.get("user_phone"):
-            hints.append("\n=== 当前场景：等待用户信息 ===")
-            hints.append("检测到用户已选定产品（product_id存在），但还缺少手机号。")
-            hints.append("你应该询问用户的手机号，以便创建订单。")
-            hints.append(f"- 产品ID: {all_entities.get('product_id')}")
 
         hints.append("\n请根据对话历史、上下文信息和工具描述，判断是否可以执行操作，或需要向用户询问什么信息。")
 
@@ -784,8 +863,24 @@ class OrderAgent:
             if not tool:
                 continue
 
+            # 自动注入正确的 session_id，修复 LLM 可能错误传递的 user_id 参数
+            # 所有需要 user_id 的订单工具都应该使用真实的 session_id
+            tool_args = dict(tool_call["args"])
+            tools_requiring_user_id = [
+                "prepare_create_order",
+                "confirm_create_order",
+                "query_order",
+                "prepare_cancel_order",
+                "confirm_cancel_order",
+            ]
+            
+            if tool_call["name"] in tools_requiring_user_id:
+                # 始终使用真实的 session_id，覆盖 LLM 可能错误传递的值（如字符串 "seesion_id"）
+                tool_args["user_id"] = session_id
+                logger.info(f"✅ [ORDER_AGENT] 自动注入 session_id 到工具 {tool_call['name']}: {session_id}")
+
             try:
-                tool_result = await tool.ainvoke(tool_call["args"])
+                tool_result = await tool.ainvoke(tool_args)
 
                 # 检查是否需要确认
                 if tool_call["name"] in ["prepare_cancel_order", "prepare_create_order"]:
@@ -793,7 +888,7 @@ class OrderAgent:
                     parsed_result = self._parse_tool_result(tool_result)
                     confirmation_data = {
                         "action_type": tool_call["name"].replace("prepare_", ""),
-                        "action_data": tool_call["args"],
+                        "action_data": tool_args,  # 使用修正后的参数（包含正确的 user_id）
                         "display_message": parsed_result.get("text", "请确认操作"),
                         "display_data": {
                             "items": parsed_result.get("items"),
@@ -806,8 +901,8 @@ class OrderAgent:
                     # 通用方案：从工具调用参数和结果中提取，不硬编码字段检查
                     if tool_call["name"] == "prepare_create_order":
                         order_info = {
-                            "user_phone": tool_call["args"].get("user_phone"),
-                            "items": tool_call["args"].get("items"),
+                            "user_id": tool_args.get("user_id", session_id),  # 使用修正后的参数中的 user_id
+                            "items": tool_args.get("items"),
                             "items_data": parsed_result.get("items"),
                             "total_amount": parsed_result.get("total_amount"),
                             "text": parsed_result.get("text", "订单信息已准备"),
@@ -822,7 +917,7 @@ class OrderAgent:
                 tool_used_info.append({
                     "agent": self.name,
                     "tool": tool_call["name"],
-                    "args": tool_call["args"],
+                    "args": tool_args,  # 记录修正后的参数
                 })
             except Exception as e:
                 tool_messages.append(
@@ -1120,12 +1215,12 @@ class OrderAgent:
         # 获取用户输入内容
         latest_content = latest_message.content if hasattr(latest_message, "content") else ""
 
-        # 检测用户意图
-        intent = self._detect_intent(latest_content)
+        # 基于意图识别结果检测订单相关意图（完全依赖意图识别节点的结果）
+        intent = self._detect_order_intent(state)
 
         # 处理查询订单意图
         if intent["is_query"]:
-            result = await self._handle_query_intent(state, messages, latest_content)
+            result = await self._handle_query_intent(state, messages, latest_content, session_id)
             if result:
                 # 【关键修复】确保清理旧的 confirmation_pending
                 if "confirmation_pending" not in result:

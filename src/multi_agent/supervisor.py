@@ -37,11 +37,11 @@ class RoutingDecision(BaseModel):
     1. 当next_action为"finish"时，selected_agent必须为None
     2. 当selected_agent不为None时，next_action不能为"finish"
     """
-    next_action: Literal["rag_search", "chat", "product_search", "order_management", "finish"] = Field(
+    next_action: Literal["rag_search", "chat", "product_search", "order_management", "consultation", "finish"] = Field(
         ...,
-        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，finish表示结束。注意：如果设置为finish，则selected_agent必须为null。"
+        description="下一步行动：rag_search表示需要RAG搜索，chat表示一般对话，product_search表示商品搜索，order_management表示订单管理，consultation表示深度咨询（产品对比、适配性确认等），finish表示结束。注意：如果设置为finish，则selected_agent必须为null。"
     )
-    selected_agent: Optional[Literal["rag_agent", "chat_agent", "product_agent", "order_agent"]] = Field(
+    selected_agent: Optional[Literal["rag_agent", "chat_agent", "product_agent", "order_agent", "consultation_agent"]] = Field(
         None,
         description="选中的Agent名称。CRITICAL CONSTRAINT: 如果next_action为finish，则selected_agent必须为null（None）。否则，必须指定一个有效的Agent名称。"
     )
@@ -189,90 +189,13 @@ class SupervisorAgent:
                     "confidence": 0.0
                 }
 
-            # 【任务完成检测】检查是否需要清理状态
-            state_updates = self._check_and_cleanup_completed_task(state, user_message)
-            if state_updates:
-                # 需要清理状态，先返回清理后的状态，不进行路由
-                # 下一次请求会使用清理后的状态进行路由
-                logger.info(f"【任务完成】检测到任务完成，清理状态: {state_updates}")
-                return {
-                    "next_action": "chat",
-                    "selected_agent": "chat_agent",
-                    "routing_reason": "任务已完成，清理临时状态",
-                    "confidence": 1.0,
-                    **state_updates  # 包含 entities 清理、conversation_phase 重置等
-                }
-
-            # 执行 LLM 路由决策
+            # 执行 LLM 路由决策（由 LLM 智能判断是否需要结束对话或清理状态）
             llm_result = await self._do_llm_routing(state, user_message)
             return llm_result
 
         except Exception as e:
             logger.error(f"Supervisor路由决策错误: {str(e)}", exc_info=True)
             return await self._fallback_routing_with_llm(self._extract_user_message(state) or "")
-
-    def _check_and_cleanup_completed_task(self, state: MultiAgentState, user_message: str) -> Dict[str, Any]:
-        """
-        检查任务是否完成，并清理相关状态
-
-        任务完成的信号：
-        1. conversation_phase 为 order_completed
-        2. 没有 confirmation_pending（订单已确认完成）
-        3. 用户消息表示对话结束（感谢、再见等）或是一般性对话
-
-        Args:
-            state: 当前的多Agent系统状态
-            user_message: 用户消息
-
-        Returns:
-            如果需要清理状态，返回包含清理后字段的字典；否则返回空字典
-        """
-        # 对话结束关键词（感谢、再见等）
-        closing_keywords = [
-            "谢谢", "感谢", "多谢", "好的", "知道了", "了解了",
-            "再见", "拜拜", "没事了", "可以了", "行了",
-            "thank", "thanks", "ok", "okay", "bye", "goodbye"
-        ]
-
-        user_message_lower = user_message.lower().strip()
-        is_closing = any(keyword in user_message_lower for keyword in closing_keywords)
-
-        current_phase = state.conversation_phase
-        has_pending_confirmation = state.confirmation_pending is not None
-
-        # 检测条件：
-        # 1. 当前阶段是 order_completed（订单刚完成）
-        # 2. 没有待确认操作
-        # 3. 用户消息表示对话结束 OR 用户说"谢谢你的帮助"这类确认完成的话
-        if (current_phase == "order_completed" and
-            not has_pending_confirmation and
-            is_closing):
-            # 清理临时 entities
-            entities_to_clear = ["product_id", "user_phone", "search_keyword", "quantity"]
-            cleaned_entities = {k: v for k, v in state.entities.items() if k not in entities_to_clear}
-
-            logger.info(f"【任务完成清理】清理前 entities: {state.entities}")
-            logger.info(f"【任务完成清理】清理后 entities: {cleaned_entities}")
-
-            return {
-                "entities": cleaned_entities,
-                "conversation_phase": "idle"
-            }
-
-        # 如果当前阶段是 order_completed，但用户说了新的业务相关的话
-        # 也应该重置阶段（让新任务能正常开始）
-        if current_phase == "order_completed" and not has_pending_confirmation:
-            # 检查是否是新的业务意图（包含购买、查询、订单等关键词）
-            business_keywords = ["买", "购买", "下单", "订单", "查", "搜索", "产品", "商品"]
-            is_new_business = any(keyword in user_message for keyword in business_keywords)
-
-            if is_new_business:
-                logger.info(f"【新任务】检测到新的业务意图，重置阶段到 idle")
-                return {
-                    "conversation_phase": "idle"
-                }
-
-        return {}
 
     def _build_intent_context(self, query_intent: Optional[Dict[str, Any]]) -> str:
         """构建意图识别上下文信息"""
@@ -327,25 +250,40 @@ class SupervisorAgent:
             context_parts.append("  ✗ 用户未选定产品 (product_id不存在)")
 
         # 检查是否有 user_phone（用户���提供手机号）
-        if all_entities.get("user_phone"):
-            context_parts.append("  ✓ 用户已提供手机号")
+
+        # 检查是否有 order_id（订单相关操作）
+        order_id = all_entities.get("order_id")
+        if not order_id:
+            # 尝试从历史消息中提取订单信息
+            order_id_from_history = self._extract_order_id_from_messages(state.messages)
+            if order_id_from_history:
+                context_parts.append(f"  ✓ 从历史消息中提取到订单信息: {order_id_from_history}")
+                # 补充到实体信息中，供路由决策使用
+                all_entities["order_id"] = order_id_from_history
+                order_id = order_id_from_history
+        
+        if order_id:
+            context_parts.append(f"  ✓ 已识别订单ID (order_id={order_id})")
         else:
-            context_parts.append("  ✗ 用户未提供手机号")
+            context_parts.append("  ✗ 未识别到订单ID")
 
         # 【路由决策逻辑】帮助 LLM 做出正确的路由决策
         context_parts.append("\n【路由决策逻辑】")
         has_product_id = bool(all_entities.get("product_id"))
-        has_user_phone = bool(all_entities.get("user_phone"))
-
+        has_order_id = bool(order_id)
+        
         if not has_product_id:
             context_parts.append("  ⚠️ 关键：用户未选定产品（product_id=None）")
-            context_parts.append("  → 无论是否提供了手机号，都必须先路由到 product_agent 搜索产品！")
-        elif has_product_id and has_user_phone:
-            context_parts.append("  ✓ 用户已选定产品且提供了手机号")
-            context_parts.append("  → 可以路由到 order_agent 创建订单")
-        elif has_product_id and not has_user_phone:
-            context_parts.append("  ⚠️ 用户已选定产品但未提供手机号")
-            context_parts.append("  → 路由到 order_agent 引导用户提供手机号")
+            context_parts.append("  → 必须先路由到 product_agent 搜索产品！")
+        elif has_product_id:
+            context_parts.append("  ✓ 用户已选定产品")
+            context_parts.append("  → 可以路由到 order_agent 创建订单（用户已登录，无需手机号）")
+        
+        # 【订单管理路由逻辑】（新增，关键）
+        if has_order_id:
+            context_parts.append("  ✓ 已识别订单ID（order_id存在）")
+            context_parts.append("  → **必须路由到 order_agent 处理订单相关操作（查询/取消等）！**")
+            context_parts.append(f"  → 订单ID: {order_id}（已从entities或历史消息中提取）")
 
         # 累积实体信息（详细）
         if all_entities:
@@ -373,6 +311,66 @@ class SupervisorAgent:
                     context_parts.append(f"    ... 还有 {len(products) - 5} 个产品")
 
         return "\n".join(context_parts)
+
+    def _extract_order_id_from_messages(self, messages: List) -> Optional[str]:
+        """从历史消息中提取订单ID
+        
+        查找顺序：
+        1. 从最近的ToolMessage中查找订单信息（order或orders字段）
+        2. 从最近的HumanMessage中查找订单号模式（如ORD906278）
+        
+        Args:
+            messages: 消息列表
+            
+        Returns:
+            订单ID（字符串格式），如果未找到返回None
+        """
+        import json
+        import re
+        
+        # 从最近的ToolMessage中查找订单信息（order_agent返回的结果）
+        for msg in reversed(messages):
+            if hasattr(msg, '__class__') and 'ToolMessage' in str(msg.__class__):
+                try:
+                    tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    if isinstance(tool_result, dict):
+                        # 优先查找单个订单详情
+                        if "order" in tool_result and isinstance(tool_result["order"], dict):
+                            order_number = tool_result["order"].get("order_number") or tool_result["order"].get("order_id")
+                            if order_number:
+                                logger.info(f"从历史消息（订单详情）提取到订单号: {order_number}")
+                                return str(order_number)
+                        # 其次查找订单列表（如果只有1个订单）
+                        if "orders" in tool_result:
+                            orders = tool_result.get("orders", [])
+                            if orders and len(orders) == 1:
+                                order_number = orders[0].get("order_number") or orders[0].get("order_id")
+                                if order_number:
+                                    logger.info(f"从历史消息（订单列表）提取到单一订单号: {order_number}")
+                                    return str(order_number)
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    continue
+        
+        # 从最近的HumanMessage中查找订单号模式
+        for msg in reversed(messages):
+            if hasattr(msg, '__class__') and 'HumanMessage' in str(msg.__class__):
+                content = str(getattr(msg, 'content', ''))
+                # 匹配订单号模式：ORD + 数字，或不区分大小写的ord + 数字
+                order_id_patterns = [
+                    r'ORD\s*(\d+)',
+                    r'订单[号]?\s*[:：]?\s*ORD\s*(\d+)',
+                    r'订单[号]?\s*[:：]?\s*(\d+)',
+                ]
+                for pattern in order_id_patterns:
+                    match = re.search(pattern, content, re.IGNORECASE)
+                    if match:
+                        extracted_value = match.group(1) if match.group(1) else match.group(0)
+                        if extracted_value:
+                            order_id = extracted_value.upper() if 'ORD' in extracted_value.upper() else extracted_value
+                            logger.info(f"从历史消息（用户消息）提取到订单号: {order_id}")
+                            return order_id
+        
+        return None
 
     def _collect_all_entities(self, state: MultiAgentState) -> Dict[str, Any]:
         """收集所有可用的实体信息"""
@@ -455,23 +453,57 @@ class SupervisorAgent:
 
 **规则2：创建订单**（以下情况路由到 order_agent）：
 - ✓ 用户已选定产品（entities中有product_id）
-- ✓ 且用户已提供手机号（entities中有user_phone）
-- **必须同时满足以上两个条件！缺一不可！**
+- **注意**：用户已登录，无需提供手机号，系统会从session中获取用户信息
 - next_action设为"order_management"，selected_agent设为"order_agent"
 
-**规则3：继续订单流程**（以下情况路由到 order_agent）：
-- ✓ 用户已选定产品（entities中有product_id）
-- ✗ 但用户未提供手机号
-- 目的：引导用户提供手机号
-- next_action设为"order_management"，selected_agent设为"order_agent"
+
+【深度咨询规则】（新增，高优先级）：
+- **产品对比查询**：选择 consultation_agent
+  - 包含"对比"、"比较"、"哪个好"、"哪个更适合"等关键词
+  - 包含多个产品名称或ID（至少2个）
+  - 例如："A相机和B相机哪个更适合VLOG？"、"iPhone 15和华为Mate 60，拍照哪个更好？"
+  - next_action设为"consultation"，selected_agent设为"consultation_agent"
+
+- **参数查询**：选择 consultation_agent
+  - 询问产品详细参数、规格、配置等
+  - 包含"参数"、"配置"、"规格"、"性能"等关键词
+  - 例如："这款相机的夜景拍摄参数是什么？"、"请提取一下产品1的参数"
+  - next_action设为"consultation"，selected_agent设为"consultation_agent"
+
+- **适配性确认查询**（待实现功能）：选择 consultation_agent
+  - 包含"能用吗"、"适配"、"兼容"、"适合我的XXX"等关键词
+  - 包含用户设备描述（如车型、手机型号）
+  - 例如："我车是2022款SUV，这款脚垫能用吗？"
+  - next_action设为"consultation"，selected_agent设为"consultation_agent"
+
+- **隐性需求挖掘查询**（待实现功能）：选择 consultation_agent
+  - 包含"推荐"、"适合"、"有档次"、"送给XXX"等关键词
+  - 包含受众、场景、预算等多维度信息
+  - 例如："送给50岁女性的生日礼物，预算500元，要有档次"
+  - next_action设为"consultation"，selected_agent设为"consultation_agent"
+
+- **简单商品搜索**（保持原逻辑）：选择 product_agent
+  - 简单的关键词搜索，没有复杂推理需求
+  - 例如："帮我找iPhone 15"、"搜索华为手机"
 
 【商品查询规则】：
-- 用户询问商品信息、价格、参数等（但没有购买意图）：选择 product_agent
+- 用户询问商品信息、价格、参数等（但没有购买意图和对比需求）：选择 product_agent
 - 例如："西门子产品有哪些"、"这款冰箱多少钱"、"华为手机有什么型号"
 
-【订单管理规则】：
+【订单管理规则】（关键，高优先级）：
 - **查询/取消订单**：选择 order_agent
-- 例如："查一下我的订单"、"取消刚才的订单"、"我的订单状态"
+- **关键判断**：
+  - 如果entities中有order_id（无论是字符串格式的订单号如"ORD906278"还是纯数字），**必须路由到order_agent**
+  - 如果用户说"取消订单"、"取消这个订单"、"帮我取消订单"等，即使当前消息中没有明确的order_id，也要路由到order_agent
+  - **重要**：order_agent有能力从历史消息中查找订单信息（如之前查询过的订单）
+  - 当用户说"这个订单"、"刚才的订单"等指代性表达时，应该从"累积实体信息"中查找order_id，如果找到则路由到order_agent
+- 例如：
+  - "查一下我的订单" → order_agent
+  - "取消刚才的订单" → order_agent（从历史消息或entities中查找order_id）
+  - "帮我取消这个订单" → order_agent（从entities或历史消息中查找order_id，如果entities中有order_id则直接使用）
+  - "谢谢，帮我查一下ORD906278订单" → order_agent（提取order_id=ORD906278）
+  - "帮我取消这个订单"（entities中有order_id=ORD906278） → order_agent（使用entities中的order_id）
+- next_action设为"order_management"，selected_agent设为"order_agent"
 
 【对话阶段路由规则】（重要）：
 - **如果对话阶段为"正在选择产品"(product_selecting)**：
@@ -482,12 +514,16 @@ class SupervisorAgent:
   - 用户说"确认"、"好的"、"可以"等 → 路由到 order_agent（确认订单）
   - 用户说"取消"、"不要了"等 → 路由到 chat_agent（取消订单）
 - **如果对话阶段为"订单已完成"(order_completed)**：
-  - 用户说"谢谢"、"再见"等 → 路由到 chat_agent（结束对话）
-  - 用户提出新的业务需求 → 路由到对应的 agent（开始新任务）
+  - **关键判断**：必须完整理解用户意图，不要仅因为包含"谢谢"就结束对话
+  - 如果用户说"谢谢"后还有业务请求（如"谢谢，帮我查询订单"、"谢谢，帮我找产品"），应路由到对应的 agent 处理业务请求
+  - 只有当用户纯粹表达感谢、告别且没有后续业务需求时（如"谢谢"、"谢谢，再见"），才路由到 chat_agent 进行礼貌回复
+  - 用户提出新的业务需求（查询订单、搜索产品、下单等） → 路由到对应的 agent（开始新任务）
 
 【普通交流/闲聊规则】（重要）：
 - **用户表达感谢、问候、礼貌用语**：必须路由到 chat_agent，返回友好温暖的回复！
   - 例如："谢谢"、"感谢"、"你好"、"��见"、"好的"、"知道了"、"哈哈"等
+  - **关键判断**：如果"谢谢"、"感谢"等词后面还有业务请求（如"谢谢，帮我查询订单ORD479360"），应优先处理业务请求，而不是简单回复感谢
+  - 只有当用户纯粹表达感谢、问候且没有后续业务需求时，才路由到 chat_agent
   - next_action设为"chat"，selected_agent设为"chat_agent"
   - **严禁将普通交流设为finish！**
 

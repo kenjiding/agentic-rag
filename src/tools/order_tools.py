@@ -29,59 +29,155 @@ from src.schema.business_models import (
 
 
 @tool
-def query_user_orders(
-    user_phone: Annotated[
+def query_order(
+    user_id: Annotated[
         str,
         Field(
-            description="用户手机号（必填）",
-            examples=["13800138765", "13900139000"]
+            description="用户ID（session_id，必填）",
+            examples=["default", "session_123"]
         )
     ],
+    order_id: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="订单ID（可选），支持订单号格式（如ORD123456）或纯数字字符串（如'123'）。如果提供，优先查询特定订单并验证权限；如果不提供，查询用户所有订单",
+            examples=["ORD123456", "ORD789012", "123", "456"]
+        )
+    ] = None,
     status: Annotated[
         Optional[str],
         Field(
             default=None,
-            description="订单状态筛选，可选值: pending(待支付)/paid(已支付)/shipped(已发货)/delivered(已收货)/cancelled(已取消)",
+            description="订单状态筛选（仅在查询所有订单时生效），可选值: pending(待支付)/paid(已支付)/shipped(已发货)/delivered(已收货)/cancelled(已取消)",
             examples=["pending", "paid", "delivered"]
         )
     ] = None,
     limit: Annotated[
         int,
         Field(
-            default=10,
-            description="返回结果数量限制",
+            default=20,
+            description="返回结果数量限制（仅在查询所有订单时生效）",
             examples=[10, 20, 50]
         )
-    ] = 10,
+    ] = 20,
 ) -> str:
-    """查询用���订单列表
+    """查询订单（统一接口）
 
+    统一的订单查询接口：
+    - 如果提供了 order_id：优先查询特定订单详情，并验证订单归属权限
+    - 如果没有提供 order_id：查询用户所有订单列表
+    
     返回 JSON 格式，包含人类可读文本和结构化订单数据。
     """
     import logging
     logger = logging.getLogger(__name__)
 
     try:
-        # 添加调试日志
-        logger.info(f"🔍 [ORDER_QUERY] 开始查询订单")
-        logger.info(f"🔍 [ORDER_QUERY] 手机号参数: '{user_phone}' (类型: {type(user_phone).__name__}, 长度: {len(user_phone)})")
-        logger.info(f"🔍 [ORDER_QUERY] 状态筛选: {status}, 限制数量: {limit}")
+        logger.info(f"🔍 [ORDER_QUERY] 开始查询订单: user_id={user_id}, order_id={order_id}")
 
         with get_db_session() as db:
-            # 执行用户订单查询
-            orders = get_user_orders(db, user_phone, status=status, limit=limit)
+            # 如果提供了 order_id，优先查询特定订单详情
+            if order_id:
+                logger.info(f"🔍 [ORDER_QUERY] 查询特定订单: order_id={order_id}")
+                
+                # 判断order_id是纯数字还是包含字母的订单号
+                if order_id.isdigit():
+                    # 纯数字，作为数据库主键ID查询
+                    order = get_order_by_id(db, int(order_id), refresh=True)
+                else:
+                    # 包含字母，作为订单号（order_id字段）查询
+                    order = get_order_by_number(db, order_id)
 
-            # 添加调试日志
+                if not order:
+                    logger.warning(f"🔍 [ORDER_QUERY] 未找到订单: order_id={order_id}")
+                    return json.dumps({
+                        "text": f"未找到订单 (订单ID: {order_id})，请确认订单号是否正确。",
+                        "orders": [],
+                        "order": None
+                    }, ensure_ascii=False)
+
+                # 权限验证：验证订单是否属于该用户
+                if order.user_id != user_id:
+                    logger.warning(f"🔒 [ORDER_QUERY] 权限验证失败: order_id={order_id}, order.user_id={order.user_id}, request.user_id={user_id}")
+                    return json.dumps({
+                        "text": f"您没有权限查看订单 {order_id}，该订单不属于您。",
+                        "orders": [],
+                        "order": None
+                    }, ensure_ascii=False)
+
+                logger.info(f"✅ [ORDER_QUERY] 权限验证通过: order_id={order_id}")
+
+                display = OrderDisplay.from_db(order)
+
+                # 构建结构化订单数据
+                order_items = []
+                for item in order.order_items:
+                    product_images = []
+                    if item.product and item.product.images:
+                        if isinstance(item.product.images, list):
+                            product_images = item.product.images
+                        elif isinstance(item.product.images, dict):
+                            product_images = [v for v in item.product.images.values() if isinstance(v, str)]
+                    
+                    order_items.append({
+                        "product_name": item.product.name if item.product else "未知商品",
+                        "quantity": item.quantity,
+                        "subtotal": float(item.price * item.quantity),
+                        "product_images": product_images,
+                    })
+
+                order_data = {
+                    "id": order.id,
+                    "order_number": order.order_id,
+                    "status": order.status,
+                    "total_amount": float(order.total_amount) if order.total_amount else 0,
+                    "created_at": order.created_at.isoformat() if order.created_at else None,
+                    "items": order_items,
+                }
+
+                # 生成人类可读文本（单个订单详情）
+                status_emoji = {
+                    "pending": "⏳ 待支付",
+                    "paid": "💰 已支付",
+                    "shipped": "🚚 已发货",
+                    "delivered": "✅ 已收货",
+                    "cancelled": "❌ 已取消",
+                }.get(display.status, display.status)
+
+                text_parts = [
+                    f"订单详情",
+                    f"订单号: {display.order_number}",
+                    f"订单ID: {display.id}",
+                    f"状态: {status_emoji}",
+                    f"总金额: ¥{display.total_amount:.2f}",
+                    f"创建时间: {display.created_at}",
+                    f"商品清单:",
+                ]
+                for item in display.items:
+                    text_parts.append(f"  • {item.get('product_name', 'Unknown')} x {item['quantity']} = ¥{item['subtotal']:.2f}")
+
+                text = "\n".join(text_parts)
+
+                logger.info(f"📋 [ORDER_QUERY] 查询订单详情完成: id={order.id}, order_number={order.order_id}, status={order.status}")
+
+                return json.dumps({
+                    "text": text,
+                    "orders": [order_data],  # 包装成列表，保持结构一致
+                    "order": order_data
+                }, ensure_ascii=False)
+
+            # 如果没有提供 order_id，查询用户所有订单列表
+            logger.info(f"🔍 [ORDER_QUERY] 查询用户所有订单: user_id={user_id}, status={status}, limit={limit}")
+            orders = get_user_orders(db, user_id, status=status, limit=limit)
+
             logger.info(f"🔍 [ORDER_QUERY] 查询结果: 找到 {len(orders)} 个订单")
-            for order in orders:
-                logger.info(f"  - 订单ID: {order.id}, 订单号: {order.order_id}, 状态: {order.status}")
 
             # 构建结构化订单数据
             orders_data = []
             for order in orders:
                 order_items = []
                 for item in order.order_items:
-                    # 处理产品图片
                     product_images = []
                     if item.product and item.product.images:
                         if isinstance(item.product.images, list):
@@ -104,150 +200,32 @@ def query_user_orders(
                     "items": order_items,
                 }
                 orders_data.append(order_data_item)
-                # 【关键日志】记录每个订单的状态
-                logger.info(f"📋 [ORDER_QUERY] 构建订单数据: id={order.id}, order_number={order.order_id}, status={order.status}, status_from_db={order.status}")
+                logger.info(f"📋 [ORDER_QUERY] 构建订单数据: id={order.id}, order_number={order.order_id}, status={order.status}")
 
             # 生成人类可读文本
             if not orders:
                 status_msg = f"(状态: {status})" if status else ""
-                text = f"手机号 {user_phone} 暂无订单{status_msg}"
+                text = f"暂无订单{status_msg}"
             else:
-                result_lines = [f"手机号 {user_phone} 的订单 (共{len(orders)}个):\n"]
+                result_lines = [f"您的订单 (共{len(orders)}个):\n"]
                 for i, order in enumerate(orders, 1):
                     display = OrderDisplay.from_db(order)
                     result_lines.append(f"{i}. {display.format_text()}\n")
                 text = "\n".join(result_lines)
 
-            result_json = json.dumps({
-                "text": text,
-                "orders": orders_data
-            }, ensure_ascii=False)
-            
-            # 【关键日志】记录返回给前端的订单数据
             logger.info(f"📋 [ORDER_QUERY] 返回订单数据: 共{len(orders_data)}个订单")
-            for od in orders_data:
-                logger.info(f"  - 订单ID: {od['id']}, 订单号: {od['order_number']}, 状态: {od['status']}")
-            
-            return result_json
+
+            return json.dumps({
+                "text": text,
+                "orders": orders_data,
+                "order": None
+            }, ensure_ascii=False)
 
     except Exception as e:
+        logger.error(f"❌ [ORDER_QUERY] 查询订单时出错: {e}", exc_info=True)
         return json.dumps({
             "text": f"查询订单时出错: {str(e)}",
-            "orders": []
-        }, ensure_ascii=False)
-
-
-@tool
-def query_order_detail(
-    order_id: Annotated[
-        Optional[int],
-        Field(
-            default=None,
-            description="订单ID（二选一）",
-            examples=[1, 2, 100]
-        )
-    ] = None,
-    order_number: Annotated[
-        Optional[str],
-        Field(
-            default=None,
-            description="订单号，如 ORD123456（二选一）",
-            examples=["ORD123456", "ORD789012"]
-        )
-    ] = None,
-) -> str:
-    """查询订单详细信息
-
-    返回 JSON 格式，包含人类可读文本和结构化订单数据。
-    """
-    try:
-        with get_db_session() as db:
-            order = None
-            if order_id:
-                # 使用 refresh=True 确保获取最新状态
-                order = get_order_by_id(db, order_id, refresh=True)
-            elif order_number:
-                order = get_order_by_number(db, order_number)
-
-            if not order:
-                return json.dumps({
-                    "text": f"未找到订单 (ID: {order_id}, 订单号: {order_number})",
-                    "order": None
-                }, ensure_ascii=False)
-
-            display = OrderDisplay.from_db(order)
-
-            # 构建结构化订单数据
-            order_items = []
-            for item in order.order_items:
-                # 处理产品图片
-                product_images = []
-                if item.product and item.product.images:
-                    if isinstance(item.product.images, list):
-                        product_images = item.product.images
-                    elif isinstance(item.product.images, dict):
-                        product_images = [v for v in item.product.images.values() if isinstance(v, str)]
-                
-                order_items.append({
-                    "product_name": item.product.name if item.product else "未知商品",
-                    "quantity": item.quantity,
-                    "subtotal": float(item.price * item.quantity),
-                    "product_images": product_images,
-                })
-
-            order_data = {
-                "id": order.id,
-                "order_number": order.order_id,
-                "status": order.status,
-                "total_amount": float(order.total_amount) if order.total_amount else 0,
-                "created_at": order.created_at.isoformat() if order.created_at else None,
-                "items": order_items,
-            }
-            
-            # 【关键日志】记录查询到的订单详情状态
-            import logging
-            logger_detail = logging.getLogger(__name__)
-            logger_detail.info(f"📋 [ORDER_DETAIL] 查询订单详情: id={order.id}, order_number={order.order_id}, status={order.status}, status_from_db={order.status}")
-            logger_detail.info(f"📋 [ORDER_DETAIL] 返回订单数据: id={order_data['id']}, status={order_data['status']}")
-
-            # 生成人类可读文本
-            status_emoji = {
-                "pending": "⏳ 待支付",
-                "paid": "💰 已支付",
-                "shipped": "🚚 已发货",
-                "delivered": "✅ 已收货",
-                "cancelled": "❌ 已取消",
-            }.get(display.status, display.status)
-
-            text_parts = [
-                f"订单详情",
-                f"订单号: {display.order_number}",
-                f"订单ID: {display.id}",
-                f"状态: {status_emoji}",
-                f"总金额: ¥{display.total_amount:.2f}",
-                f"创建时间: {display.created_at}",
-                f"商品清单:",
-            ]
-            for item in display.items:
-                text_parts.append(f"  • {item.get('product_name', 'Unknown')} x {item['quantity']} = ¥{item['subtotal']:.2f}")
-
-            text = "\n".join(text_parts)
-
-            result_json = json.dumps({
-                "text": text,
-                "order": order_data
-            }, ensure_ascii=False)
-            
-            # 【关键日志】记录返回给前端的订单详情
-            import logging
-            logger_detail = logging.getLogger(__name__)
-            logger_detail.info(f"📋 [ORDER_DETAIL] 返回JSON: order.status={order_data['status']}")
-            
-            return result_json
-
-    except Exception as e:
-        return json.dumps({
-            "text": f"查询订单详情时出错: {str(e)}",
+            "orders": [],
             "order": None
         }, ensure_ascii=False)
 
@@ -261,11 +239,11 @@ def prepare_cancel_order(
             examples=[1, 2, 100]
         )
     ],
-    user_phone: Annotated[
+    user_id: Annotated[
         str,
         Field(
-            description="用户手机号（用于验证权限）",
-            examples=["13800138765", "13900139000"]
+            description="用户ID（session_id，用于验证权限）",
+            examples=["default", "session_123"]
         )
     ],
     reason: Annotated[
@@ -287,9 +265,9 @@ def prepare_cancel_order(
                     "can_cancel": False
                 }, ensure_ascii=False)
 
-            if order.user_id != user_phone:
+            if order.user_id != user_id:
                 return json.dumps({
-                    "text": f"无权取消此订单（订单属于用户 {order.user_id}）",
+                    "text": f"无权取消此订单（订单属于其他用户）",
                     "can_cancel": False
                 }, ensure_ascii=False)
 
@@ -339,11 +317,11 @@ def confirm_cancel_order(
             examples=[1, 2, 100]
         )
     ],
-    user_phone: Annotated[
+    user_id: Annotated[
         str,
         Field(
-            description="用户手机号（用于验证权限）",
-            examples=["13800138765", "13900139000"]
+            description="用户ID（session_id，用于验证权限）",
+            examples=["default", "session_123"]
         )
     ],
 ) -> str:
@@ -352,7 +330,7 @@ def confirm_cancel_order(
     logger_cancel = logging.getLogger(__name__)
     
     try:
-        logger_cancel.info(f"🚫 [CANCEL_ORDER] 开始取消订单: order_id={order_id}, user_phone={user_phone}")
+        logger_cancel.info(f"🚫 [CANCEL_ORDER] 开始取消订单: order_id={order_id}, user_id={user_id}")
         
         with get_db_session() as db:
             # 【关键日志】取消前的状态
@@ -370,8 +348,8 @@ def confirm_cancel_order(
                     "success": False
                 }, ensure_ascii=False)
 
-            if order.user_id != user_phone:
-                logger_cancel.warning(f"🚫 [CANCEL_ORDER] 权限验证失败: order.user_id={order.user_id}, user_phone={user_phone}")
+            if order.user_id != user_id:
+                logger_cancel.warning(f"🚫 [CANCEL_ORDER] 权限验证失败: order.user_id={order.user_id}, user_id={user_id}")
                 return json.dumps({
                     "text": "无权取消此订单",
                     "success": False
@@ -419,11 +397,11 @@ def confirm_cancel_order(
 
 @tool
 def prepare_create_order(
-    user_phone: Annotated[
+    user_id: Annotated[
         str,
         Field(
-            description="用户手机号",
-            examples=["13800138765", "13900139000"]
+            description="用户ID（session_id）",
+            examples=["default", "session_123"]
         )
     ],
     items: Annotated[
@@ -495,7 +473,6 @@ def prepare_create_order(
 
             text_lines = [
                 f"确认订单信息",
-                f"用户手机号: {user_phone}",
                 f"商品清单:",
             ]
             for item in items_preview:
@@ -508,7 +485,7 @@ def prepare_create_order(
             return json.dumps({
                 "text": "\n".join(text_lines),
                 "can_create": True,
-                "user_phone": user_phone,
+                "user_id": user_id,
                 "items": items_preview,
                 "total_amount": float(total_amount),
                 "notes": notes
@@ -523,11 +500,11 @@ def prepare_create_order(
 
 @tool
 def confirm_create_order(
-    user_phone: Annotated[
+    user_id: Annotated[
         str,
         Field(
-            description="用户手机号",
-            examples=["13800138765", "13900139000"]
+            description="用户ID（session_id）",
+            examples=["default", "session_123"]
         )
     ],
     items: Annotated[
@@ -555,14 +532,14 @@ def confirm_create_order(
 
         # 添加调试日志
         logger.info(f"✅ [ORDER_CREATE] 开始创建订单")
-        logger.info(f"✅ [ORDER_CREATE] 手机号参数: '{user_phone}' (类型: {type(user_phone).__name__}, 长度: {len(user_phone)})")
+        logger.info(f"✅ [ORDER_CREATE] 用户ID参数: '{user_id}' (类型: {type(user_id).__name__}, 长度: {len(user_id)})")
         logger.info(f"✅ [ORDER_CREATE] 商品列表: {items}")
         logger.info(f"✅ [ORDER_CREATE] 备注: {notes}")
 
         with get_db_session() as db:
             order = create_order_db(
                 db,
-                user_phone=user_phone,
+                user_id=user_id,  # 使用 user_id (session_id) 作为用户标识
                 items=items_data,
                 notes=notes,
             )
@@ -571,7 +548,7 @@ def confirm_create_order(
             logger.info(f"✅ [ORDER_CREATE] 订单创建成功!")
             logger.info(f"  - 订单ID: {order.id}")
             logger.info(f"  - 订单号: {order.order_id}")
-            logger.info(f"  - 保存的手机号: '{order.user_id}'")
+            logger.info(f"  - 保存的用户ID: '{order.user_id}'")
             logger.info(f"  - 总金额: {order.total_amount}")
             logger.info(f"  - 状态: {order.status}")
 
@@ -646,8 +623,7 @@ def update_order_status(
 def get_order_tools() -> list:
     """获取所有订单工具"""
     return [
-        query_user_orders,
-        query_order_detail,
+        query_order,  # 统一的订单查询工具
         prepare_cancel_order,
         confirm_cancel_order,
         prepare_create_order,

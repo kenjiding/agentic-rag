@@ -2,9 +2,12 @@
 
 提供商品查询、搜索功能，支持多条件组合筛选。
 返回 JSON 格式，包含人类可读文本和结构化产品数据。
+
+当USE_TEST_DATA=True时，从JSON文件读取测试数据。
 """
 
 import json
+import os
 from typing import Annotated, Optional
 
 from langchain_core.tools import tool
@@ -13,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.db.engine import get_db_session
 from src.db.crud import search_products, get_product_by_id
+from src.db.test_data_loader import is_use_test_data
 from src.schema.business_models import ProductSearchArgs, ProductDisplay, ProductListResult
 
 
@@ -104,22 +108,23 @@ def search_products_tool(
     返回 JSON 格式，包含人类可读文本和结构化产品数据。
     """
     try:
-        with get_db_session() as db:
-            # 构建搜索参数（注意：name参数用于商品名搜索，brand是品牌）
-            args = ProductSearchArgs(
-                name=name,      # 商品名称关键词
-                # brand=brand,  # 品牌名称
-                category=category,
-                sub_category=sub_category,
-                price_min=price_min,
-                price_max=price_max,
-                min_rating=min_rating,
-                in_stock_only=in_stock_only,
-                special_only=special_only,
-                limit=limit,
-            )
+        # 构建搜索参数（注意：name参数用于商品名搜索，brand是品牌）
+        args = ProductSearchArgs(
+            name=name,      # 商品名称关键词
+            # brand=brand,  # 品牌名称
+            category=category,
+            sub_category=sub_category,
+            price_min=price_min,
+            price_max=price_max,
+            min_rating=min_rating,
+            in_stock_only=in_stock_only,
+            special_only=special_only,
+            limit=limit,
+        )
 
-            # 执行搜索
+        # 运行时动态检查是否使用测试数据
+        if is_use_test_data():
+            db = None  # 测试数据模式不需要数据库会话
             products = search_products(
                 db,
                 name=args.name,
@@ -133,52 +138,78 @@ def search_products_tool(
                 special_only=args.special_only,
                 limit=args.limit,
             )
+        else:
+            # 真实数据模式：使用数据库会话
+            with get_db_session() as db:
+                products = search_products(
+                    db,
+                    name=args.name,
+                    category=args.category,
+                    sub_category=args.sub_category,
+                    brand=args.brand,
+                    price_min=args.price_min,
+                    price_max=args.price_max,
+                    min_rating=args.min_rating,
+                    in_stock_only=args.in_stock_only,
+                    special_only=args.special_only,
+                    limit=args.limit,
+                )
 
-            # 构建结构化产品数据
-            products_data = []
-            for product in products:
-                products_data.append({
-                    "id": product.id,
-                    "name": product.name,
-                    "model_number": product.model_number,
-                    "brand": product.brand.name if product.brand else None,
-                    "main_category": product.main_category.name if product.main_category else None,
-                    "sub_category": product.sub_category.name if product.sub_category else None,
-                    "price": float(product.price) if product.price else None,
-                    "stock": product.stock,
-                    "rating": float(product.rating) if product.rating else 0.0,
-                    "special": product.special,
-                    "description": product.description,
-                    "images": product.images if product.images else [],
-                })
+        # 构建结构化产品数据（兼容测试数据和真实数据）
+        products_data = []
+        for product in products:
+            # 安全访问属性（兼容SimpleNamespace和Product对象）
+            brand_name = getattr(getattr(product, 'brand', None), 'name', None) if hasattr(product, 'brand') and product.brand else None
+            main_cat_name = getattr(getattr(product, 'main_category', None), 'name', None) if hasattr(product, 'main_category') and product.main_category else None
+            sub_cat_name = getattr(getattr(product, 'sub_category', None), 'name', None) if hasattr(product, 'sub_category') and product.sub_category else None
+            
+            products_data.append({
+                "id": getattr(product, 'id', 0),
+                "name": getattr(product, 'name', '未知产品'),
+                "model_number": getattr(product, 'model_number', None),
+                "brand": brand_name,
+                "main_category": main_cat_name,
+                "sub_category": sub_cat_name,
+                "price": float(getattr(product, 'price', 0)) if getattr(product, 'price', None) else None,
+                "stock": getattr(product, 'stock', 0),
+                "rating": float(getattr(product, 'rating', 0)) if hasattr(product, 'rating') else 0.0,
+                "special": getattr(product, 'special', False),
+                "description": getattr(product, 'description', None),
+                "images": getattr(product, 'images', []) if getattr(product, 'images', None) else [],
+            })
 
-            # 生成人类可读的文本
-            if not products:
-                conditions = []
-                if name:
-                    conditions.append(f"关键词'{name}'")
-                if category:
-                    conditions.append(f"分类'{category}'")
-                # if brand:
-                #     conditions.append(f"品牌'{brand}'")
-                if price_max:
-                    conditions.append(f"价格≤{price_max}元")
+        # 生成人类可读的文本（兼容测试数据和真实数据）
+        if not products:
+            conditions = []
+            if name:
+                conditions.append(f"关键词'{name}'")
+            if category:
+                conditions.append(f"分类'{category}'")
+            if price_max:
+                conditions.append(f"价格≤{price_max}元")
 
-                cond_str = "、".join(conditions) if conditions else "指定条件"
-                text = f"未找到符合{cond_str}的商品。建议尝试放宽筛选条件或更换关键词。"
-            else:
-                result_lines = [f"找到 {len(products)} 件商品：\n"]
-                for i, product in enumerate(products, 1):
+            cond_str = "、".join(conditions) if conditions else "指定条件"
+            text = f"未找到符合{cond_str}的商品。建议尝试放宽筛选条件或更换关键词。"
+        else:
+            result_lines = [f"找到 {len(products)} 件商品：\n"]
+            for i, product in enumerate(products, 1):
+                try:
                     display = ProductDisplay.from_db(product)
                     result_lines.append(f"{i}. {display.format_text()}")
-                text = "\n".join(result_lines)
+                except Exception:
+                    # 如果from_db失败，手动构建
+                    product_name = getattr(product, 'name', '未知产品')
+                    product_price = float(getattr(product, 'price', 0)) if getattr(product, 'price', None) else None
+                    price_str = f"¥{product_price:.2f}" if product_price else "价格面议"
+                    result_lines.append(f"{i}. {product_name} - {price_str}")
+            text = "\n".join(result_lines)
 
-            # 返回 JSON 格式：包含文本和结构化数据
-            result = {
-                "text": text,
-                "products": products_data
-            }
-            return json.dumps(result, ensure_ascii=False)
+        # 返回 JSON 格式：包含文本和结构化数据
+        result = {
+            "text": text,
+            "products": products_data
+        }
+        return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:
         error_result = {
@@ -207,55 +238,85 @@ def get_product_detail(
         商品详细信息（JSON格式，包含text和product）
     """
     try:
-        with get_db_session() as db:
+        # 运行时动态检查是否使用测试数据
+        if is_use_test_data():
+            db = None
             product = get_product_by_id(db, product_id)
+        else:
+            with get_db_session() as db:
+                product = get_product_by_id(db, product_id)
 
-            if not product:
-                return json.dumps({
-                    "text": f"未找到ID为 {product_id} 的商品",
-                    "product": None
-                }, ensure_ascii=False)
-
-            # 构建产品数据
-            product_data = {
-                "id": product.id,
-                "name": product.name,
-                "model_number": product.model_number,
-                "brand": product.brand.name if product.brand else None,
-                "main_category": product.main_category.name if product.main_category else None,
-                "sub_category": product.sub_category.name if product.sub_category else None,
-                "price": float(product.price) if product.price else None,
-                "stock": product.stock,
-                "rating": float(product.rating) if product.rating else 0.0,
-                "special": product.special,
-                "description": product.description,
-                "images": product.images if product.images else [],
-            }
-
-            # 生成人类可读文本
-            display = ProductDisplay.from_db(product)
-            special_mark = " [特价商品]" if display.special else ""
-            stock_info = "现货" if display.stock > 0 else "缺货"
-
-            text_parts = [
-                f"📦 {display.name}{special_mark}",
-                f"品牌: {display.brand or '未知'}",
-                f"分类: {display.main_category or '未知'} / {display.sub_category or '未知'}",
-                f"型号: {display.model_number or '未提供'}",
-                f"价格: ¥{display.price:.2f}" if display.price else "价格: 面议",
-                f"评分: {display.rating:.1f}分",
-                f"库存: {display.stock}件 ({stock_info})",
-            ]
-            if display.description:
-                text_parts.append(f"描述: {display.description}")
-            text = "\n".join(text_parts)
-
+        if not product:
             return json.dumps({
-                "text": text,
-                "product": product_data
+                "text": f"未找到ID为 {product_id} 的商品",
+                "product": None
             }, ensure_ascii=False)
 
+        # 构建产品数据（兼容测试数据和真实数据）
+        brand_name = getattr(getattr(product, 'brand', None), 'name', None) if hasattr(product, 'brand') and product.brand else None
+        main_cat_name = getattr(getattr(product, 'main_category', None), 'name', None) if hasattr(product, 'main_category') and product.main_category else None
+        sub_cat_name = getattr(getattr(product, 'sub_category', None), 'name', None) if hasattr(product, 'sub_category') and product.sub_category else None
+        
+        product_data = {
+            "id": getattr(product, 'id', product_id),
+            "name": getattr(product, 'name', '未知产品'),
+            "model_number": getattr(product, 'model_number', None),
+            "brand": brand_name,
+            "main_category": main_cat_name,
+            "sub_category": sub_cat_name,
+            "price": float(getattr(product, 'price', 0)) if getattr(product, 'price', None) else None,
+            "stock": getattr(product, 'stock', 0),
+            "rating": float(getattr(product, 'rating', 0)) if hasattr(product, 'rating') else 0.0,
+            "special": getattr(product, 'special', False),
+            "description": getattr(product, 'description', None),
+            "images": getattr(product, 'images', []) if getattr(product, 'images', None) else [],
+        }
+
+        # 生成人类可读文本（使用ProductDisplay.from_db需要兼容SimpleNamespace）
+        try:
+            display = ProductDisplay.from_db(product)
+        except Exception:
+            # 如果from_db失败，手动构建
+            from src.schema.business_models import ProductDisplay
+            display = ProductDisplay(
+                id=product_data["id"],
+                name=product_data["name"],
+                model_number=product_data["model_number"],
+                brand=product_data["brand"],
+                main_category=product_data["main_category"],
+                sub_category=product_data["sub_category"],
+                price=product_data["price"],
+                stock=product_data["stock"],
+                rating=product_data["rating"],
+                special=product_data["special"],
+                description=product_data["description"],
+                images=product_data["images"]
+            )
+        
+        special_mark = " [特价商品]" if display.special else ""
+        stock_info = "现货" if display.stock > 0 else "缺货"
+
+        text_parts = [
+            f"📦 {display.name}{special_mark}",
+            f"品牌: {display.brand or '未知'}",
+            f"分类: {display.main_category or '未知'} / {display.sub_category or '未知'}",
+            f"型号: {display.model_number or '未提供'}",
+            f"价格: ¥{display.price:.2f}" if display.price else "价格: 面议",
+            f"评分: {display.rating:.1f}分",
+            f"库存: {display.stock}件 ({stock_info})",
+        ]
+        if display.description:
+            text_parts.append(f"描述: {display.description}")
+        text = "\n".join(text_parts)
+
+        return json.dumps({
+            "text": text,
+            "product": product_data
+        }, ensure_ascii=False)
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return json.dumps({
             "text": f"获取商品详情时出错: {str(e)}",
             "product": None

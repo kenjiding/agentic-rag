@@ -9,6 +9,7 @@ export type ResponseType =
   | "mixed"
   | "interrupt"
   | "confirmation"
+  | "product_comparison"
   | "error";
 
 /** 产品信息 */
@@ -45,10 +46,27 @@ export interface OrderItem {
   product_images?: string[];
 }
 
+/** 产品对比数据 */
+export interface ProductComparisonData {
+  comparison_aspects: string[];
+  comparison_details: Record<string, Record<string, string>>;
+  scenario_analysis?: {
+    场景?: string;
+    评分?: Record<string, number>;
+    推荐理由?: string;
+  };
+  recommendation?: string;
+  products: Product[];
+}
+
 /** 结构化响应数据 */
 export interface ResponseData {
   products?: Product[];
   orders?: Order[];
+  comparison_aspects?: string[];
+  comparison_details?: Record<string, Record<string, string>>;
+  scenario_analysis?: ProductComparisonData["scenario_analysis"];
+  recommendation?: string;
   [key: string]: any;
 }
 

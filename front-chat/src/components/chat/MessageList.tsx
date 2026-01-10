@@ -2,6 +2,7 @@ import { ChatMessage } from "@/types"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ProductGrid } from "@/components/business/ProductCard"
 import { OrderList } from "@/components/business/OrderTracker"
+import { ProductComparison } from "@/components/business/ProductComparison"
 import { ExecutionSteps } from "./ExecutionSteps"
 import { ConfirmationDialog } from "./ConfirmationDialog"
 import ReactMarkdown from "react-markdown"
@@ -209,8 +210,21 @@ function MessageItem({
           </>
         )}
 
-        {/* 文本内容 - 始终显示 */}
-        {message.content && (
+        {/* 产品对比 - 专门的对比UI */}
+        {message.responseType === "product_comparison" && message.responseData && (
+          <ProductComparison
+            data={{
+              comparison_aspects: message.responseData.comparison_aspects || [],
+              comparison_details: message.responseData.comparison_details || {},
+              scenario_analysis: message.responseData.scenario_analysis,
+              recommendation: message.responseData.recommendation,
+              products: message.responseData.products || [],
+            }}
+          />
+        )}
+
+        {/* 文本内容 - 对于product_comparison类型，文本是可选的；其他类型始终显示 */}
+        {message.content && message.responseType !== "product_comparison" && (
           <div className={cn(
             "prose prose-sm dark:prose-invert max-w-none",
             "prose-headings:font-semibold prose-headings:text-foreground",

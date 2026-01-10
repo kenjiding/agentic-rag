@@ -200,24 +200,43 @@ sub_queries: []
 6. **提取所有实体**，统一存放在 entities 字典中：
    - general_entities: List[str] - 通用实体（人名、地名、组织等）
    - time_points: List[str] - 时间点（年份、日期等）
-   - user_phone: Optional[str] - 用户手机号（11位，1开头）
    - quantity: Optional[int] - 购买数量
    - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
    - product_id: Optional[int] - 用户明确指定的产品ID
+   - order_id: Optional[str] - 订单ID（字符串，如ORD1242343或'123'）
 
    **实体提取规则（优先级从高到低）**：
 
    **优先级1：product_id 提取规则（最高优先级）**
    - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
-   - 示例：
+   - **重要**：不要将订单号、手机号、其他业务ID等数字误识别为 product_id
+   - 示例（正确）：
      - "产品ID: 1" → product_id=1
      - "购买1号产品" → product_id=1, quantity=1
      - "ID是5的产品" → product_id=5
      - "我要买3号" → product_id=3
      - "就选第一个" → product_id=1
+   - 示例（错误，不应提取）：
+     - "帮我查询13455556500订单" → product_id=None, order_id="13455556500"（这是订单号）
+     - "查询订单13455556500" → product_id=None, order_id="13455556500"（订单号）
    - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
 
-   **优先级2：search_keyword 提取规则**
+   **优先级2：order_id 提取规则（字符串类型）**
+   - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
+   - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
+   - 示例（正确）：
+     - "查询ORD1242343订单信息" → order_id="ORD1242343"
+     - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
+     - "订单号是ORD123456" → order_id="ORD123456"
+     - "帮我查一下ORD789" → order_id="ORD789"
+     - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
+     - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
+     - "订单编号是456" → order_id="456"
+   - **重要**：order_id统一为字符串类型
+     - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
+     - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
+
+   **优先级3：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
    - 示例：
      - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
@@ -226,7 +245,19 @@ sub_queries: []
      - "有没有冰箱" → search_keyword="冰箱"
      - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
 
+**订单业务意图识别规则**（重要）：
+当查询涉及订单相关操作时，必须在 reasoning 中明确标识业务意图：
+- **订单查询意图**：包含"查询"、"查看"、"查"、"帮我查"、"查一下"、"我想查"、"订单状态"、"订单信息"、"订单详情"、"我的订单"等表达，且提到订单或订单号
+  - 示例："谢谢，帮我查一下ORD465577订单" → order_id="ORD465577", reasoning中应明确标识为"订单查询意图"
+  - 示例："查询我的订单" → reasoning中应明确标识为"订单查询意图"
+  - 示例："帮我看看订单ORD123" → order_id="ORD123", reasoning中应明确标识为"订单查询意图"
+- **订单取消意图**：包含"取消"、"删除"、"退订"、"撤销"、"不要了"、"删除订单"等表达，且提到订单或订单号
+  - 示例："取消订单ORD123456" → order_id="ORD123456", reasoning中应明确标识为"订单取消意图"
+- 如果提取到 order_id 但意图不明确，默认为"订单查询意图"
+
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
+   - reasoning 必须包含对业务意图的明确描述（如订单查询意图、订单取消意图等）
+   - 对于订单相关查询，reasoning 应明确说明识别到的业务意图类型
 
 输出JSON："""
 
@@ -306,11 +337,6 @@ sub_queries: []
         general_entities = list(set([e.strip('"\'') for e in general_entities]))[:10]
 
         # Extract business entities (业务实体)
-        # Extract phone number (11 digits, starting with 1)
-        phone_pattern = re.compile(r'1[3-9]\d{9}')
-        phone_match = phone_pattern.search(query)
-        user_phone: Optional[str] = phone_match.group(0) if phone_match else None
-
         # Extract quantity (numbers followed by 件/个/台)
         quantity_pattern = re.compile(r'(\d+)\s*[件个台]')
         quantity_match = quantity_pattern.search(query)
@@ -327,14 +353,16 @@ sub_queries: []
             "下单", "购买", "买", "我要", "我想", "想要", "想", "要",
             "件", "个", "台", "款",
             "商品", "产品", "东西", "货", "物品",
-            "手机号", "是", "的", "有没有", "有", "没有",
+            "订单", "订单号", "是", "的", "有没有", "有", "没有",
             "一下", "看看", "查", "查询", "搜索", "找", "帮我"
         ]
         search_keyword = query
         for keyword in generic_words_to_remove:
             search_keyword = search_keyword.replace(keyword, "")
-        search_keyword = phone_pattern.sub("", search_keyword)  # Remove phone number
-        search_keyword = re.sub(r'\d+', "", search_keyword)  # Remove numbers
+        # Remove phone numbers and long numbers (likely order IDs)
+        search_keyword = re.sub(r'1[3-9]\d{9}', "", search_keyword)  # Remove phone numbers
+        search_keyword = re.sub(r'\d{6,}', "", search_keyword)  # Remove long numbers (order IDs)
+        search_keyword = re.sub(r'\d+', "", search_keyword)  # Remove remaining numbers
         search_keyword = re.sub(r'[，。、；：？！,.;:?!\s]+', "", search_keyword).strip()
         # Only set search_keyword if there's meaningful content left
         search_keyword_value: Optional[str] = search_keyword if search_keyword and len(search_keyword) >= 2 else None
@@ -371,14 +399,39 @@ sub_queries: []
         if product_id is not None:
             search_keyword_value = None
 
+        # Extract order_id (订单ID，字符串格式，支持字母+数字组合如ORD123456或纯数字如"123")
+        # 匹配模式：订单号ORD123、ORD123、订单ORD123、查询ORD1242343订单信息、订单ID:123等
+        order_id_patterns = [
+            r'(?:订单号|订单)[：:：\s]*(ORD[A-Z0-9]+|\d{6,})',  # "订单号ORD123"、"订单:ORD123"、"订单 13455556500"
+            r'(ORD[A-Z0-9]+)',  # 独立的"ORD123456"格式
+            r'(?:查询|查|想查)(?:.*?)(ORD[A-Z0-9]+|\d{6,})(?:订单|信息)',  # "查询ORD1242343订单信息"
+            r'(?:订单)(?:.*?)(ORD[A-Z0-9]+|\d{6,})',  # "我现在想查询ORD1242343订单信息"
+            r'(?:订单(?:ID|编号))[：:：\s]*(\d+)',  # "订单ID:123"、"订单编号456"（纯数字）
+            r'(?:ID|编号)[：:：\s]*(\d+)(?:\s*订单|$)',  # "ID:123"、"编号456"
+        ]
+        order_id: Optional[str] = None
+        for pattern in order_id_patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                extracted_value = match.group(1) if match.group(1) else None
+                if extracted_value:
+                    # 如果是包含字母的订单号（如ORD123456），转换为大写
+                    # 如果是纯数字，保持原样（但作为字符串）
+                    if 'ORD' in extracted_value.upper() or any(c.isalpha() for c in extracted_value):
+                        order_id = extracted_value.upper()
+                    else:
+                        order_id = extracted_value  # 纯数字，作为字符串
+                    if order_id:
+                        break
+
         # Create Entities model instance
         entities = Entities(
             general_entities=general_entities,
             time_points=time_points,
-            user_phone=user_phone,
             quantity=quantity,
             search_keyword=search_keyword_value,
-            product_id=product_id
+            product_id=product_id,
+            order_id=order_id
         )
 
         # ==================== Universal Query Decomposition ====================
@@ -585,24 +638,43 @@ sub_queries: []
 6. **提取所有实体**，统一存放在 entities 字典中：
    - general_entities: List[str] - 通用实体（人名、地名、组织等）
    - time_points: List[str] - 时间点（年份、日期等）
-   - user_phone: Optional[str] - 用户手机号（11位，1开头）
    - quantity: Optional[int] - 购买数量
    - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
    - product_id: Optional[int] - 用户明确指定的产品ID
+   - order_id: Optional[str] - 订单ID（字符串，如ORD1242343或'123'）
 
    **实体提取规则（优先级从高到低）**：
 
    **优先级1：product_id 提取规则（最高优先级）**
    - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
-   - 示例：
+   - **重要**：不要将订单号、手机号、其他业务ID等数字误识别为 product_id
+   - 示例（正确）：
      - "产品ID: 1" → product_id=1
      - "购买1号产品" → product_id=1, quantity=1
      - "ID是5的产品" → product_id=5
      - "我要买3号" → product_id=3
      - "就选第一个" → product_id=1
+   - 示例（错误，不应提取）：
+     - "帮我查询13455556500订单" → product_id=None, order_id="13455556500"（这是订单号）
+     - "查询订单13455556500" → product_id=None, order_id="13455556500"（订单号）
    - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
 
-   **优先级2：search_keyword 提取规则**
+   **优先级2：order_id 提取规则（字符串类型）**
+   - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
+   - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
+   - 示例（正确）：
+     - "查询ORD1242343订单信息" → order_id="ORD1242343"
+     - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
+     - "订单号是ORD123456" → order_id="ORD123456"
+     - "帮我查一下订单ORD789" → order_id="ORD789"
+     - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
+     - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
+     - "订单编号是456" → order_id="456"
+   - **重要**：order_id统一为字符串类型
+     - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
+     - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
+
+   **优先级3：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
    - 示例：
      - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
@@ -611,7 +683,19 @@ sub_queries: []
      - "有没有冰箱" → search_keyword="冰箱"
      - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
 
+**订单业务意图识别规则**（重要）：
+当查询涉及订单相关操作时，必须在 reasoning 中明确标识业务意图：
+- **订单查询意图**：包含"查询"、"查看"、"查"、"帮我查"、"查一下"、"我想查"、"订单状态"、"订单信息"、"订单详情"、"我的订单"等表达，且提到订单或订单号
+  - 示例："谢谢，帮我查一下ORD465577订单" → order_id="ORD465577", reasoning中应明确标识为"订单查询意图"
+  - 示例："查询我的订单" → reasoning中应明确标识为"订单查询意图"
+  - 示例："帮我看看订单ORD123" → order_id="ORD123", reasoning中应明确标识为"订单查询意图"
+- **订单取消意图**：包含"取消"、"删除"、"退订"、"撤销"、"不要了"、"删除订单"等表达，且提到订单或订单号
+  - 示例："取消订单ORD123456" → order_id="ORD123456", reasoning中应明确标识为"订单取消意图"
+- 如果提取到 order_id 但意图不明确，默认为"订单查询意图"
+
 7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
+   - reasoning 必须包含对业务意图的明确描述（如订单查询意图、订单取消意图等）
+   - 对于订单相关查询，reasoning 应明确说明识别到的业务意图类型
 
 输出JSON："""
 

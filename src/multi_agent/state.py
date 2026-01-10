@@ -25,13 +25,14 @@ ConversationPhase = Literal[
 # 前端响应类型（SSE state_update.data.response_type）
 # 说明：
 # - "text"：普通文本回复（前端默认渲染）
-# - "product_list" / "order_list" / "mixed"：结构化卡片渲染
+# - "product_list" / "order_list" / "mixed" / "product_comparison"：结构化卡片渲染
 # - "interrupt" / "confirmation" / "error"：系统事件/确认流/错误（前端可按需处理）
 ResponseType = Literal[
     "text",
     "product_list",
     "order_list",
     "mixed",
+    "product_comparison",
     "interrupt",
     "confirmation",
     "error",
@@ -82,7 +83,7 @@ class MultiAgentState(BaseModel):
     max_iterations: int = 10  # 最大迭代次数，默认10
 
     # 路由决策（一步一步智能模式：基于 entities 智能路由）
-    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "finish"]] = None
+    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "consultation", "finish"]] = None
     routing_reason: Optional[str] = None  # 路由决策的原因说明
 
     # 意图识别

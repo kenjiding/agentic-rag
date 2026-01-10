@@ -35,8 +35,8 @@ async def create_order_executor(action_type: str, action_data: Dict[str, Any]) -
     logger.info(f"🔧 [EXECUTOR] 开始执行订单创建")
     logger.info(f"🔧 [EXECUTOR] action_type: {action_type}")
     logger.info(f"🔧 [EXECUTOR] action_data: {action_data}")
-    if 'user_phone' in action_data:
-        logger.info(f"🔧 [EXECUTOR] 用户手机号: '{action_data['user_phone']}' (类型: {type(action_data['user_phone']).__name__})")
+    if 'user_id' in action_data:
+        logger.info(f"🔧 [EXECUTOR] 用户ID: '{action_data['user_id']}' (类型: {type(action_data['user_id']).__name__})")
     if 'items' in action_data:
         logger.info(f"🔧 [EXECUTOR] 商品列表: {action_data['items']}")
 

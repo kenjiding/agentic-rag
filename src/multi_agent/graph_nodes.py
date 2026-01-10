@@ -73,9 +73,8 @@ class GraphNodeHandler:
             # 使用异步方法提高性能
             intent = await self.graph.intent_classifier.aclassify(question)
 
-            # 提取实体
-            existing_entities = state.entities
-            entities = {**existing_entities}
+            # 提取实体 - 合并新提取的实体到现有实体中
+            entities = {**state.entities}
 
             if intent.entities:
                 entities_dict = intent.entities.model_dump(exclude_none=True)

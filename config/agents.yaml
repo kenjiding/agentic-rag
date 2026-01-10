@@ -64,6 +64,19 @@ agents:
       category: "business"
       capabilities: ["order_query", "order_cancel", "order_create"]
 
+  # Consultation Agent - 深度咨询与导购专家
+  - name: consultation_agent
+    description: "深度咨询与导购专家 - 处理产品对比、适配性确认、隐性需求挖掘等复杂场景"
+    enabled: true
+    priority: 25  # 高于product_agent，优先处理复杂咨询场景
+    route_config:
+      can_handoff_to: ["product_agent", "chat_agent"]
+      on_complete: "finish"
+      allow_escalation: true
+    metadata:
+      category: "consultation"
+      capabilities: ["product_comparison", "specification_extraction", "compatibility_check", "recommendation"]
+
 # 全局路由配置
 routing:
   # Supervisor路由策略

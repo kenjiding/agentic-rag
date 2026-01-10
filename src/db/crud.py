@@ -1,10 +1,12 @@
 """CRUD 操作封装 - 适配现有数据库
 
 提供对数据库表的增删改查操作。
+当USE_TEST_DATA=True时，支持从JSON文件读取测试数据。
 """
 
+import os
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 import random
 
 from sqlalchemy import and_, or_, select
@@ -18,6 +20,31 @@ from .models import (
     Order,
     OrderItem,
 )
+
+# 延迟导入测试数据加载器，避免模块级别导入时环境变量未加载的问题
+_test_data_loader_imported = False
+_load_test_data = None
+_get_test_product_by_id = None
+_search_test_products = None
+_is_use_test_data = None
+
+
+def _ensure_test_data_loader_imported():
+    """确保测试数据加载器已导入（延迟导入，在运行时动态检查）"""
+    global _test_data_loader_imported, _load_test_data, _get_test_product_by_id, _search_test_products, _is_use_test_data
+    
+    if not _test_data_loader_imported:
+        from .test_data_loader import (
+            load_test_data,
+            get_test_product_by_id,
+            search_test_products,
+            is_use_test_data
+        )
+        _load_test_data = load_test_data
+        _get_test_product_by_id = get_test_product_by_id
+        _search_test_products = search_test_products
+        _is_use_test_data = is_use_test_data
+        _test_data_loader_imported = True
 
 
 # ============== Brand CRUD ==============
@@ -48,7 +75,7 @@ def get_sub_category_by_name(db: Session, name: str) -> Optional[SubCategory]:
 # ============== Product CRUD ==============
 
 def search_products(
-    db: Session,
+    db: Optional[Session],
     name: Optional[str] = None,
     category: Optional[str] = None,
     sub_category: Optional[str] = None,
@@ -59,11 +86,14 @@ def search_products(
     in_stock_only: bool = False,
     special_only: bool = False,
     limit: int = 10,
-) -> List[Product]:
+) -> List[Union[Product, Any]]:
     """搜索商品（支持多条件组合）
 
+    当USE_TEST_DATA=True时，从JSON文件读取测试数据（db参数可忽略）。
+    否则从数据库查询真实数据。
+
     Args:
-        db: 数据库会话
+        db: 数据库会话（测试数据模式下可为None）
         name: 商品名称或型号关键词（模糊搜索）
         category: 主分类名称
         sub_category: 子分类名称
@@ -76,84 +106,192 @@ def search_products(
         limit: 返回数量限制
 
     Returns:
-        商品列表
+        商品列表（Product对象或类似Product的对象）
     """
-    query = select(Product).options(
-        joinedload(Product.brand),
-        joinedload(Product.main_category),
-        joinedload(Product.sub_category),
-    )
-
-    conditions = []
-
-    if name:
-        conditions.append(
-            or_(
-                Product.name.ilike(f"%{name}%"),
-                Product.model_number.ilike(f"%{name}%"),
-                Product.features.ilike(f"%{name}%"),
-                Product.description.ilike(f"%{name}%"),
-            )
+    # 运行时动态检查是否使用测试数据
+    _ensure_test_data_loader_imported()
+    if _is_use_test_data():
+        # 从测试数据搜索
+        test_products = _search_test_products(
+            name=name,
+            category=category,
+            sub_category=sub_category,
+            brand=brand,
+            price_min=float(price_min) if price_min else None,
+            price_max=float(price_max) if price_max else None,
+            min_rating=min_rating,
+            in_stock_only=in_stock_only,
+            special_only=special_only,
+            limit=limit
         )
-
-    if category:
-        query = query.join(MainCategory, Product.main_category_id == MainCategory.id)
-        conditions.append(MainCategory.name == category)
-
-    if sub_category:
-        query = query.join(SubCategory, Product.sub_category_id == SubCategory.id)
-        conditions.append(SubCategory.name == sub_category)
-
-    if brand:
-        query = query.join(Brand, Product.brand_id == Brand.id)
-        conditions.append(Brand.name == brand)
-
-    if price_min is not None:
-        conditions.append(Product.price >= price_min)
-
-    if price_max is not None:
-        conditions.append(Product.price <= price_max)
-
-    # 评分筛选需要通过 features 字段模糊匹配（数据库中没有单独的 rating 字段）
-    if min_rating is not None:
-        # 将评分转换为整数范围进行模糊匹配
-        rating_threshold = int(min_rating)
-        conditions.append(
-            or_(
-                Product.features.like(f"%评分:%{rating_threshold}%%"),
-                Product.features.like(f"%评分:%{rating_threshold + 1}%%"),
-                Product.features.like(f"%评分:5%"),  # 最高评分
-            )
-        )
-
-    if in_stock_only:
-        conditions.append(
-            or_(Product.stock > 0, Product.stock.is_(None))
-        )
-
-    if special_only:
-        conditions.append(Product.special == True)
-
-    if conditions:
-        query = query.where(and_(*conditions))
-
-    query = query.order_by(Product.id).limit(limit)
-
-    result = db.execute(query).unique().scalars().all()
-    return list(result)
-
-
-def get_product_by_id(db: Session, product_id: int) -> Optional[Product]:
-    """根据 ID 获取商品"""
-    return db.execute(
-        select(Product)
-        .options(
+        
+        # 转换为类似Product的对象结构
+        from types import SimpleNamespace
+        products = []
+        for test_product in test_products:
+            product = SimpleNamespace()
+            product.id = test_product["id"]
+            product.name = test_product["name"]
+            product.model_number = test_product.get("model_number")
+            product.price = Decimal(str(test_product.get("price", 0)))
+            product.stock = test_product.get("stock", 0)
+            product.description = test_product.get("description")
+            product.features = test_product.get("features")
+            product.images = test_product.get("images")
+            product.special = test_product.get("special", False)
+            product.specifications = test_product.get("specifications")
+            product.semantic_tags = test_product.get("semantic_tags")
+            product.rating = test_product.get("rating", 0.0)
+            
+            # 模拟brand关系
+            brand_obj = SimpleNamespace()
+            brand_obj.name = test_product.get("brand")
+            product.brand = brand_obj
+            
+            # 模拟category关系
+            main_category_obj = SimpleNamespace()
+            main_category_obj.name = test_product.get("main_category")
+            product.main_category = main_category_obj
+            
+            sub_category_obj = SimpleNamespace()
+            sub_category_obj.name = test_product.get("sub_category")
+            product.sub_category = sub_category_obj
+            
+            products.append(product)
+        
+        return products
+    else:
+        if db is None:
+            raise ValueError("数据库会话不能为None（真实数据模式）")
+        # 从数据库查询
+        query = select(Product).options(
             joinedload(Product.brand),
             joinedload(Product.main_category),
             joinedload(Product.sub_category),
         )
-        .where(Product.id == product_id)
-    ).unique().scalar_one_or_none()
+
+        conditions = []
+
+        if name:
+            conditions.append(
+                or_(
+                    Product.name.ilike(f"%{name}%"),
+                    Product.model_number.ilike(f"%{name}%"),
+                    Product.features.ilike(f"%{name}%"),
+                    Product.description.ilike(f"%{name}%"),
+                )
+            )
+
+        if category:
+            query = query.join(MainCategory, Product.main_category_id == MainCategory.id)
+            conditions.append(MainCategory.name == category)
+
+        if sub_category:
+            query = query.join(SubCategory, Product.sub_category_id == SubCategory.id)
+            conditions.append(SubCategory.name == sub_category)
+
+        if brand:
+            query = query.join(Brand, Product.brand_id == Brand.id)
+            conditions.append(Brand.name == brand)
+
+        if price_min is not None:
+            conditions.append(Product.price >= price_min)
+
+        if price_max is not None:
+            conditions.append(Product.price <= price_max)
+
+        # 评分筛选需要通过 features 字段模糊匹配（数据库中没有单独的 rating 字段）
+        if min_rating is not None:
+            # 将评分转换为整数范围进行模糊匹配
+            rating_threshold = int(min_rating)
+            conditions.append(
+                or_(
+                    Product.features.like(f"%评分:%{rating_threshold}%%"),
+                    Product.features.like(f"%评分:%{rating_threshold + 1}%%"),
+                    Product.features.like(f"%评分:5%"),  # 最高评分
+                )
+            )
+
+        if in_stock_only:
+            conditions.append(
+                or_(Product.stock > 0, Product.stock.is_(None))
+            )
+
+        if special_only:
+            conditions.append(Product.special == True)
+
+        if conditions:
+            query = query.where(and_(*conditions))
+
+        query = query.order_by(Product.id).limit(limit)
+
+        result = db.execute(query).unique().scalars().all()
+        return list(result)
+
+
+def get_product_by_id(db: Optional[Session], product_id: int) -> Optional[Union[Product, Any]]:
+    """根据 ID 获取商品
+    
+    当USE_TEST_DATA=True时，从JSON文件读取测试数据（db参数可忽略）。
+    否则从数据库查询真实数据。
+    
+    Args:
+        db: 数据库会话（测试数据模式下可为None）
+        product_id: 产品ID
+    """
+    # 运行时动态检查是否使用测试数据
+    _ensure_test_data_loader_imported()
+    if _is_use_test_data():
+        # 从测试数据加载
+        test_product = _get_test_product_by_id(product_id)
+        if test_product:
+            # 转换为类似Product的对象结构（使用SimpleNamespace模拟）
+            from types import SimpleNamespace
+            product = SimpleNamespace()
+            product.id = test_product["id"]
+            product.name = test_product["name"]
+            product.model_number = test_product.get("model_number")
+            product.price = Decimal(str(test_product.get("price", 0)))
+            product.stock = test_product.get("stock", 0)
+            product.description = test_product.get("description")
+            product.features = test_product.get("features")
+            product.images = test_product.get("images")
+            product.special = test_product.get("special", False)
+            product.specifications = test_product.get("specifications")
+            product.semantic_tags = test_product.get("semantic_tags")
+            
+            # 模拟brand关系
+            brand = SimpleNamespace()
+            brand.name = test_product.get("brand")
+            product.brand = brand
+            
+            # 模拟category关系
+            main_category = SimpleNamespace()
+            main_category.name = test_product.get("main_category")
+            product.main_category = main_category
+            
+            sub_category = SimpleNamespace()
+            sub_category.name = test_product.get("sub_category")
+            product.sub_category = sub_category
+            
+            # 添加rating属性（从features解析或直接使用）
+            product.rating = test_product.get("rating", 0.0)
+            
+            return product
+        return None
+    else:
+        # 从数据库查询
+        if db is None:
+            raise ValueError("数据库会话不能为None（真实数据模式）")
+        return db.execute(
+            select(Product)
+            .options(
+                joinedload(Product.brand),
+                joinedload(Product.main_category),
+                joinedload(Product.sub_category),
+            )
+            .where(Product.id == product_id)
+        ).unique().scalar_one_or_none()
 
 
 # ============== Order CRUD ==============
@@ -204,7 +342,7 @@ def get_order_by_number(db: Session, order_number: str) -> Optional[Order]:
 
 def get_user_orders(
     db: Session,
-    user_phone: str,
+    user_id: str,
     status: Optional[str] = None,
     limit: int = 20,
 ) -> List[Order]:
@@ -212,7 +350,7 @@ def get_user_orders(
 
     Args:
         db: 数据库会话
-        user_phone: 用户手机号（作为 user_id）
+        user_id: 用户ID（session_id）
         status: 订单状态筛选
         limit: 返回数量限制
 
@@ -224,7 +362,7 @@ def get_user_orders(
     
     query = select(Order).options(
         joinedload(Order.order_items).joinedload(OrderItem.product),
-    ).where(Order.user_id == user_phone)
+    ).where(Order.user_id == user_id)
 
     if status:
         query = query.where(Order.status == status)
@@ -236,7 +374,7 @@ def get_user_orders(
     orders = list(result)
     
     # 【关键日志】记录从数据库查询到的订单状态
-    logger.info(f"💾 [DB_QUERY] 查询用户订单: user_phone={user_phone}, status_filter={status}, 找到{len(orders)}个订单")
+    logger.info(f"💾 [DB_QUERY] 查询用户订单: user_id={user_id}, status_filter={status}, 找到{len(orders)}个订单")
     for order in orders:
         logger.info(f"  - 订单ID: {order.id}, 订单号: {order.order_id}, 状态: {order.status}")
     
@@ -245,7 +383,7 @@ def get_user_orders(
 
 def create_order(
     db: Session,
-    user_phone: str,
+    user_id: str,
     items: List[dict],  # [{"product_id": 1, "quantity": 2}]
     notes: Optional[str] = None,
 ) -> Order:
@@ -253,7 +391,7 @@ def create_order(
 
     Args:
         db: 数据库会话
-        user_phone: 用户手机号（作为 user_id）
+        user_id: 用户ID（session_id）
         items: 订单明细列表
         notes: 订单备注（当前数据库不存储，忽略）
 
@@ -293,7 +431,7 @@ def create_order(
 
     order = Order(
         order_id=order_number,
-        user_id=user_phone,
+        user_id=user_id,  # 使用 user_id (session_id) 作为用户标识
         total_amount=total_amount,
         status="pending",
         created_at=now,

@@ -265,6 +265,53 @@ class ConfirmationResponse(BaseResponseModel):
         return "confirmation"
 
 
+class ProductComparisonResponse(BaseResponseModel):
+    """产品对比响应
+
+    用于ConsultationAgent返回产品对比分析结果。
+
+    Fields:
+        comparison_aspects: 对比维度列表（如["价格", "性能", "夜景拍摄"]）
+        comparison_details: 各产品在各维度上的详细对比信息
+           格式: {"维度名": {"产品名称": "详细描述"}}
+        scenario_analysis: 场景化分析结果（可选），包含评分和推荐理由
+        recommendation: 综合推荐建议和理由
+        products: 对比的产品列表，每个产品包含id、name、brand、price等信息
+        content: AI消息内容（可选，用于文本摘要）
+
+    Example:
+        >>> response = ProductComparisonResponse(
+        ...     comparison_aspects=["价格", "夜景拍摄"],
+        ...     comparison_details={"价格": {"产品A": "¥8000", "产品B": "¥12000"}},
+        ...     scenario_analysis={"场景": "VLOG", "评分": {"产品A": 8.5, "产品B": 9.0}},
+        ...     recommendation="推荐产品B",
+        ...     products=[{"id": 1, "name": "产品A"}, {"id": 2, "name": "产品B"}],
+        ...     content="对比分析完成"
+        ... )
+        >>> full_response = response.to_full_response()
+    """
+
+    response_type: Literal["product_comparison"] = "product_comparison"
+    comparison_aspects: List[str] = Field(description="对比维度列表")
+    comparison_details: Dict[str, Dict[str, str]] = Field(description="各维度详细对比信息")
+    scenario_analysis: Optional[Dict[str, Any]] = Field(default=None, description="场景化分析结果")
+    recommendation: Optional[str] = Field(default=None, description="综合推荐建议")
+    products: List[Dict[str, Any]] = Field(description="对比的产品列表")
+
+    def _get_response_data_fields(self) -> List[str]:
+        """指定哪些字段应该放入response_data"""
+        fields = ["comparison_aspects", "comparison_details", "products"]
+        if self.scenario_analysis is not None:
+            fields.append("scenario_analysis")
+        if self.recommendation is not None:
+            fields.append("recommendation")
+        return fields
+
+    @classmethod
+    def get_response_type(cls) -> str:
+        return "product_comparison"
+
+
 class ErrorResponse(BaseResponseModel):
     """错误响应
 

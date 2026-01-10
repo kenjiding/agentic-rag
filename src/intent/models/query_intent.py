@@ -22,11 +22,6 @@ class Entities(BaseModel):
         default_factory=list,
         description="时间点（年份、日期等）"
     )
-    user_phone: Optional[str] = Field(
-        default=None,
-        description="用户手机号（11位，1开头）",
-        pattern=r"^1[3-9]\d{9}$"
-    )
     quantity: Optional[int] = Field(
         default=None,
         description="购买数量，如果查询中包含数量信息则提取（如：买2件、要3个）",
@@ -40,6 +35,10 @@ class Entities(BaseModel):
         default=None,
         description="用户明确指定的产品ID（整数）。用于用户直接说'产品ID:1'、'购买1号产品'等场景",
         ge=1
+    )
+    order_id: Optional[str] = Field(
+        default=None,
+        description="订单ID（字符串）。用于用户提供订单ID或订单号的场景，如'查询ORD1242343订单'、'订单号ORD1242343'、'查询订单ID:123'。订单号通常是字母+数字的组合（如ORD123456），也可以是纯数字字符串（如'123'）",
     )
 
 

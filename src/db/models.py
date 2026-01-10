@@ -106,6 +106,16 @@ class Product(Base):
     special: Mapped[bool] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    
+    # 新增：结构化产品参数（JSON格式）
+    # 用于存储从产品描述中提取的结构化参数，如相机参数、手机配置等
+    specifications: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # 示例：{"传感器": "1英寸", "像素": "2000万", "夜景ISO": "12800", "防抖": "5轴"}
+    
+    # 新增：产品语义标签（JSON格式）
+    # 用于存储产品的语义标签，支持基于标签的智能推荐
+    semantic_tags: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    # 示例：{"适用场景": ["VLOG", "旅行", "人像"], "档次": "高端", "年龄段": ["25-40"], "特性": ["操作简单", "续航长"]}
 
     # 关系
     brand: Mapped["Brand"] = relationship("Brand", back_populates="products")
@@ -154,6 +164,8 @@ class Product(Base):
             "special": self.special if self.special is not None else False,
             "rating": self.rating,
             "review_count": self.review_count,
+            "specifications": self.specifications,
+            "semantic_tags": self.semantic_tags,
         }
 
 
