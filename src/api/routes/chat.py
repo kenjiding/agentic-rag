@@ -7,7 +7,7 @@
 """
 import json
 import logging
-from typing import cast
+from typing import cast, Any, Dict, List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from src.api.models import ChatRequest
@@ -15,6 +15,61 @@ from src.api.graph_manager import get_graph
 from src.api.formatters import format_step_name, format_step_detail, format_state_update
 
 logger = logging.getLogger(__name__)
+
+
+def make_json_serializable(obj: Any) -> Any:
+    """递归清理对象，移除不可 JSON 序列化的字段
+    
+    过滤掉 LangChain 的 Document 对象和其他不可序列化的对象。
+    对于包含 Document 的列表，只保留其 page_content 和 metadata（如果存在）。
+    
+    Args:
+        obj: 要清理的对象
+        
+    Returns:
+        可 JSON 序列化的对象
+    """
+    # 检查是否是 Document 对象（通过类名和属性判断）
+    if hasattr(obj, '__class__'):
+        class_name = obj.__class__.__name__
+        # 检查是否是 LangChain Document 对象
+        if class_name == 'Document' and hasattr(obj, 'page_content'):
+            # 如果是 Document 对象，只返回可序列化的内容
+            try:
+                return {
+                    "page_content": getattr(obj, 'page_content', ''),
+                    "metadata": make_json_serializable(getattr(obj, 'metadata', {}))
+                }
+            except Exception:
+                return str(obj)
+        # 检查是否是其他 LangChain 消息对象（BaseMessage, AIMessage, HumanMessage等）
+        elif 'Message' in class_name and hasattr(obj, 'content'):
+            # 只返回 content，忽略其他不可序列化的属性
+            return str(getattr(obj, 'content', ''))
+    
+    # 检查是否是列表
+    if isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    
+    # 检查是否是字典
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    
+    # 检查是否是基本类型（可 JSON 序列化）
+    # 基本类型包括：str, int, float, bool, None
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    
+    # 尝试 JSON 序列化测试
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        # 如果是不可序列化的对象，尝试转换为字符串
+        try:
+            return str(obj)
+        except Exception:
+            return None
 
 router = APIRouter()
 
@@ -82,8 +137,8 @@ async def stream_chat_response(question: str, session_id: str):
                     if isinstance(interrupt_value, dict):
                         # 构建前端数据，包含所有必要的信息
                         frontend_data = {
-                            k: v for k, v in interrupt_value.items()
-                            if k != 'messages' and k != 'result'
+                            k: make_json_serializable(v) for k, v in interrupt_value.items()
+                            if k != 'messages' and k != 'result' and k != 'agent_results'
                         }
                         # 添加步骤信息
                         frontend_data["execution_steps"] = execution_steps
@@ -107,11 +162,11 @@ async def stream_chat_response(question: str, session_id: str):
 
                 # 直接透传状态更新（Agent已通过ResponseModel提供完整数据）
                 if isinstance(node_update, dict):
-                    # 排除无法序列化的字段（messages包含LangChain对象）
-                    # 前端只需要：response_type, content, role, response_data, current_agent, tools_used
+                    # 排除无法序列化的字段（messages包含LangChain对象，result可能包含Document对象）
+                    # 前端只需要：response_type, content, role, response_data, current_agent, tools_used, metadata等
                     frontend_data = {
-                        k: v for k, v in node_update.items()
-                        if k != 'messages' and k != 'result'
+                        k: make_json_serializable(v) for k, v in node_update.items()
+                        if k != 'messages' and k != 'result' and k != 'agent_results'
                     }
                     # 添加步骤信息到响应中
                     frontend_data["execution_steps"] = execution_steps
