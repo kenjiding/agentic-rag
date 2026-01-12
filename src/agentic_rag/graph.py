@@ -15,7 +15,8 @@
 from src.agentic_rag.advance_detector import AdvancedNeedsMoreInfoDetector
 from langgraph.graph import StateGraph, END
 from langchain_chroma import Chroma
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
+from src.utils.llm_factory import create_llm_for_rag
 from typing import Optional, Dict, Any
 from src.agentic_rag.state import AgenticRAGState
 from src.agentic_rag.retriever import IntelligentRetriever
@@ -32,7 +33,7 @@ from src.agentic_rag.threshold_config import ThresholdConfig
 
 def create_agentic_rag_graph(
     vectorstore: Chroma,
-    llm: ChatOpenAI = None,
+    llm: BaseChatModel = None,
     max_iterations: int = 3,
     threshold_config: Optional[ThresholdConfig] = None,
     skip_intent_classification: bool = False
@@ -63,7 +64,7 @@ def create_agentic_rag_graph(
     if llm is None:
         # 使用配置的生成器温度
         generator_temp = threshold_config.generator.default_temperature
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=generator_temp)
+        llm = create_llm_for_rag(temperature=generator_temp)
 
     # 初始化检索器（支持 BM25 + Dense + Rerank）
     retriever = IntelligentRetriever(

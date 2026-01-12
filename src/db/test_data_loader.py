@@ -6,6 +6,7 @@
 
 import json
 import os
+import re
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -62,6 +63,29 @@ def get_test_product_by_id(product_id: int) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _normalize_string_for_search(text: str) -> str:
+    """标准化字符串用于搜索比较（企业级最佳实践）
+    
+    从源头解决问题：在搜索时对关键词和数据库字段都进行标准化处理，
+    而不是生成多个变体。这样可以处理空格、大小写等格式差异。
+    
+    标准化规则：
+    1. 去除所有空格（处理"华为Mate 60 Pro" vs "华为 Mate 60 Pro"）
+    2. 转换为小写（处理大小写差异）
+    3. 去除首尾空白
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        标准化后的文本
+    """
+    if not text:
+        return ""
+    # 去除所有空格并转换为小写
+    return text.replace(' ', '').replace('\t', '').replace('\n', '').lower().strip()
+
+
 def search_test_products(
     name: Optional[str] = None,
     category: Optional[str] = None,
@@ -82,9 +106,18 @@ def search_test_products(
     filtered_products = []
     
     for product in products:
-        # 名称筛选
+        # 名称筛选（企业级最佳实践：标准化比较，从源头解决问题）
         if name:
-            if name.lower() not in product.get("name", "").lower():
+            # 标准化搜索关键词和产品字段，去除空格后比较
+            normalized_name = _normalize_string_for_search(name)
+            product_name_normalized = _normalize_string_for_search(product.get("name", ""))
+            product_model_normalized = _normalize_string_for_search(product.get("model_number", "") or "")
+            product_description_normalized = _normalize_string_for_search(product.get("description", "") or "")
+            
+            # 检查标准化后的关键词是否在标准化后的产品字段中
+            if (normalized_name not in product_name_normalized and
+                (not product_model_normalized or normalized_name not in product_model_normalized) and
+                (not product_description_normalized or normalized_name not in product_description_normalized)):
                 continue
         
         # 分类筛选

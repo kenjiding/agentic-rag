@@ -13,7 +13,7 @@ load_dotenv()
 class AgenticRAGConfig:
     """Agentic RAG 配置"""
     # LLM 配置
-    model_name: str = "gpt-4o-mini"
+    model_name: str = "openai:gpt-4o-mini"  # 格式: provider:model_name，支持 openai, anthropic, gemini, ollama, tongyi, moonshot
     temperature: float = 0.1
     max_tokens: Optional[int] = None
 
@@ -43,8 +43,13 @@ class AgenticRAGConfig:
     @classmethod
     def from_env(cls) -> "AgenticRAGConfig":
         """从环境变量创建配置"""
+        # 兼容旧格式：如果模型名称不包含 provider，默认为 openai
+        model_name = os.getenv("MODEL_NAME", "openai:gpt-4o-mini")
+        if ":" not in model_name:
+            model_name = f"openai:{model_name}"
+        
         return cls(
-            model_name=os.getenv("MODEL_NAME", "gpt-4o-mini"),
+            model_name=model_name,
             temperature=float(os.getenv("TEMPERATURE", "0.1")),
             embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
             max_iterations=int(os.getenv("MAX_ITERATIONS", "3")),

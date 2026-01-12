@@ -5,7 +5,8 @@ from src.agentic_rag.llm import LLM
 from src.agentic_rag.splitter import DocsSplitter
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_core.language_models import BaseChatModel
+from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from src.agentic_rag.graph import create_agentic_rag_graph, create_initial_state
 from src.agentic_rag.vector_store import VectorStore # 建议直接在类中使用 Chroma 以确保存储逻辑控制在手
@@ -27,8 +28,8 @@ class AgenticRAG:
     def __init__(
         self,
         vectorstore: Optional[Chroma] = None,
-        llm: Optional[ChatOpenAI] = None,
-        model_name: str = "gpt-4o-mini",
+        llm: Optional[BaseChatModel] = None,
+        model_name: str = "openai:gpt-4o-mini",
         embedding_model: str = "text-embedding-3-small",
         max_iterations: int = 3,
         # 修改点 1: 设置一个默认的本地路径，确保不是 None

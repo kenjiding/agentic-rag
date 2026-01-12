@@ -4,7 +4,7 @@
 这样可以在多Agent系统中使用RAG的搜索和知识检索能力。
 """
 from typing import Dict, Any, Optional
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.state import MultiAgentState
@@ -39,9 +39,9 @@ class RAGAgent(BaseAgent):
     def __init__(
         self,
         rag_system: Optional[AgenticRAG] = None,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         persist_directory: str = "./tmp/chroma_db/agentic_rag",
-        model_name: str = "gpt-4o-mini",
+        model_name: str = "openai:gpt-4o-mini",
         max_iterations: int = 3
     ):
         """

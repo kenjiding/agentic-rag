@@ -112,7 +112,16 @@ def query_order(
 
                 # 构建结构化订单数据
                 order_items = []
-                for item in order.order_items:
+                logger.info(f"🔍 [ORDER_QUERY] 订单包含 {len(order.order_items)} 个订单项")
+                for idx, item in enumerate(order.order_items):
+                    logger.info(f"🔍 [ORDER_QUERY] 订单项 {idx+1}: order_item_id={item.id}, product_id={item.product_id}, quantity={item.quantity}, price={item.price}")
+                    
+                    # 检查 product 关系是否正确加载
+                    if item.product:
+                        logger.info(f"🔍 [ORDER_QUERY] 订单项 {idx+1} 的产品信息: product_id={item.product.id}, name={item.product.name}, price={item.product.price}")
+                    else:
+                        logger.warning(f"🔍 [ORDER_QUERY] 订单项 {idx+1} 的 product 关系未加载或为 None! product_id={item.product_id}")
+                    
                     product_images = []
                     if item.product and item.product.images:
                         if isinstance(item.product.images, list):
@@ -120,8 +129,12 @@ def query_order(
                         elif isinstance(item.product.images, dict):
                             product_images = [v for v in item.product.images.values() if isinstance(v, str)]
                     
+                    product_name = item.product.name if item.product else "未知商品"
+                    logger.info(f"🔍 [ORDER_QUERY] 订单项 {idx+1} 最终显示: product_name={product_name}, quantity={item.quantity}, subtotal={float(item.price * item.quantity):.2f}")
+                    
                     order_items.append({
-                        "product_name": item.product.name if item.product else "未知商品",
+                        "product_id": item.product_id,  # 添加 product_id 用于调试
+                        "product_name": product_name,
                         "quantity": item.quantity,
                         "subtotal": float(item.price * item.quantity),
                         "product_images": product_images,

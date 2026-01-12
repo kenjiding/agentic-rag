@@ -87,7 +87,7 @@ routing:
     allow_finish: true
 
   # 最大迭代次数
-  max_iterations: 10
+  max_iterations: 100
 
   # 超时配置（秒）
   timeout: 120

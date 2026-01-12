@@ -17,6 +17,7 @@ from src.confirmation import (
     ConfirmationStatus,
 )
 from src.api.streaming_utils import accumulate_and_format_state_updates
+from src.api.formatters import make_json_serializable
 from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
@@ -92,17 +93,20 @@ async def resolve_confirmation(request: ConfirmationResolveRequest):
                         session_id=session_id
                     )
                 ):
-                    # 【关键修复】过滤掉不可序列化的字段（如 messages 中的 LangChain 对象）
-                    if isinstance(formatted, dict) and "data" in formatted:
-                        data = formatted["data"]
-                        # 排除无法序列化的字段
+                    # 【关键修复】使用 make_json_serializable 递归处理所有不可序列化的对象
+                    # 包括 Document 对象和其他 LangChain 对象
+                    serializable_formatted = make_json_serializable(formatted)
+                    
+                    # 额外过滤掉 messages 和 result 字段（前端不需要这些原始 LangChain 对象）
+                    if isinstance(serializable_formatted, dict) and "data" in serializable_formatted:
+                        data = serializable_formatted["data"]
                         filtered_data = {
                             k: v for k, v in data.items()
                             if k != 'messages' and k != 'result'
                         }
-                        formatted["data"] = filtered_data
+                        serializable_formatted["data"] = filtered_data
                     
-                    json_str = json.dumps(formatted, ensure_ascii=False)
+                    json_str = json.dumps(serializable_formatted, ensure_ascii=False)
                     yield f"data: {json_str}\n\n"
 
                 yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"

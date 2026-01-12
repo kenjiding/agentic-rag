@@ -18,9 +18,10 @@ from typing import Dict, Any, Optional, List
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 
 from src.multi_agent.state import MultiAgentState
+from src.utils.llm_factory import create_llm_for_agent
 from src.multi_agent.supervisor import SupervisorAgent
 from src.intent import IntentClassifier
 from src.multi_agent.agents.base_agent import BaseAgent
@@ -79,7 +80,7 @@ class MultiAgentGraph:
 
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         agents: Optional[List[BaseAgent]] = None,
         tool_registry: Optional[ToolRegistry] = None,
         rag_persist_directory: str = "./tmp/chroma_db/agentic_rag",
@@ -93,7 +94,7 @@ class MultiAgentGraph:
         初始化多Agent图
 
         Args:
-            llm: 语言模型实例
+            llm: 语言模型实例，如果为None则使用工厂函数创建默认模型
             agents: 自定义Agent列表，如果为None则使用默认Agent
             tool_registry: 工具注册表
             rag_persist_directory: RAG向量数据库持久化目录
@@ -103,7 +104,7 @@ class MultiAgentGraph:
             enable_business_agents: 是否启用业务Agent（商品、订单），默认True
             agents_config_path: Agent配置文件路径，默认为config/agents.yaml
         """
-        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        self.llm = llm or create_llm_for_agent()
         self.tool_registry = tool_registry or ToolRegistry()
         self.max_iterations = max_iterations
         self.enable_intent_classification = enable_intent_classification

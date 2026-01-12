@@ -11,7 +11,8 @@ from typing import Annotated, Optional, List, Dict, Any
 from decimal import Decimal
 
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
+from src.utils.llm_factory import create_llm_for_agent
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -28,11 +29,11 @@ logger = logging.getLogger(__name__)
 _default_llm = None
 
 
-def get_default_llm() -> ChatOpenAI:
+def get_default_llm() -> BaseChatModel:
     """获取默认LLM实例（工具内部使用）"""
     global _default_llm
     if _default_llm is None:
-        _default_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        _default_llm = create_llm_for_agent()
     return _default_llm
 
 
@@ -291,7 +292,7 @@ async def _extract_product_specifications_async(
             logger.error(f"提取产品参数失败: {e}", exc_info=True)
             # 回退方案：使用新的LLM实例重试，确保使用结构化输出
             try:
-                fallback_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+                fallback_llm = create_llm_for_agent()
                 fallback_structured_llm = fallback_llm.with_structured_output(
                     ProductSpecifications,
                     method="function_calling"

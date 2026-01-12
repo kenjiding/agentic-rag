@@ -2,10 +2,11 @@
 from typing import List, Optional
 from src.agentic_rag.answer_evaluation import AnswerEvaluation
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from src.agentic_rag.threshold_config import ThresholdConfig, GeneratorThresholds
+from src.utils.llm_factory import create_llm_for_rag
 
 
 class IntelligentGenerator:
@@ -13,8 +14,8 @@ class IntelligentGenerator:
     
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
-        model_name: str = "gpt-4o-mini",
+        llm: Optional[BaseChatModel] = None,
+        model_name: str = "openai:gpt-4o-mini",
         temperature: Optional[float] = None,
         threshold_config: Optional[ThresholdConfig] = None
     ):
@@ -22,8 +23,8 @@ class IntelligentGenerator:
         初始化生成器
         
         Args:
-            llm: LLM 实例
-            model_name: 模型名称
+            llm: LLM 实例，如果为None则使用工厂函数创建
+            model_name: 模型名称，格式为 provider:model_name
             temperature: 生成温度（如果为None，使用配置中的默认温度）
             threshold_config: 阈值配置
         """
@@ -36,12 +37,11 @@ class IntelligentGenerator:
         if temperature is None:
             temperature = generator_thresholds.default_temperature
         
-        self.llm = llm or ChatOpenAI(
-            model=model_name,
-            temperature=temperature
-            # 注意：降低 temperature 到 0.1 已经足够提高稳定性
-            # seed 参数不是所有 API 都支持，如果需要可自行添加
-        )
+        # 如果未提供 LLM，使用工厂函数创建
+        if llm is None:
+            llm = create_llm_for_rag(model_name=model_name, temperature=temperature)
+        
+        self.llm = llm
         self.output_parser = StrOutputParser()
         
     def format_context(self, docs: List[Document]) -> str:

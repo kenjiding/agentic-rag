@@ -10,7 +10,8 @@ import json
 import logging
 from typing import Any, Dict
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
+from src.utils.llm_factory import create_llm_for_agent
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 from src.tools.consultation_tools import get_consultation_tools
@@ -67,19 +68,16 @@ class ConsultationAgent:
 
     def __init__(
         self,
-        llm: ChatOpenAI | None = None,
+        llm: BaseChatModel | None = None,
         tools: list | None = None,
     ):
         """初始化 Consultation Agent
 
         Args:
-            llm: LangChain LLM 实例
+            llm: LangChain LLM 实例，如果为None则使用工厂函数创建默认模型
             tools: 咨询工具列表，默认使用内置工具
         """
-        self.llm = llm or ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0.7,
-        )
+        self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_consultation_tools()
         self.name = "consultation_agent"
 
@@ -93,6 +91,54 @@ class ConsultationAgent:
     def get_description(self) -> str:
         """获取 Agent 描述"""
         return "深度咨询与导购专家 - 处理产品对比、适配性确认、隐性需求挖掘等复杂场景"
+
+    def _preprocess_tool_args(self, args: Dict[str, Any], tool_name: str) -> Dict[str, Any]:
+        """预处理工具参数，修复不同 LLM 模型对复杂类型参数的处理差异
+        
+        问题：某些 LLM（如 Qwen）可能将列表参数作为 JSON 字符串传递
+        解决：检测并转换字符串格式的列表为实际的列表类型
+        
+        Args:
+            args: 原始工具参数
+            tool_name: 工具名称
+            
+        Returns:
+            预处理后的工具参数
+        """
+        processed_args = args.copy()
+        
+        # 针对 compare_products 工具的特殊处理
+        if tool_name == "compare_products":
+            # 处理 comparison_aspects 参数：如果是字符串，尝试解析为列表
+            if "comparison_aspects" in processed_args:
+                comparison_aspects = processed_args["comparison_aspects"]
+                if isinstance(comparison_aspects, str):
+                    try:
+                        # 尝试解析 JSON 字符串
+                        parsed = json.loads(comparison_aspects)
+                        if isinstance(parsed, list):
+                            processed_args["comparison_aspects"] = parsed
+                            logger.info(f"✅ 修复 comparison_aspects 参数类型: {comparison_aspects} -> {parsed}")
+                        else:
+                            logger.warning(f"⚠️ comparison_aspects 解析后不是列表: {parsed}")
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"⚠️ 无法解析 comparison_aspects JSON 字符串: {comparison_aspects}, 错误: {e}")
+                        # 如果解析失败，移除该参数，让工具使用默认值
+                        processed_args.pop("comparison_aspects", None)
+            
+            # 处理 product_ids 参数：如果是字符串，尝试解析为列表
+            if "product_ids" in processed_args:
+                product_ids = processed_args["product_ids"]
+                if isinstance(product_ids, str):
+                    try:
+                        parsed = json.loads(product_ids)
+                        if isinstance(parsed, list):
+                            processed_args["product_ids"] = parsed
+                            logger.info(f"✅ 修复 product_ids 参数类型: {product_ids} -> {parsed}")
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"⚠️ 无法解析 product_ids JSON 字符串: {product_ids}, 错误: {e}")
+        
+        return processed_args
 
     def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
         """构建系统提示的上下文信息
@@ -189,11 +235,15 @@ class ConsultationAgent:
                 tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
                 if tool:
                     try:
+                        # 预处理工具参数：修复不同 LLM 模型对复杂类型参数的处理差异
+                        # 例如：Qwen 可能将列表参数作为 JSON 字符串传递
+                        tool_args = self._preprocess_tool_args(tool_call["args"], tool_call["name"])
+                        
                         # 调用工具（异步或同步）
                         if hasattr(tool, "ainvoke"):
-                            result = await tool.ainvoke(tool_call["args"])
+                            result = await tool.ainvoke(tool_args)
                         else:
-                            result = tool.invoke(tool_call["args"])
+                            result = tool.invoke(tool_args)
 
                         # 尝试解析工具返回的结构化数据
                         try:

@@ -10,7 +10,8 @@ import json
 import logging
 from typing import Any, Dict
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
+from src.utils.llm_factory import create_llm_for_agent
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 from src.tools.product_tools import get_product_tools
@@ -56,19 +57,16 @@ class ProductAgent:
 
     def __init__(
         self,
-        llm: ChatOpenAI | None = None,
+        llm: BaseChatModel | None = None,
         tools: list | None = None,
     ):
         """初始化 Product Agent
 
         Args:
-            llm: LangChain LLM 实例
+            llm: LangChain LLM 实例，如果为None则使用工厂函数创建默认模型
             tools: 商品工具列表，默认使用内置工具
         """
-        self.llm = llm or ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0.7,
-        )
+        self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_product_tools()
         self.name = "product_agent"
 
@@ -343,13 +341,6 @@ class ProductAgent:
                         if product_ids:
                             entities_update["product_ids"] = product_ids
                             logger.info(f"检测到对比场景（单结果），提取产品ID: {product_ids}")
-                else:
-                    # 普通搜索场景：更新last_product_search_context
-                    entities_update["last_product_search_context"] = {
-                        "products": structured_result.get("products", []),
-                        "search_keyword": state.entities.get("search_keyword"),
-                        "quantity": state.entities.get("quantity", 1)
-                    }
                 
                 result = {
                     "result": structured_result,  # 必需：权威数据源

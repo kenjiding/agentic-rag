@@ -4,7 +4,7 @@ Core implementation of intent classification using LLM with structured output.
 Based on 2025-2026 best practices for unified information extraction and query decomposition.
 """
 from typing import Optional, List, Dict, Any
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 import logging
 
@@ -12,6 +12,7 @@ from src.intent.classifier.base import BaseIntentClassifier
 from src.intent.models.query_intent import QueryIntent, SubQuery, Entities
 from src.intent.models.types import PipelineOption, DecompositionType, IntentType, ComplexityLevel
 from src.intent.config.settings import IntentConfig
+from src.utils.llm_factory import create_llm_for_intent_classification
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class IntentClassifier(BaseIntentClassifier):
 
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         config: Optional[IntentConfig] = None
     ):
         """
@@ -44,8 +45,14 @@ class IntentClassifier(BaseIntentClassifier):
         self.config = config or IntentConfig.default()
 
         if llm is None:
-            llm = ChatOpenAI(
-                model=self.config.llm_model,
+            # 使用工厂函数创建 LLM，支持配置中的模型名称
+            # 如果配置中的模型名称不包含 provider，默认为 openai
+            model_name = self.config.llm_model
+            if ":" not in model_name:
+                model_name = f"openai:{model_name}"
+            
+            llm = create_llm_for_intent_classification(
+                model_name=model_name,
                 temperature=self.config.llm_temperature
             )
 
@@ -224,17 +231,27 @@ sub_queries: []
    **优先级2：order_id 提取规则（字符串类型）**
    - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
    - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
+   - **严格禁止**：order_id必须是具体的订单号（包含数字），**绝对不能**是以下通用词汇：
+     - ❌ "订单"、"这个订单"、"我的订单"、"那个订单"、"该订单"、"此订单"
+     - ❌ "订单信息"、"订单详情"、"订单状态"、"订单号"、"订单ID"
+     - 如果用户只说"查询订单"、"帮我查一下这个订单"而没有提供具体订单号，order_id必须为null
    - 示例（正确）：
      - "查询ORD1242343订单信息" → order_id="ORD1242343"
      - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
      - "订单号是ORD123456" → order_id="ORD123456"
-     - "帮我查一下ORD789" → order_id="ORD789"
+     - "帮我查一下订单ORD789" → order_id="ORD789"
      - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
      - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
      - "订单编号是456" → order_id="456"
+   - 示例（错误，order_id必须为null）：
+     - "帮我查一下这个订单" → order_id=null（没有具体订单号）
+     - "查询我的订单" → order_id=null（没有具体订单号）
+     - "订单信息" → order_id=null（这是通用词汇，不是订单号）
+     - "订单" → order_id=null（这是通用词汇，不是订单号）
    - **重要**：order_id统一为字符串类型
      - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
      - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
+     - **验证规则**：order_id必须包含至少一个数字，不能是纯中文词
 
    **优先级3：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
@@ -274,6 +291,12 @@ sub_queries: []
             else:
                 # 容错：使用 model_validate
                 intent = QueryIntent.model_validate(result)
+            
+            # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
+            # 如果order_id是无效的（如"订单"），validator会将其设置为None
+            if intent.entities and intent.entities.order_id:
+                # validator已经验证过，这里只是记录日志
+                logger.debug(f"提取到order_id: {intent.entities.order_id}")
             
             return intent
         except Exception as e:
@@ -662,6 +685,10 @@ sub_queries: []
    **优先级2：order_id 提取规则（字符串类型）**
    - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
    - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
+   - **严格禁止**：order_id必须是具体的订单号（包含数字），**绝对不能**是以下通用词汇：
+     - ❌ "订单"、"这个订单"、"我的订单"、"那个订单"、"该订单"、"此订单"
+     - ❌ "订单信息"、"订单详情"、"订单状态"、"订单号"、"订单ID"
+     - 如果用户只说"查询订单"、"帮我查一下这个订单"而没有提供具体订单号，order_id必须为null
    - 示例（正确）：
      - "查询ORD1242343订单信息" → order_id="ORD1242343"
      - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
@@ -670,9 +697,15 @@ sub_queries: []
      - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
      - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
      - "订单编号是456" → order_id="456"
+   - 示例（错误，order_id必须为null）：
+     - "帮我查一下这个订单" → order_id=null（没有具体订单号）
+     - "查询我的订单" → order_id=null（没有具体订单号）
+     - "订单信息" → order_id=null（这是通用词汇，不是订单号）
+     - "订单" → order_id=null（这是通用词汇，不是订单号）
    - **重要**：order_id统一为字符串类型
      - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
      - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
+     - **验证规则**：order_id必须包含至少一个数字，不能是纯中文词
 
    **优先级3：search_keyword 提取规则**
    - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
@@ -713,6 +746,12 @@ sub_queries: []
             else:
                 # 容错：使用 model_validate
                 intent = QueryIntent.model_validate(result)
+            
+            # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
+            # 如果order_id是无效的（如"订单"），validator会将其设置为None
+            if intent.entities and intent.entities.order_id:
+                # validator已经验证过，这里只是记录日志
+                logger.debug(f"提取到order_id: {intent.entities.order_id}")
             
             return intent
         except Exception as e:

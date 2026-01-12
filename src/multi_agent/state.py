@@ -117,12 +117,6 @@ class MultiAgentState(BaseModel):
         description="提取的实体信息，用于多轮对话状态管理"
     )
 
-    # 最近的搜索上下文（用于用户取消后重新发起请求时恢复上下文）
-    last_product_search_context: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="最近一次产品搜索的上下文，包含 products、search_keyword、quantity 等"
-    )
-
     # 对话阶段（用于跟踪当前对话状态，实现任务完成后的状态清理）
     conversation_phase: ConversationPhase = Field(
         default="idle",

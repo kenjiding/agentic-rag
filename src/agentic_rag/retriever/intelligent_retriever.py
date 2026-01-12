@@ -9,10 +9,11 @@
 from typing import List, Optional, Tuple
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.agentic_rag.evaluation_config import RetrievalQualityConfig
+from src.utils.llm_factory import create_llm_for_rag
 from src.agentic_rag.evaluators import RetrievalQualityEvaluator
 from src.agentic_rag.threshold_config import ThresholdConfig, RetrieverThresholds
 from src.intent.models import PipelineOption
@@ -34,7 +35,7 @@ class IntelligentRetriever:
     def __init__(
         self,
         vectorstore: Chroma,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         default_strategy: str = "semantic",
         evaluation_config: Optional[RetrievalQualityConfig] = None,
         threshold_config: Optional[ThresholdConfig] = None,
@@ -46,7 +47,7 @@ class IntelligentRetriever:
 
         Args:
             vectorstore: 向量数据库
-            llm: 用于查询改写的 LLM
+            llm: 用于查询改写的 LLM，如果为None则使用工厂函数创建
             default_strategy: 默认检索策略
             evaluation_config: 评估配置
             threshold_config: 阈值配置
@@ -59,8 +60,11 @@ class IntelligentRetriever:
         # 获取检索器阈值配置
         retriever_thresholds = threshold_config.retriever if threshold_config else RetrieverThresholds()
 
-        # 使用配置的 LLM 温度
-        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=retriever_thresholds.llm_temperature)
+        # 使用配置的 LLM 温度，如果未提供 LLM 则使用工厂函数创建
+        if llm is None:
+            llm = create_llm_for_rag(temperature=retriever_thresholds.llm_temperature)
+        
+        self.llm = llm
         self.default_strategy = default_strategy
         self.embeddings = vectorstore._embedding_function
 

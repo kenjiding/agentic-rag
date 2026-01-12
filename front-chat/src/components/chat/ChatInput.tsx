@@ -15,6 +15,7 @@ const MAX_TEXTAREA_HEIGHT = 200 // Maximum height in pixels
 
 export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProps) {
   const [input, setInput] = useState("")
+  const [isComposing, setIsComposing] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Auto-resize textarea
@@ -46,11 +47,20 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Don't send when IME composition is active (e.g., Chinese input method)
     // Enter sends, Shift+Enter creates new line
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !isComposing) {
       e.preventDefault()
       handleSend()
     }
+  }
+
+  const handleCompositionStart = () => {
+    setIsComposing(true)
+  }
+
+  const handleCompositionEnd = () => {
+    setIsComposing(false)
   }
 
   const isInputEmpty = !input.trim()
@@ -66,6 +76,8 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               placeholder="输入消息..."
               disabled={disabled || isLoading}
               rows={1}

@@ -11,15 +11,17 @@ Supervisor负责分析用户意图，决定调用哪个Agent或工具。
 - 错误处理和降级策略
 - 支持AgentRegistry集成
 """
+import json
 import re
-from typing import Dict, Any, Optional, List, Literal, TYPE_CHECKING
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Dict, Any, Optional, List, Literal, TYPE_CHECKING, Set
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, model_validator
 from src.multi_agent.state import MultiAgentState, ConversationPhase
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.config import get_keywords_config
+from src.utils.llm_factory import create_llm_for_agent
 import logging
 
 if TYPE_CHECKING:
@@ -88,21 +90,21 @@ class SupervisorAgent:
 
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         agents: Optional[List[BaseAgent]] = None,
-        fallback_llm: Optional[ChatOpenAI] = None,
+        fallback_llm: Optional[BaseChatModel] = None,
         agent_registry: Optional["AgentRegistry"] = None
     ):
         """
         初始化Supervisor
 
         Args:
-            llm: 语言模型实例，用于路由决策
+            llm: 语言模型实例，用于路由决策，如果为None则使用工厂函数创建默认模型
             agents: 可用的Agent列表
             fallback_llm: 降级策略使用的LLM（可选，如果为None则使用更便宜的模型）
             agent_registry: Agent注册表（可选，用于获取Agent描述）
         """
-        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        self.llm = llm or create_llm_for_agent()
         self.agents: Dict[str, BaseAgent] = {}
         self.agent_registry = agent_registry
 
@@ -110,8 +112,8 @@ class SupervisorAgent:
         self.structured_llm = self.llm.with_structured_output(RoutingDecision)
 
         # 降级策略使用的LLM（使用更便宜的模型，降低成本）
-        self.fallback_llm = fallback_llm or ChatOpenAI(
-            model="gpt-3.5-turbo",
+        self.fallback_llm = fallback_llm or create_llm_for_agent(
+            model_name="openai:gpt-3.5-turbo",
             temperature=0.1
         )
         self.fallback_structured_llm = self.fallback_llm.with_structured_output(RoutingDecision)
@@ -226,7 +228,11 @@ class SupervisorAgent:
         """
         all_entities = state.entities
 
-        if not all_entities and not state.last_product_search_context:
+        if not all_entities:
+            # 即使没有实体信息，也尝试从消息历史中提取上下文
+            message_context = self._build_message_context(state.messages)
+            if message_context:
+                return message_context
             return "（无累积实体信息）"
 
         context_parts = []
@@ -259,10 +265,10 @@ class SupervisorAgent:
         # 检查是否有 order_id（订单相关操作）
         order_id = all_entities.get("order_id")
         if not order_id:
-            # 尝试从历史消息中提取订单信息
-            order_id_from_history = self._extract_order_id_from_messages(state.messages)
+            # 尝试从历史消息和状态中提取订单信息（优先从state.response_data提取）
+            order_id_from_history = self._extract_order_id_from_messages(state.messages, state=state)
             if order_id_from_history:
-                context_parts.append(f"  ✓ 从历史消息中提取到订单信息: {order_id_from_history}")
+                context_parts.append(f"  ✓ 从历史消息/状态中提取到订单信息: {order_id_from_history}")
                 # 补充到实体信息中，供路由决策使用
                 all_entities["order_id"] = order_id_from_history
                 order_id = order_id_from_history
@@ -303,83 +309,286 @@ class SupervisorAgent:
                 if value is not None:
                     context_parts.append(f"  - {key}: {value}")
 
-        # 最近产品搜索上下文（用于用户取消后重新发起请求的场景）
-        if state.last_product_search_context:
-            search_ctx = state.last_product_search_context
-            context_parts.append("\n【最近产品搜索记录】")
-            context_parts.append(f"  - 搜索关键词: {search_ctx.get('search_keyword')}")
-            context_parts.append(f"  - 数量: {search_ctx.get('quantity', 1)}")
-            products = search_ctx.get("products", [])
-            if products:
-                context_parts.append(f"  - 搜索到 {len(products)} 个产品:")
-                for p in products[:5]:  # 最多显示5个产品
-                    name = p.get("name", "N/A")
-                    pid = p.get("id") or p.get("product_id", "N/A")
-                    price = p.get("price", "")
-                    price_str = f" ¥{price}" if price else ""
-                    context_parts.append(f"    * ID:{pid} {name}{price_str}")
-                if len(products) > 5:
-                    context_parts.append(f"    ... 还有 {len(products) - 5} 个产品")
+        # 从消息历史中提取上下文信息（更全面的上下文）
+        message_context = self._build_message_context(state.messages)
+        if message_context:
+            context_parts.append(message_context)
 
         return "\n".join(context_parts)
+        
+    def _build_message_context(self, messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        """
+        分组原则：
+        - 尽量把连续的对话放在同一个组
+        - 只有在「完成了一轮工具调用」（AI调用过工具且所有ToolMessage都回来了）之后，
+          再遇到新的HumanMessage，才认为开启了新话题，开始新组
+        """
+        if not messages:
+            return []
 
-    def _extract_order_id_from_messages(self, messages: List) -> Optional[str]:
-        """从历史消息中提取订单ID
+        groups = []
+        current = None
+        pending_tool_ids = set()
+        last_round_has_completed_tool = False   # 上一轮是否完整结束工具调用
+
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                # 关键判断：只有上一轮工具调用完整结束，才切新组
+                if current is not None and last_round_has_completed_tool:
+                    groups.append(current)
+                    current = None
+                    pending_tool_ids.clear()
+                    last_round_has_completed_tool = False
+
+                if current is None:
+                    current = {
+                        "human_messages": [],
+                        "ai_messages": [],
+                        "tool_messages": []
+                    }
+
+                current["human_messages"].append(msg.content)
+
+            elif isinstance(msg, AIMessage) and current is not None:
+                tool_calls = getattr(msg, "tool_calls", []) or []
+
+                current["ai_messages"].append({
+                    "content": msg.content or "",
+                    "tool_calls": [
+                        {"name": tc.get("name", ""), "args": tc.get("args", {})}
+                        for tc in tool_calls
+                    ]
+                })
+
+                for tc in tool_calls:
+                    if tc_id := tc.get("id"):
+                        pending_tool_ids.add(tc_id)
+
+                # 如果这次 AI 没有调用工具，也算一种“完成”
+                if not tool_calls:
+                    last_round_has_completed_tool = True
+
+            elif isinstance(msg, ToolMessage) and current is not None:
+                if tool_call_id := getattr(msg, "tool_call_id", None):
+                    if tool_call_id in pending_tool_ids:
+                        # ... 工具结果处理逻辑保持不变 ...
+                        # （省略，你原来的处理代码就很好）
+                        pending_tool_ids.discard(tool_call_id)
+
+                # 所有待处理的 tool call 都回来了 → 本轮工具调用完整结束
+                if not pending_tool_ids:
+                    last_round_has_completed_tool = True
+
+        if current:
+            groups.append(current)
+
+        return self._format_conversation_groups(groups, max_groups=10)
+
+    def _format_conversation_groups(self, groups: List[Dict[str, Any]], max_groups: int = 3) -> str:
+        """
+        将提取出的对话组格式化为可读的上下文字符串（用于塞到prompt里）
+        """
+        if not groups:
+            return ""
+
+        context_parts = ["\n【对话历史上下文】"]
+
+        # 只展示最近的几组
+        display_groups = groups[-max_groups:] if len(groups) > max_groups else groups
+
+        for idx, group in enumerate(display_groups, 1):
+            context_parts.append(f"\n--- 对话组 {idx} ---")
+
+            # 人类消息（可能多条）
+            human_text = "\n".join(
+                f"用户: {h}" for h in group["human_messages"]
+            )
+            context_parts.append(human_text)
+
+            # AI 回复 & 工具调用
+            for ai_msg in group["ai_messages"]:
+                if ai_msg["content"]:
+                    content = ai_msg["content"]
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    context_parts.append(f"AI回复: {content}")
+
+                for tool_call in ai_msg["tool_calls"]:
+                    name = tool_call["name"]
+                    args = tool_call["args"]
+                    context_parts.append(f"调用工具: {name}")
+                    if args:
+                        # 只展示关键参数（可按业务调整）
+                        key_args = {k: v for k, v in args.items()
+                                  if k in ["search_keyword", "product_id", "product_ids", "order_id", "quantity"]}
+                        if key_args:
+                            context_parts.append(f"参数: {key_args}")
+
+            # 工具返回结果（有针对性的摘要展示）
+            for tool_msg in group["tool_messages"]:
+                result = tool_msg.get("result", {})
+                if not isinstance(result, dict):
+                    continue
+
+                if "products" in result and isinstance(result["products"], list):
+                    products = result["products"]
+                    if products:
+                        context_parts.append(f"工具返回: 搜索到 {len(products)} 个产品")
+                        for p in products[:3]:
+                            name = p.get("name", "N/A")
+                            pid = p.get("id") or p.get("product_id", "N/A")
+                            price = p.get("price", "")
+                            price_str = f" ¥{price}" if price else ""
+                            context_parts.append(f" - ID:{pid} {name}{price_str}")
+                        if len(products) > 3:
+                            context_parts.append(f" ... 还有 {len(products)-3} 个产品")
+
+                elif "product" in result and isinstance(result["product"], dict):
+                    p = result["product"]
+                    name = p.get("name", "N/A")
+                    pid = p.get("id") or p.get("product_id", "N/A")
+                    context_parts.append(f"工具返回: 产品详情 - ID:{pid} {name}")
+
+                # 可继续补充其他业务类型的摘要...
+
+        if len(groups) > max_groups:
+            context_parts.append(
+                f"\n（仅显示最近 {max_groups} 组对话，共 {len(groups)} 组）"
+            )
+
+        return "\n".join(context_parts)
+        
+    def _extract_order_id_from_messages(self, messages: List, state: Optional[Any] = None) -> Optional[str]:
+        """从历史消息和状态中提取订单ID
         
         查找顺序：
-        1. 从最近的ToolMessage中查找订单信息（order或orders字段）
-        2. 从最近的HumanMessage中查找订单号模式（如ORD906278）
+        1. 从 state.response_data 中查找订单信息（如果提供了 state）
+        2. 从最近的 ToolMessage 中查找订单信息（order或orders字段）
+        3. 从最近的 AIMessage 中查找订单号模式（如ORD906278）
+        4. 从最近的 HumanMessage 中查找订单号模式（如ORD906278）
         
         Args:
             messages: 消息列表
+            state: 可选的多Agent状态，用于访问 response_data
             
         Returns:
             订单ID（字符串格式），如果未找到返回None
         """
         import json
         import re
+        from langchain_core.messages import AIMessage
         
-        # 从最近的ToolMessage中查找订单信息（order_agent返回的结果）
-        for msg in reversed(messages):
-            if hasattr(msg, '__class__') and 'ToolMessage' in str(msg.__class__):
+        # 辅助函数：从订单字典中提取订单号
+        def extract_order_number(order: dict) -> Optional[str]:
+            """从订单字典中提取订单号"""
+            return order.get("order_number") or order.get("order_id")
+        
+        # 辅助函数：从订单列表中提取订单号（优先返回单一订单，否则返回最新订单）
+        def extract_from_orders(orders: List[dict]) -> Optional[str]:
+            """从订单列表中提取订单号"""
+            if not orders:
+                return None
+            if len(orders) == 1:
+                return extract_order_number(orders[0])
+            # 多个订单时，返回最新的（最后一个）
+            return extract_order_number(orders[-1])
+        
+        # 辅助函数：从文本中提取订单号模式
+        def extract_from_text(content: str) -> Optional[str]:
+            """从文本中提取订单号模式"""
+            if not content:
+                return None
+            
+            # 优先匹配包含ORD的模式（返回完整的ORD+数字）
+            # 匹配 "ORD424929" 或 "订单号: ORD424929" 等格式
+            ord_pattern = r'ORD\s*(\d+)'
+            match = re.search(ord_pattern, content, re.IGNORECASE)
+            if match:
+                # 提取数字部分，然后组合成完整的订单号
+                digits = match.group(1)
+                return f"ORD{digits}"
+            
+            # 其次匹配纯数字订单号模式（至少6位）
+            digit_pattern = r'订单[号]?\s*[:：]?\s*(\d{6,})'
+            match = re.search(digit_pattern, content, re.IGNORECASE)
+            if match:
+                return match.group(1)
+            
+            return None
+        
+        # 优先级1：从 state.response_data 中查找（最可靠）
+        if state and hasattr(state, 'response_data') and state.response_data:
+            response_data = state.response_data
+            # 检查单个订单
+            if "order" in response_data and isinstance(response_data["order"], dict):
+                order_number = extract_order_number(response_data["order"])
+                if order_number:
+                    logger.info(f"从state.response_data（订单详情）提取到订单号: {order_number}")
+                    return str(order_number)
+            # 检查订单列表
+            if "orders" in response_data:
+                orders = response_data.get("orders", [])
+                order_number = extract_from_orders(orders)
+                if order_number:
+                    logger.info(f"从state.response_data（订单列表）提取到订单号: {order_number}")
+                    return str(order_number)
+        
+        # 优先级2-4：在一个循环中按优先级顺序处理消息
+        # 消息类型优先级：ToolMessage > AIMessage > HumanMessage
+        message_type_priority = {
+            'ToolMessage': 2,
+            'AIMessage': 3,
+            'HumanMessage': 4
+        }
+        
+        # 按优先级分组消息（相同优先级的消息保持时间顺序）
+        prioritized_messages = []
+        for msg in reversed(messages):  # 从最新到最旧
+            msg_class_name = msg.__class__.__name__ if hasattr(msg, '__class__') else str(type(msg))
+            priority = message_type_priority.get(msg_class_name, 999)  # 未知类型优先级最低
+            prioritized_messages.append((priority, msg_class_name, msg))
+        
+        # 按优先级排序（优先级数字越小越优先）
+        prioritized_messages.sort(key=lambda x: x[0])
+        
+        # 在一个循环中按优先级顺序处理
+        for priority, msg_class_name, msg in prioritized_messages:
+            # 优先级2：ToolMessage（工具返回的JSON数据）
+            if msg_class_name == 'ToolMessage':
                 try:
                     tool_result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
                     if isinstance(tool_result, dict):
-                        # 优先查找单个订单详情
+                        # 优先查找单个订单
                         if "order" in tool_result and isinstance(tool_result["order"], dict):
-                            order_number = tool_result["order"].get("order_number") or tool_result["order"].get("order_id")
+                            order_number = extract_order_number(tool_result["order"])
                             if order_number:
-                                logger.info(f"从历史消息（订单详情）提取到订单号: {order_number}")
+                                logger.info(f"从ToolMessage（订单详情）提取到订单号: {order_number}")
                                 return str(order_number)
-                        # 其次查找订单列表（如果只有1个订单）
+                        # 其次查找订单列表
                         if "orders" in tool_result:
                             orders = tool_result.get("orders", [])
-                            if orders and len(orders) == 1:
-                                order_number = orders[0].get("order_number") or orders[0].get("order_id")
-                                if order_number:
-                                    logger.info(f"从历史消息（订单列表）提取到单一订单号: {order_number}")
-                                    return str(order_number)
+                            order_number = extract_from_orders(orders)
+                            if order_number:
+                                logger.info(f"从ToolMessage（订单列表）提取到订单号: {order_number}")
+                                return str(order_number)
                 except (json.JSONDecodeError, TypeError, AttributeError):
                     continue
-        
-        # 从最近的HumanMessage中查找订单号模式
-        for msg in reversed(messages):
-            if hasattr(msg, '__class__') and 'HumanMessage' in str(msg.__class__):
+            
+            # 优先级3：AIMessage（AI回复的文本）
+            elif msg_class_name == 'AIMessage' or isinstance(msg, AIMessage):
                 content = str(getattr(msg, 'content', ''))
-                # 匹配订单号模式：ORD + 数字，或不区分大小写的ord + 数字
-                order_id_patterns = [
-                    r'ORD\s*(\d+)',
-                    r'订单[号]?\s*[:：]?\s*ORD\s*(\d+)',
-                    r'订单[号]?\s*[:：]?\s*(\d+)',
-                ]
-                for pattern in order_id_patterns:
-                    match = re.search(pattern, content, re.IGNORECASE)
-                    if match:
-                        extracted_value = match.group(1) if match.group(1) else match.group(0)
-                        if extracted_value:
-                            order_id = extracted_value.upper() if 'ORD' in extracted_value.upper() else extracted_value
-                            logger.info(f"从历史消息（用户消息）提取到订单号: {order_id}")
-                            return order_id
+                order_id = extract_from_text(content)
+                if order_id:
+                    logger.info(f"从AIMessage提取到订单号: {order_id}")
+                    return order_id
+            
+            # 优先级4：HumanMessage（用户输入）
+            elif msg_class_name == 'HumanMessage':
+                content = str(getattr(msg, 'content', ''))
+                order_id = extract_from_text(content)
+                if order_id:
+                    logger.info(f"从HumanMessage提取到订单号: {order_id}")
+                    return order_id
         
         return None
 

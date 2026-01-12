@@ -48,7 +48,6 @@ class GraphStateManager:
             "original_question": question,
             "confirmation_pending": None,
             "entities": {},
-            "last_product_search_context": None,
             "conversation_phase": "idle"
         }
 
@@ -116,6 +115,5 @@ class GraphStateManager:
                 state_dict = state_to_dict(existing_snapshot.values)
                 logger.info(f"[恢复执行] checkpointer 状态键: {list(state_dict.keys()) if state_dict else 'None'}")
                 logger.info(f"[恢复执行] entities: {state_dict.get('entities', {})}")
-                logger.info(f"[恢复执行] last_product_search_context: {state_dict.get('last_product_search_context')}")
         except Exception as e:
             logger.error(f"[恢复执行] 检查状态失败: {e}", exc_info=True)

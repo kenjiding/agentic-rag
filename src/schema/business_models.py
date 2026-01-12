@@ -173,13 +173,33 @@ class OrderDisplay(BaseModel):
     @classmethod
     def from_db(cls, order: Any) -> "OrderDisplay":
         """从数据库模型转换"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # 添加调试日志
+        logger.info(f"📋 [OrderDisplay] 转换订单: order_id={order.id}, order_number={order.order_id}, items_count={len(order.order_items)}")
+        
+        items = []
+        for idx, item in enumerate(order.order_items):
+            logger.info(f"📋 [OrderDisplay] 处理订单项 {idx+1}: order_item_id={item.id}, product_id={item.product_id}")
+            
+            # 检查 product 关系
+            if item.product:
+                logger.info(f"📋 [OrderDisplay] 订单项 {idx+1} 产品信息: product_id={item.product.id}, name={item.product.name}")
+            else:
+                logger.error(f"📋 [OrderDisplay] 订单项 {idx+1} 的 product 关系未加载! product_id={item.product_id}")
+            
+            item_dict = item.to_dict()
+            logger.info(f"📋 [OrderDisplay] 订单项 {idx+1} to_dict结果: {item_dict}")
+            items.append(item_dict)
+        
         return cls(
             id=order.id,
             order_number=order.order_id,  # 修复: Order模型字段是order_id不是order_number
             status=order.status,
             total_amount=float(order.total_amount),
             created_at=order.created_at.strftime("%Y-%m-%d %H:%M:%S") if order.created_at else "",
-            items=[item.to_dict() for item in order.order_items],
+            items=items,
         )
 
     def format_text(self) -> str:

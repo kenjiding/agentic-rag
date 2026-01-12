@@ -6,8 +6,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from langchain_core.messages import BaseMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from src.multi_agent.state import MultiAgentState
+from src.utils.llm_factory import create_llm_for_agent
 import logging
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class BaseAgent(ABC):
     def __init__(
         self,
         name: str,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         description: str = ""
     ):
         """
@@ -42,11 +43,11 @@ class BaseAgent(ABC):
 
         Args:
             name: Agent名称，必须唯一
-            llm: 语言模型实例，如果为None则使用默认模型
+            llm: 语言模型实例，如果为None则使用工厂函数创建默认模型
             description: Agent功能描述，用于Supervisor理解何时使用此Agent
         """
         self.name = name
-        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+        self.llm = llm or create_llm_for_agent()
         self.description = description
 
     @abstractmethod

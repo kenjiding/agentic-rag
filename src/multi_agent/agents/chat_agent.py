@@ -4,7 +4,7 @@
 适用于一般对话、工具调用等场景。
 """
 from typing import Dict, Any, Optional, List
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain.agents import create_agent
 from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
@@ -38,7 +38,7 @@ class ChatAgent(ToolEnabledAgent):
     
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         tool_registry: Optional[ToolRegistry] = None,
         system_prompt: Optional[str] = None,
         tool_categories: Optional[List[str]] = None,

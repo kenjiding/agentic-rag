@@ -20,7 +20,7 @@ from typing import Optional, List, Dict, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -145,7 +145,7 @@ class RetrievalFailureAnalyzer:
 
     def __init__(
         self,
-        llm: Optional[ChatOpenAI] = None,
+        llm: Optional[BaseChatModel] = None,
         threshold_config: Optional[ThresholdConfig] = None,
         enable_llm_analysis: bool = True,
         embeddings = None
@@ -165,7 +165,8 @@ class RetrievalFailureAnalyzer:
 
         # 初始化LLM
         if llm is None and enable_llm_analysis:
-            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+            from src.utils.llm_factory import create_llm_for_rag
+            llm = create_llm_for_rag(temperature=0.0)
         self.llm = llm
 
     def analyze(

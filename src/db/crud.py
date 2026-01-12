@@ -5,6 +5,7 @@
 """
 
 import os
+import re
 from decimal import Decimal
 from typing import List, Optional, Union, Dict, Any
 import random
@@ -73,6 +74,34 @@ def get_sub_category_by_name(db: Session, name: str) -> Optional[SubCategory]:
 
 
 # ============== Product CRUD ==============
+
+def _normalize_string_for_search(text: str) -> str:
+    """标准化字符串用于搜索比较（企业级最佳实践）
+    
+    从源头解决问题：在搜索时对关键词和数据库字段都进行标准化处理，
+    而不是生成多个变体。这样可以处理空格、大小写等格式差异。
+    
+    标准化规则：
+    1. 去除所有空格（处理"华为Mate 60 Pro" vs "华为 Mate 60 Pro"）
+    2. 转换为小写（处理大小写差异）
+    3. 去除首尾空白
+    
+    注意：这是应用层的标准化，真正的企业级方案应该：
+    - 使用PostgreSQL的pg_trgm扩展进行模糊匹配
+    - 使用全文搜索引擎（Elasticsearch、Meilisearch等）
+    - 在数据入库时进行标准化处理
+    
+    Args:
+        text: 原始文本
+        
+    Returns:
+        标准化后的文本
+    """
+    if not text:
+        return ""
+    # 去除所有空格并转换为小写
+    return text.replace(' ', '').replace('\t', '').replace('\n', '').lower().strip()
+
 
 def search_products(
     db: Optional[Session],
@@ -173,14 +202,29 @@ def search_products(
         conditions = []
 
         if name:
-            conditions.append(
-                or_(
-                    Product.name.ilike(f"%{name}%"),
-                    Product.model_number.ilike(f"%{name}%"),
-                    Product.features.ilike(f"%{name}%"),
-                    Product.description.ilike(f"%{name}%"),
-                )
-            )
+            # 企业级最佳实践：使用PostgreSQL的字符串函数在查询时标准化比较
+            # 对搜索关键词和数据库字段都去除所有空格后比较，从源头解决格式差异问题
+            # 这样"华为Mate 60 Pro"和"华为 Mate 60 Pro"都能匹配
+            from sqlalchemy import func
+            
+            # 标准化搜索关键词（去除所有空格、转换为小写）
+            normalized_name = _normalize_string_for_search(name)
+            
+            # 使用PostgreSQL的regexp_replace函数去除所有空白字符（包括空格、制表符、换行符等）
+            # 然后转换为小写进行比较，确保能匹配不同格式的产品名称
+            # regexp_replace(column, '\s+', '', 'g') 会替换所有连续空白字符
+            def normalize_column(column):
+                """标准化数据库字段：去除所有空白字符并转换为小写"""
+                return func.lower(func.regexp_replace(column, r'\s+', '', 'g'))
+            
+            name_conditions = [
+                normalize_column(Product.name).like(f"%{normalized_name}%"),
+                normalize_column(Product.model_number).like(f"%{normalized_name}%"),
+                normalize_column(Product.features).like(f"%{normalized_name}%"),
+                normalize_column(Product.description).like(f"%{normalized_name}%"),
+            ]
+            
+            conditions.append(or_(*name_conditions))
 
         if category:
             query = query.join(MainCategory, Product.main_category_id == MainCategory.id)
@@ -331,13 +375,36 @@ def get_order_by_id(db: Session, order_id: int, refresh: bool = False) -> Option
 
 
 def get_order_by_number(db: Session, order_number: str) -> Optional[Order]:
-    """根据订单号获取订单"""
+    """根据订单号获取订单
+    
+    Args:
+        db: 数据库会话
+        order_number: 订单号（如 ORD123456）
+    
+    Returns:
+        订单对象，如果未找到返回 None
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # SQLAlchemy 2.0+: 使用 joinedload 加载集合关系时需要调用 unique() 去重
-    return db.execute(
+    # 【关键修复】必须同时加载 order_items 和 product 关系，否则查询订单时无法获取正确的产品信息
+    order = db.execute(
         select(Order)
-        .options(joinedload(Order.order_items))
+        .options(joinedload(Order.order_items).joinedload(OrderItem.product))
         .where(Order.order_id == order_number)
     ).unique().scalar_one_or_none()
+    
+    if order:
+        logger.info(f"💾 [DB_GET_ORDER_BY_NUMBER] 查询订单: order_number={order_number}, 找到订单, id={order.id}, status={order.status}")
+        # 记录订单项信息，用于调试
+        for item in order.order_items:
+            product_name = item.product.name if item.product else "未知商品"
+            logger.info(f"  - 订单项: product_id={item.product_id}, product_name={product_name}, quantity={item.quantity}")
+    else:
+        logger.warning(f"💾 [DB_GET_ORDER_BY_NUMBER] 查询订单: order_number={order_number}, 未找到订单")
+    
+    return order
 
 
 def get_user_orders(
@@ -405,25 +472,35 @@ def create_order(
     total_amount = Decimal("0")
     order_items = []
 
+    import logging
+    logger = logging.getLogger(__name__)
+    
     for item in items:
-        product = get_product_by_id(db, item["product_id"])
+        product_id = item["product_id"]
+        logger.info(f"💾 [DB_CREATE_ORDER] 处理订单项: product_id={product_id}, quantity={item['quantity']}")
+        
+        product = get_product_by_id(db, product_id)
         if not product:
-            raise ValueError(f"Product {item['product_id']} not found")
+            logger.error(f"💾 [DB_CREATE_ORDER] 产品不存在: product_id={product_id}")
+            raise ValueError(f"Product {product_id} not found")
 
+        logger.info(f"💾 [DB_CREATE_ORDER] 找到产品: product_id={product.id}, name={product.name}, price={product.price}")
+        
         if product.stock and product.stock < item["quantity"]:
+            logger.warning(f"💾 [DB_CREATE_ORDER] 库存不足: product_id={product.id}, name={product.name}, stock={product.stock}, need={item['quantity']}")
             raise ValueError(f"Product {product.name} insufficient stock")
 
         price = product.price or Decimal("0")
         subtotal = price * item["quantity"]
         total_amount += subtotal
 
-        order_items.append(
-            OrderItem(
-                product_id=product.id,
-                quantity=item["quantity"],
-                price=price,
-            )
+        order_item = OrderItem(
+            product_id=product.id,  # 使用 product.id 确保使用正确的产品ID
+            quantity=item["quantity"],
+            price=price,
         )
+        logger.info(f"💾 [DB_CREATE_ORDER] 创建订单项: product_id={order_item.product_id}, quantity={order_item.quantity}, price={order_item.price}")
+        order_items.append(order_item)
 
     # 创建订单
     from datetime import datetime, timezone

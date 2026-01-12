@@ -10,12 +10,13 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.types import interrupt
 from langgraph.errors import GraphInterrupt
 
 from src.tools.order_tools import get_order_tools
+from src.utils.llm_factory import create_llm_for_agent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.response_models import OrderListResponse, TextResponse, ConfirmationResponse
@@ -105,21 +106,18 @@ class OrderAgent:
 
     def __init__(
         self,
-        llm: ChatOpenAI | None = None,
+        llm: BaseChatModel | None = None,
         tools: list | None = None,
         confirmation_manager: ConfirmationManager | None = None,
     ):
         """初始化 Order Agent
 
         Args:
-            llm: LangChain LLM 实例
+            llm: LangChain LLM 实例，如果为None则使用工厂函数创建默认模型
             tools: 订单工具列表，默认使用内置工具
             confirmation_manager: 确认管理器，默认使用全局单例
         """
-        self.llm = llm or ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0.7,
-        )
+        self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_order_tools()
         self.name = "order_agent"
         self.confirmation_manager = confirmation_manager or get_confirmation_manager()
@@ -734,6 +732,19 @@ class OrderAgent:
                 logger.info(f"✅ [ORDER_AGENT] 自动注入 session_id 到工具 {tool_call['name']}: {session_id}")
 
             try:
+                # 【关键日志】记录工具调用参数，特别是 items 参数
+                if tool_call["name"] in ["prepare_create_order", "confirm_create_order"]:
+                    logger.info(f"🔧 [ORDER_AGENT] 调用工具 {tool_call['name']}，参数: {tool_args}")
+                    if "items" in tool_args:
+                        try:
+                            import json
+                            items_data = json.loads(tool_args["items"]) if isinstance(tool_args["items"], str) else tool_args["items"]
+                            logger.info(f"🔧 [ORDER_AGENT] items 内容: {items_data}")
+                            for idx, item in enumerate(items_data):
+                                logger.info(f"🔧 [ORDER_AGENT] 订单项 {idx+1}: product_id={item.get('product_id')}, quantity={item.get('quantity')}")
+                        except Exception as e:
+                            logger.warning(f"🔧 [ORDER_AGENT] 解析 items 失败: {e}")
+                
                 tool_result = await tool.ainvoke(tool_args)
 
                 # 检查是否需要确认
@@ -764,6 +775,8 @@ class OrderAgent:
                         }
                         # 保存到字典中，供任务链使用
                         order_info_dict["order_info"] = order_info
+                        # 【关键日志】记录准备创建订单时的 items
+                        logger.info(f"🔧 [ORDER_AGENT] prepare_create_order 准备的数据: items={order_info.get('items')}, items_data={order_info.get('items_data')}")
 
                 tool_messages.append(
                     ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
