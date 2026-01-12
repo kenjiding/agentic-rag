@@ -122,6 +122,54 @@ class ProductAgent:
                     product_ids.append(product_id)
         return product_ids
 
+    def _merge_search_results_and_extract_ids(
+        self, 
+        all_search_results: list[Dict[str, Any]]
+    ) -> tuple[Dict[str, Any], list[int]]:
+        """合并多个搜索结果并提取产品ID（企业级优化：一次循环完成两个任务）
+
+        企业级最佳实践：
+        - 在单次循环中同时完成合并和提取，避免重复遍历
+        - 使用 dict.fromkeys() 进行去重并保持顺序（Python 3.7+）
+
+        Args:
+            all_search_results: 所有搜索结果列表
+
+        Returns:
+            (merged_result, product_ids): 合并后的结果和提取的产品ID列表
+        """
+        merged_products = []
+        merged_text_parts = []
+        all_product_ids = []
+        
+        for idx, search_result in enumerate(all_search_results, 1):
+            # 合并产品列表
+            products = search_result.get("products", [])
+            merged_products.extend(products)
+            
+            # 合并文本内容
+            if search_result.get("text"):
+                merged_text_parts.append(f"搜索结果{idx}：\n{search_result['text']}")
+            
+            # 同时提取产品ID（避免后续再次循环）
+            product_ids = self._extract_product_ids_from_search_results(search_result)
+            all_product_ids.extend(product_ids)
+        
+        # 去重并保持顺序（Python 3.7+ dict.fromkeys 保持插入顺序）
+        unique_product_ids = list(dict.fromkeys(all_product_ids))
+        
+        # 构建合并后的结果
+        structured_result = {
+            "products": merged_products,
+            "total": len(merged_products),
+            "text": "\n\n".join(merged_text_parts) if merged_text_parts else f"找到{len(merged_products)}个产品",
+            "query_summary": f"对比场景：搜索了{len(all_search_results)}个产品"
+        }
+        
+        logger.info(f"合并{len(all_search_results)}个搜索结果，共{len(merged_products)}个产品，提取{len(unique_product_ids)}个唯一产品ID")
+        
+        return structured_result, unique_product_ids
+
     def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
         """构建系统提示的上下文信息（一步一步智能模式）
 
@@ -249,28 +297,13 @@ class ProductAgent:
                             )
                         )
 
-            # 合并多个搜索结果（对比场景）
+            # 合并多个搜索结果并提取产品ID（对比场景）
             is_comparison = self._is_comparison_scenario(state)
+            extracted_product_ids = None  # 存储提取的产品ID（用于后续entities更新）
+            
             if is_comparison and all_search_results and len(all_search_results) > 1:
-                # 合并所有搜索结果
-                merged_products = []
-                merged_text_parts = []
-                total_count = 0
-                
-                for idx, search_result in enumerate(all_search_results, 1):
-                    products = search_result.get("products", [])
-                    merged_products.extend(products)
-                    total_count += search_result.get("total", 0)
-                    if search_result.get("text"):
-                        merged_text_parts.append(f"搜索结果{idx}：\n{search_result['text']}")
-                
-                structured_result = {
-                    "products": merged_products,
-                    "total": len(merged_products),
-                    "text": "\n\n".join(merged_text_parts) if merged_text_parts else f"找到{len(merged_products)}个产品",
-                    "query_summary": f"对比场景：搜索了{len(all_search_results)}个产品"
-                }
-                logger.info(f"合并{len(all_search_results)}个搜索结果，共{len(merged_products)}个产品")
+                # 使用优化方法：一次循环完成合并和提取
+                structured_result, extracted_product_ids = self._merge_search_results_and_extract_ids(all_search_results)
 
             # 如果有结构化数据，直接使用工具的 text，不再调用 LLM
             if structured_result and "text" in structured_result:
@@ -295,33 +328,21 @@ class ProductAgent:
                     content=content_text  # 使用工具返回的原始 text
                 )
                 
-                # 检测对比场景，提取产品ID到entities（is_comparison已在上面计算）
+                # 更新entities（使用已提取的产品ID，避免重复循环）
                 entities_update = {}
                 
-                if is_comparison and all_search_results:
-                    # 对比场景：从所有搜索结果中提取产品ID
-                    all_product_ids = []
-                    for search_result in all_search_results:
-                        product_ids = self._extract_product_ids_from_search_results(search_result)
-                        all_product_ids.extend(product_ids)
-                    
-                    # 去重并保持顺序
-                    unique_product_ids = []
-                    seen = set()
-                    for pid in all_product_ids:
-                        if pid not in seen:
-                            unique_product_ids.append(pid)
-                            seen.add(pid)
-                    
-                    if unique_product_ids:
-                        entities_update["product_ids"] = unique_product_ids
-                        logger.info(f"检测到对比场景，从{len(all_search_results)}个搜索结果中提取产品ID: {unique_product_ids}")
-                elif is_comparison:
-                    # 对比场景但只有一个搜索结果，也提取产品ID
-                    product_ids = self._extract_product_ids_from_search_results(structured_result)
-                    if product_ids:
-                        entities_update["product_ids"] = product_ids
-                        logger.info(f"检测到对比场景，提取产品ID: {product_ids}")
+                if is_comparison:
+                    # 对比场景：使用已提取的产品ID
+                    if extracted_product_ids:
+                        # 多个搜索结果的情况，已在合并时提取
+                        entities_update["product_ids"] = extracted_product_ids
+                        logger.info(f"检测到对比场景，使用已提取的产品ID: {extracted_product_ids}")
+                    elif all_search_results and len(all_search_results) == 1:
+                        # 对比场景但只有一个搜索结果，需要单独提取
+                        product_ids = self._extract_product_ids_from_search_results(structured_result)
+                        if product_ids:
+                            entities_update["product_ids"] = product_ids
+                            logger.info(f"检测到对比场景（单结果），提取产品ID: {product_ids}")
                 else:
                     # 普通搜索场景：更新last_product_search_context
                     entities_update["last_product_search_context"] = {
