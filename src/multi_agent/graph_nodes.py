@@ -192,7 +192,11 @@ class GraphNodeHandler:
             # 合并Agent返回的所有其他字段（支持Agent自定义状态更新）
             for key, value in result.items():
                 if key not in ["messages", "result", "metadata"]:
-                    updated_state[key] = value
+                    # 特殊处理entities字段：合并而不是覆盖
+                    if key == "entities" and isinstance(value, dict) and isinstance(state.entities, dict):
+                        updated_state[key] = {**state.entities, **value}
+                    else:
+                        updated_state[key] = value
 
             logger.info(f"{agent_name} 执行完成")
             return updated_state

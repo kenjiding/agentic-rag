@@ -43,12 +43,17 @@ class GraphRouter:
             return "finish"
 
     def route_after_agent(self, state: MultiAgentState) -> str:
-        """Agent执行后的路由决策（一步一步智能模式）"""
+        """Agent执行后的路由决策（一步一步智能模式）
+        
+        企业级最佳实践：根据当前状态智能判断是否需要继续路由到supervisor进行下一次决策。
+        符合"一步一步智能模式"设计：agent执行后由supervisor进行路由决策。
+        """
         if state.error_message or state.iteration_count >= self.graph.max_iterations:
             return "finish"
 
-        # RAG降级：答案质量低时切换到Chat Agent
         current_agent = state.current_agent
+        
+        # RAG降级：答案质量低时切换到Chat Agent
         if current_agent == "rag_agent":
             rag_result = state.agent_results.get("rag_agent")
             if rag_result:
@@ -58,5 +63,22 @@ class GraphRouter:
                     agent_names = [r.get("agent") for r in state.agent_history]
                     if "chat_agent" not in agent_names:
                         return "chat_agent"
-
+        
+        # Product Agent：对比场景需要继续路由到consultation_agent
+        if current_agent == "product_agent":
+            # 检查是否为对比场景
+            # 方法1：从query_intent判断（意图识别阶段已通过LLM判断）
+            query_intent = state.query_intent
+            entities = state.entities
+            product_ids = entities.get("product_ids")
+            has_product_ids = bool(product_ids) and isinstance(product_ids, list) and len(product_ids) >= 2
+            
+            # 如果是对比场景且已提取到product_ids，路由回supervisor进行下一次决策
+            if query_intent:
+                intent_type = query_intent.get("intent_type")
+                if intent_type == "comparison" and has_product_ids:
+                    # 对比场景且已提取到product_ids，路由回supervisor
+                    logger.info(f"检测到product_agent对比场景，已提取product_ids={product_ids}，路由回supervisor进行下一次决策")
+                    return "supervisor"
+        
         return "finish"

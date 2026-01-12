@@ -119,7 +119,7 @@ export function MessageList({
 
   return (
     <ScrollArea className="flex-1">
-      <div className="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6">
+      <div className="mx-auto max-w-6xl p-3 sm:p-4 lg:p-6">
         <div ref={scrollRef} className="space-y-4 sm:space-y-5">
           {messages.map((message, index) => (
             <MessageItem

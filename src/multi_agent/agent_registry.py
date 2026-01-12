@@ -39,7 +39,14 @@ class RouteConfig:
         mapping = {}
         for target in self.can_handoff_to:
             mapping[target] = target
+        
+        # 支持"supervisor"作为路由目标（一步一步智能模式）
+        mapping["supervisor"] = "supervisor"
+        
         if self.on_complete == "finish":
+            mapping["finish"] = END
+        elif self.on_complete == "supervisor":
+            # on_complete为"supervisor"时，supervisor已在上面添加，只需要确保finish也存在
             mapping["finish"] = END
         else:
             mapping[self.on_complete] = self.on_complete

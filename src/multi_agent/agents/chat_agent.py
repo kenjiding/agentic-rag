@@ -5,7 +5,7 @@
 """
 from typing import Dict, Any, Optional, List
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain.agents import create_agent
 from src.multi_agent.agents.base_agent import BaseAgent, ToolEnabledAgent
 from src.multi_agent.state import MultiAgentState

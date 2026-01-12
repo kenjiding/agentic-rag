@@ -97,17 +97,43 @@ class ProductSpecifications(BaseModel):
     )
 
 
+class AspectAnalysis(BaseModel):
+    """产品特定维度分析结果结构化输出"""
+    analysis: str = Field(
+        description="详细分析文本，说明产品在该维度上的表现，包括相关参数和指标"
+    )
+    strengths: List[str] = Field(
+        default_factory=list,
+        description="优势点列表，列出产品在该维度上的优点和亮点"
+    )
+    weaknesses: List[str] = Field(
+        default_factory=list,
+        description="可能存在的不足列表，列出产品在该维度上可能存在的缺点或限制"
+    )
+
+
+class ScenarioAnalysis(BaseModel):
+    """场景化分析结果"""
+    scenario: str = Field(description="场景名称")
+    scores: Dict[str, float] = Field(description="各产品评分，键为产品名，值为分数")
+    recommendation_reason: str = Field(description="推荐理由")
+
+
 class ComparisonResult(BaseModel):
     """产品对比结果结构化输出"""
     comparison_aspects: List[str] = Field(
-        description="对比维度列表（如价格、性能、夜景拍摄等）。这是必需字段，必须提供至少2个对比维度。"
+        description="对比维度列表，至少2个维度，如：['价格', '性能', '夜景拍摄']"
     )
     comparison_details: Dict[str, Dict[str, str]] = Field(
-        description="各产品在各维度上的详细对比信息（必需字段）。这是一个嵌套字典：外层键是维度名（如'价格'、'夜景拍摄'），内层字典的键是产品名称，值是该产品在此维度的详细描述。必须为 comparison_aspects 中的每个维度都提供数据，且每个维度必须包含所有对比产品的信息。示例：{'价格': {'产品A名称': '¥8000', '产品B名称': '¥12000'}, '夜景拍摄': {'产品A名称': 'ISO 12800', '产品B名称': 'ISO 25600'}}"
+        ...,
+        description="""嵌套字典，必需字段。外层键是维度名（必须与comparison_aspects对应），内层字典键是产品名、值是描述。
+
+格式：{"维度名": {"产品名": "描述", "产品名": "描述"}, ...}
+示例：{"价格": {"产品A": "¥8000", "产品B": "¥12000"}, "夜景拍摄": {"产品A": "ISO 12800", "产品B": "ISO 25600"}}"""
     )
-    scenario_analysis: Optional[Dict[str, Any]] = Field(
+    scenario_analysis: Optional[ScenarioAnalysis] = Field(
         default=None,
-        description="场景化分析结果（如果有用户场景），包含场景名称、各产品评分、推荐理由等。格式：{'场景': '场景名', '评分': {'产品名': 分数}, '推荐理由': '理由'}。"
+        description="场景化分析结果（如果有用户场景），包含场景名称、各产品评分、推荐理由"
     )
     recommendation: Optional[str] = Field(
         default=None,
@@ -253,42 +279,87 @@ async def _extract_product_specifications_async(
         ])
 
         # 调用LLM提取参数
-        result = await structured_llm.ainvoke(
-            prompt_template.format_messages(
-                aspect_prompt=aspect_prompt_text,
-                product_info=product_info
+        try:
+            result = await structured_llm.ainvoke(
+                prompt_template.format_messages(
+                    aspect_prompt=aspect_prompt_text,
+                    product_info=product_info
+                )
             )
-        )
+        except Exception as e:
+            # 处理ValidationError或其他错误
+            logger.error(f"提取产品参数失败: {e}", exc_info=True)
+            # 回退方案：使用新的LLM实例重试，确保使用结构化输出
+            try:
+                fallback_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1)
+                fallback_structured_llm = fallback_llm.with_structured_output(
+                    ProductSpecifications,
+                    method="function_calling"
+                )
+                result = await fallback_structured_llm.ainvoke(
+                    prompt_template.format_messages(
+                        aspect_prompt=aspect_prompt_text,
+                        product_info=product_info
+                    )
+                )
+            except Exception as fallback_error:
+                logger.error(f"回退方案也失败: {fallback_error}", exc_info=True)
+                # 最后的后备方案：创建默认的ProductSpecifications对象
+                result = ProductSpecifications(
+                    specifications={"错误": "无法提取产品参数"},
+                    category=main_cat_name,
+                    key_features=[]
+                )
 
         # 如果有指定aspect，进行针对性分析
         aspect_analysis = None
         if aspect:
             specifications_json = json.dumps(result.specifications, ensure_ascii=False, indent=2)
+            
+            # 使用结构化输出确保返回数据符合AspectAnalysis模型
+            llm = get_default_llm()
+            structured_llm = llm.with_structured_output(
+                AspectAnalysis,
+                method="function_calling"
+            )
+            
             analysis_prompt = ChatPromptTemplate.from_messages([
-                ("system", "你是一个产品分析专家。请分析产品在特定维度上的表现。"),
+                ("system", """你是一个产品分析专家。请分析产品在特定维度上的表现。
+
+**分析要求**：
+1. 深入分析产品在指定维度上的相关参数和指标
+2. 识别并列出产品在该维度上的优势点
+3. 客观指出产品在该维度上可能存在的不足或限制
+
+**分析原则**：
+- 基于产品参数进行客观分析，避免主观臆断
+- 优势点应该具体、可量化，避免空泛描述
+- 不足点应该客观、有依据，帮助用户做出明智决策
+- 适用于任何产品类别和维度，不硬编码特定场景"""),
                 ("user", """产品：{product_name}
 关注维度：{aspect}
 产品参数：{specifications_json}
 
-请分析该产品在'{aspect}'这一维度上的表现，包括：
-1. 相关参数和指标
-2. 优势点
-3. 可能存在的不足
-
-返回JSON格式：{{"analysis": "详细分析文本", "strengths": ["优势1", "优势2"], "weaknesses": ["不足1"]}}
-""")
+请分析该产品在'{aspect}'这一维度上的表现。""")
             ])
-            analysis_result = await llm.ainvoke(
-                analysis_prompt.format_messages(
-                    product_name=product_name,
-                    aspect=aspect,
-                    specifications_json=specifications_json
-                )
-            )
+            
             try:
-                aspect_analysis = json.loads(analysis_result.content)
-            except json.JSONDecodeError:
-                aspect_analysis = {"analysis": analysis_result.content}
+                analysis_result = await structured_llm.ainvoke(
+                    analysis_prompt.format_messages(
+                        product_name=product_name,
+                        aspect=aspect,
+                        specifications_json=specifications_json
+                    )
+                )
+                aspect_analysis = analysis_result.model_dump()
+            except Exception as e:
+                logger.error(f"分析产品维度失败: {e}", exc_info=True)
+                # 回退方案：创建默认分析结果
+                aspect_analysis = {
+                    "analysis": f"无法分析产品在'{aspect}'维度上的表现",
+                    "strengths": [],
+                    "weaknesses": []
+                }
 
         # 更新数据库（异步更新，不阻塞返回）
         # 注意：测试数据模式下不更新数据库
@@ -459,15 +530,20 @@ async def _compare_products_async(
 
                 # 如果没有specifications，先提取
                 if not product_specifications:
-                    spec_result = await _extract_product_specifications_async(pid, None)
                     try:
-                        spec_json = json.loads(spec_result)
-                        product_specifications = spec_json.get("specifications")
-                        # 更新specifications属性（如果对象支持）
-                        if hasattr(product, 'specifications'):
-                            product.specifications = product_specifications
-                    except json.JSONDecodeError:
-                        logger.warning(f"无法解析产品 {pid} 的参数提取结果，跳过")
+                        spec_result = await _extract_product_specifications_async(pid, None)
+                        try:
+                            spec_json = json.loads(spec_result)
+                            product_specifications = spec_json.get("specifications")
+                            # 更新specifications属性（如果对象支持）
+                            if hasattr(product, 'specifications'):
+                                product.specifications = product_specifications
+                        except json.JSONDecodeError:
+                            logger.warning(f"无法解析产品 {pid} 的参数提取结果，跳过")
+                    except Exception as e:
+                        logger.error(f"提取产品 {pid} 的参数时发生错误: {e}", exc_info=True)
+                        # 继续处理，使用空的specifications
+                        product_specifications = {}
 
                 # 安全访问所有属性
                 products_data.append({
@@ -495,12 +571,17 @@ async def _compare_products_async(
                     
                     # 如果没有specifications，先提取
                     if not product.specifications:
-                        spec_result = await _extract_product_specifications_async(pid, None)
                         try:
-                            spec_json = json.loads(spec_result)
-                            product.specifications = spec_json.get("specifications")
-                        except json.JSONDecodeError:
-                            logger.warning(f"无法解析产品 {pid} 的参数提取结果，跳过")
+                            spec_result = await _extract_product_specifications_async(pid, None)
+                            try:
+                                spec_json = json.loads(spec_result)
+                                product.specifications = spec_json.get("specifications")
+                            except json.JSONDecodeError:
+                                logger.warning(f"无法解析产品 {pid} 的参数提取结果，跳过")
+                        except Exception as e:
+                            logger.error(f"提取产品 {pid} 的参数时发生错误: {e}", exc_info=True)
+                            # 继续处理，使用空的specifications
+                            product.specifications = {}
 
                     products_data.append({
                         "id": product.id,
@@ -516,10 +597,13 @@ async def _compare_products_async(
                     })
 
         # 使用LLM进行对比分析
-        # 注意：由于 ComparisonResult 包含 Dict[str, Dict[str, str]] 深层嵌套字典结构，
-        # function_calling 方法可能无法稳定生成完整的 schema。
-        # 因此优先使用 JSON mode + 手动解析的方式，这样更可靠且可控
+        # 使用 with_structured_output 确保返回数据符合 ComparisonResult 模型
+        # 使用 function_calling 方法，对复杂嵌套结构支持更好
         llm = get_default_llm()
+        structured_llm = llm.with_structured_output(
+            ComparisonResult,
+            method="function_calling"
+        )
 
         # 构建产品信息 - 使用实际产品名称，便于LLM在对比结果中使用
         product_names_list = []  # 用于在prompt中明确列出产品名称
@@ -543,172 +627,56 @@ async def _compare_products_async(
         scenario_prompt_text = f"\n用户使用场景：{user_scenario}\n请根据该场景进行针对性分析和推荐。" if user_scenario else ""
 
         prompt_template = ChatPromptTemplate.from_messages([
-            ("system", """你是一个专业的产品对比分析专家。请对多个产品进行多维度对比分析。
+            ("system", """你是产品对比分析专家。对多个产品进行多维度对比分析。
 
-**核心原则**：
-1. **多维度分析**：不只看价格或单一指标，综合考虑多个维度
-2. **场景化推理**：根据用户的具体使用场景进行针对性分析
-3. **通用性**：适用于任何产品类别的对比，不硬编码特定场景
+**分析步骤**：
+1. 识别对比维度（至少2个）：根据产品类别、参数和用户场景自动识别
+2. 逐维度对比：分析各产品在每个维度上的表现
+3. 场景化评估：根据用户场景评估适用性
+4. 综合推荐：给出明确的推荐建议
 
-**分析要求**：
-- 如果未指定对比维度，自动识别关键对比维度（如价格、性能、适用场景、关键参数等）
-- 对每个维度进行详细对比，找出各产品的优劣势
-- 如果有用户场景，根据场景需求进行评分和推荐
-- 给出明确的推荐建议和理由
+**输出格式（必须严格遵循）**：
 
-**输出要求（必须严格遵循）**：
+1. comparison_aspects: 对比维度列表，如 ["价格", "传感器", "夜景拍摄"]
+2. comparison_details: 嵌套字典，必需字段，格式为 {{"维度名": {{"产品名": "描述"}}}}
+   - 必须为 comparison_aspects 中的每个维度提供数据
+   - 每个维度必须包含所有对比产品的信息
+   - 使用实际产品名称（见下方列表）
+   - 示例：{{"价格": {{"产品A": "¥8000", "产品B": "¥12000"}}, "夜景拍摄": {{"产品A": "ISO 12800", "产品B": "ISO 25600"}}}}
+3. scenario_analysis: 可选，场景化分析对象，包含scenario（场景名）、scores（各产品评分字典）、recommendation_reason（推荐理由）
+4. recommendation: 推荐建议
 
-**字段1：comparison_aspects**（必需）
-- 类型：字符串数组
-- 内容：对比维度列表
-- 示例：["价格", "传感器", "夜景拍摄", "防抖", "便携性"]
-- 要求：至少提供2个对比维度
-
-**字段2：comparison_details**（必需，这是最重要的字段）
-- 类型：对象（字典），结构为：{{"维度名": {{"产品名称": "描述"}}}}
-- **关键要求**：
-  1. 这是必需字段，绝对不能为空
-  2. 必须为 comparison_aspects 中的每个维度都创建一个键值对
-  3. 每个维度的值必须是一个对象（字典），包含所有对比产品的信息
-  4. 产品名称必须使用实际的产品名称（见下方产品列表），不能使用占位符
-  5. 描述应该详细、具体，突出该产品在此维度上的特点
-
-对比的产品名称列表（必须使用这些实际名称）：
-{product_names_list}
-
-**字段3：scenario_analysis**（可选，如果有用户场景则推荐提供）
-- 类型：对象
-- 结构：{{"场景": "场景名", "评分": {{"产品名": 分数}}, "推荐理由": "理由"}}
-- 产品名称必须使用实际产品名称
-
-**字段4：recommendation**（推荐提供）
-- 类型：字符串
-- 内容：综合推荐建议和理由
-
-**完整示例格式**（注意：这里使用"产品A"、"产品B"只是格式示例，实际输出时必须使用真实产品名称）：
-{{
-  "comparison_aspects": ["价格", "传感器", "夜景拍摄"],
-  "comparison_details": {{
-    "价格": {{
-      "实际产品名称1": "该产品在此维度的详细描述",
-      "实际产品名称2": "该产品在此维度的详细描述"
-    }},
-    "传感器": {{
-      "实际产品名称1": "该产品在此维度的详细描述",
-      "实际产品名称2": "该产品在此维度的详细描述"
-    }},
-    "夜景拍摄": {{
-      "实际产品名称1": "该产品在此维度的详细描述",
-      "实际产品名称2": "该产品在此维度的详细描述"
-    }}
-  }},
-  "scenario_analysis": {{
-    "场景": "VLOG拍摄",
-    "评分": {{
-      "实际产品名称1": 8.5,
-      "实际产品名称2": 9.0
-    }},
-    "推荐理由": "推荐理由说明"
-  }},
-  "recommendation": "综合推荐建议"
-}}
-
-**关键提醒**：
-1. comparison_details 是必需字段，绝对不能缺失或为空
-2. 必须为每个对比维度提供所有产品的对比信息
-3. 使用实际产品名称，不要使用"产品A"、"产品1"等占位符"""),
-            ("user", """请对比以下产品并返回JSON格式的结果：{aspects_prompt}{scenario_prompt}
+对比的产品名称（必须使用这些实际名称）：
+{product_names_list}"""),
+            ("user", """请对比以下产品：{aspects_prompt}{scenario_prompt}
 
 {products_info}
 
-**重要**：请严格按照上面定义的JSON格式返回对比结果，不要添加任何额外的说明文字。直接返回JSON对象，格式如下：
-{{
-  "comparison_aspects": [...],
-  "comparison_details": {{...}},
-  "scenario_analysis": {{...}},
-  "recommendation": "..."
-}}
-""")
+**重要**：必须提供 comparison_details 字段，为每个维度提供所有产品的对比信息。""")
         ])
 
         # 调用LLM进行对比分析
-        # 使用 JSON mode 作为主要方法，因为嵌套字典结构在 function_calling 中不够稳定
-        # 这样可以获得更好的控制力和可靠性
-        try:
-            # 使用 JSON response format（如果支持）或要求返回纯JSON
-            json_response = await llm.ainvoke(
-                prompt_template.format_messages(
-                    aspects_prompt=aspects_prompt_text,
-                    scenario_prompt=scenario_prompt_text,
-                    products_info=products_info,
-                    product_names_list=product_names_list_text
-                )
+        comparison_result = await structured_llm.ainvoke(
+            prompt_template.format_messages(
+                aspects_prompt=aspects_prompt_text,
+                scenario_prompt=scenario_prompt_text,
+                products_info=products_info,
+                product_names_list=product_names_list_text
             )
-            
-            # 从响应中提取JSON
-            content = json_response.content if hasattr(json_response, 'content') else str(json_response)
-            
-            # 尝试提取JSON（可能在markdown代码块中）
-            import re
-            # 匹配 markdown 代码块中的 JSON（支持多行）
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL | re.MULTILINE)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                # 尝试匹配第一个 { 到最后一个 } 之间的内容（处理嵌套JSON）
-                brace_count = 0
-                start_idx = -1
-                for i, char in enumerate(content):
-                    if char == '{':
-                        if start_idx == -1:
-                            start_idx = i
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0 and start_idx != -1:
-                            json_str = content[start_idx:i+1]
-                            break
-                else:
-                    # 如果没找到完整JSON，尝试直接解析整个内容
-                    json_str = content.strip()
-            
-            # 解析JSON
-            comparison_data = json.loads(json_str)
-            
-            # 验证必需字段
-            if "comparison_aspects" not in comparison_data:
-                raise ValueError("响应中缺少 comparison_aspects 字段")
-            if "comparison_details" not in comparison_data:
-                raise ValueError("响应中缺少 comparison_details 字段（必需）")
-            if not comparison_data.get("comparison_details"):
-                raise ValueError("comparison_details 字段为空（必需）")
-            
-            # 构建 ComparisonResult 对象（用于类型验证和后续处理）
-            comparison_result = ComparisonResult(
-                comparison_aspects=comparison_data.get("comparison_aspects", []),
-                comparison_details=comparison_data.get("comparison_details", {}),
-                scenario_analysis=comparison_data.get("scenario_analysis"),
-                recommendation=comparison_data.get("recommendation")
-            )
-            
-            # 验证 comparison_details 是否包含所有维度的数据
-            missing_aspects = set(comparison_result.comparison_aspects) - set(comparison_result.comparison_details.keys())
-            if missing_aspects:
-                logger.warning(f"comparison_details 缺少以下维度的数据: {missing_aspects}，将使用现有数据继续")
-                
-        except json.JSONDecodeError as json_error:
-            logger.error(f"JSON解析失败: {json_error}，响应内容: {content[:500] if 'content' in locals() else 'N/A'}", exc_info=True)
-            raise ValueError(f"产品对比分析失败：无法解析LLM返回的JSON格式。错误: {str(json_error)}") from json_error
-        except Exception as e:
-            logger.error(f"产品对比分析失败: {e}", exc_info=True)
-            raise ValueError(f"产品对比分析失败: {str(e)}") from e
+        )
+        
+        # 验证 comparison_details 是否包含所有维度的数据
+        missing_aspects = set(comparison_result.comparison_aspects) - set(comparison_result.comparison_details.keys())
+        if missing_aspects:
+            logger.warning(f"comparison_details 缺少以下维度的数据: {missing_aspects}，将使用现有数据继续")
 
         # 构建返回结果
+        # 注意：Pydantic 模型对象需要转换为字典才能 JSON 序列化
         result_dict = {
             "text": "",  # 将在下面生成
             "comparison_aspects": comparison_result.comparison_aspects,
             "comparison_details": comparison_result.comparison_details,
-            "scenario_analysis": comparison_result.scenario_analysis,
+            "scenario_analysis": comparison_result.scenario_analysis.model_dump() if comparison_result.scenario_analysis else None,
             "recommendation": comparison_result.recommendation,
             "products": products_data
         }
@@ -732,12 +700,10 @@ async def _compare_products_async(
         
         # 场景化分析
         if comparison_result.scenario_analysis:
-            text_parts.append(f"\n🎯 场景化分析（{comparison_result.scenario_analysis.get('场景', user_scenario)}）：")
-            if "评分" in comparison_result.scenario_analysis:
-                for product_name, score in comparison_result.scenario_analysis["评分"].items():
-                    text_parts.append(f"  • {product_name}：{score}/10分")
-            if "推荐理由" in comparison_result.scenario_analysis:
-                text_parts.append(f"  推荐理由：{comparison_result.scenario_analysis['推荐理由']}")
+            text_parts.append(f"\n🎯 场景化分析（{comparison_result.scenario_analysis.scenario}）：")
+            for product_name, score in comparison_result.scenario_analysis.scores.items():
+                text_parts.append(f"  • {product_name}：{score}/10分")
+            text_parts.append(f"  推荐理由：{comparison_result.scenario_analysis.recommendation_reason}")
         
         # 综合推荐
         if comparison_result.recommendation:

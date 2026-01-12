@@ -428,8 +428,7 @@ class RetrievalFailureAnalyzer:
         try:
             # 使用 function_calling 方法以获得更好的兼容性
             structured_llm = self.llm.with_structured_output(
-                FailureAnalysisOutput,
-                method="function_calling"
+                FailureAnalysisOutput
             )
             chain = prompt | structured_llm
 

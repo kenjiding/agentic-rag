@@ -243,13 +243,18 @@ class SupervisorAgent:
         # 【关键状态指示】帮助 LLM 快速判断当前进度
         context_parts.append("\n【当前进度状态】")
 
-        # 检查是否有 product_id（用户已选定产品）
-        if all_entities.get("product_id"):
-            context_parts.append("  ✓ 用户已选定产品 (product_id存在)")
+        # 检查是否有 product_id 或 product_ids（用户已选定产品）
+        product_id = all_entities.get("product_id")
+        product_ids = all_entities.get("product_ids")
+        has_product_id = bool(product_id)
+        has_product_ids = bool(product_ids) and isinstance(product_ids, list) and len(product_ids) >= 2
+        
+        if has_product_ids:
+            context_parts.append(f"  ✓ 已识别多个产品ID (product_ids={product_ids}，共{len(product_ids)}个)")
+        elif has_product_id:
+            context_parts.append(f"  ✓ 用户已选定产品 (product_id={product_id})")
         else:
-            context_parts.append("  ✗ 用户未选定产品 (product_id不存在)")
-
-        # 检查是否有 user_phone（用户���提供手机号）
+            context_parts.append("  ✗ 用户未选定产品 (product_id和product_ids都不存在)")
 
         # 检查是否有 order_id（订单相关操作）
         order_id = all_entities.get("order_id")
@@ -270,13 +275,19 @@ class SupervisorAgent:
         # 【路由决策逻辑】帮助 LLM 做出正确的路由决策
         context_parts.append("\n【路由决策逻辑】")
         has_product_id = bool(all_entities.get("product_id"))
+        product_ids = all_entities.get("product_ids")
+        has_product_ids = bool(product_ids) and isinstance(product_ids, list) and len(product_ids) >= 2
         has_order_id = bool(order_id)
         
-        if not has_product_id:
-            context_parts.append("  ⚠️ 关键：用户未选定产品（product_id=None）")
+        # 产品对比场景判断
+        if has_product_ids:
+            context_parts.append(f"  ✓ 已识别多个产品ID（product_ids={product_ids}，共{len(product_ids)}个）")
+            context_parts.append("  → 可以路由到 consultation_agent 进行产品对比")
+        elif not has_product_id and not has_product_ids:
+            context_parts.append("  ⚠️ 关键：用户未选定产品（product_id=None，product_ids=None）")
             context_parts.append("  → 必须先路由到 product_agent 搜索产品！")
         elif has_product_id:
-            context_parts.append("  ✓ 用户已选定产品")
+            context_parts.append("  ✓ 用户已选定产品（单个product_id）")
             context_parts.append("  → 可以路由到 order_agent 创建订单（用户已登录，无需手机号）")
         
         # 【订单管理路由逻辑】（新增，关键）
@@ -458,11 +469,17 @@ class SupervisorAgent:
 
 
 【深度咨询规则】（新增，高优先级）：
-- **产品对比查询**：选择 consultation_agent
+- **产品对比查询**：根据entities状态智能路由
   - 包含"对比"、"比较"、"哪个好"、"哪个更适合"等关键词
   - 包含多个产品名称或ID（至少2个）
-  - 例如："A相机和B相机哪个更适合VLOG？"、"iPhone 15和华为Mate 60，拍照哪个更好？"
-  - next_action设为"consultation"，selected_agent设为"consultation_agent"
+  - **关键路由逻辑**（严格按照以下顺序判断）：
+    1. **优先级最高**：检查entities字典中是否存在product_ids字段，如果product_ids是列表类型且长度>=2，说明产品ID已提取完成，**必须直接路由到consultation_agent进行对比**，不能再路由到product_agent
+    2. 如果entities中没有product_ids或product_ids为空，但用户提到了多个产品名称，则先路由到product_agent搜索产品，获取product_ids后，再路由到consultation_agent
+  - **重要原则**：如果entities中已有product_ids（非空列表），说明前置任务已完成，必须路由到consultation_agent，避免重复执行相同任务
+  - 例如：
+    - 用户询问产品对比，entities中product_ids=[1, 2] → 直接路由到consultation_agent
+    - 用户询问产品对比，entities中没有product_ids或product_ids为空 → 先路由到product_agent搜索
+  - next_action设为"consultation"（当entities中有product_ids时）或"product_search"（当需要搜索时），selected_agent设为对应的agent
 
 - **参数查询**：选择 consultation_agent
   - 询问产品详细参数、规格、配置等

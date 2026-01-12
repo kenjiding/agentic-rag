@@ -233,10 +233,10 @@ def query_order(
 @tool
 def prepare_cancel_order(
     order_id: Annotated[
-        int,
+        str,
         Field(
-            description="要取消的订单ID",
-            examples=[1, 2, 100]
+            description="要取消的订单ID（订单号，字符串格式，如ORD123456或纯数字字符串如'123'）",
+            examples=["ORD123456", "ORD789012", "123", "456"]
         )
     ],
     user_id: Annotated[
@@ -256,16 +256,30 @@ def prepare_cancel_order(
     ] = None,
 ) -> str:
     """准备取消订单 - 返回确认信息（JSON格式）"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        logger.info(f"🔍 [PREPARE_CANCEL] 开始准备取消订单: order_id={order_id}, user_id={user_id}")
+        
         with get_db_session() as db:
-            order = get_order_by_id(db, order_id)
+            # 判断order_id是纯数字还是包含字母的订单号
+            if order_id.isdigit():
+                # 纯数字，作为数据库主键ID查询
+                order = get_order_by_id(db, int(order_id), refresh=True)
+            else:
+                # 包含字母，作为订单号（order_id字段）查询
+                order = get_order_by_number(db, order_id)
+            
             if not order:
+                logger.warning(f"🔍 [PREPARE_CANCEL] 未找到订单: order_id={order_id}")
                 return json.dumps({
-                    "text": f"未找到ID为 {order_id} 的订单",
+                    "text": f"未找到订单 {order_id}，请确认订单号是否正确。",
                     "can_cancel": False
                 }, ensure_ascii=False)
 
             if order.user_id != user_id:
+                logger.warning(f"🔒 [PREPARE_CANCEL] 权限验证失败: order_id={order_id}, order.user_id={order.user_id}, request.user_id={user_id}")
                 return json.dumps({
                     "text": f"无权取消此订单（订单属于其他用户）",
                     "can_cancel": False
@@ -295,13 +309,16 @@ def prepare_cancel_order(
                 text_lines.append(f"取消原因: {reason}")
             text_lines.append(f"请确认：您确定要取消此订单吗？")
 
+            # 返回订单号（业务标识），而不是数据库主键ID
+            logger.info(f"✅ [PREPARE_CANCEL] 准备取消订单成功: order_number={order.order_id}")
             return json.dumps({
                 "text": "\n".join(text_lines),
                 "can_cancel": True,
-                "order_id": order_id
+                "order_id": order.order_id  # 返回订单号（字符串）
             }, ensure_ascii=False)
 
     except Exception as e:
+        logger.error(f"❌ [PREPARE_CANCEL] 准备取消订单时出错: {e}", exc_info=True)
         return json.dumps({
             "text": f"准备取消订单时出错: {str(e)}",
             "can_cancel": False
@@ -311,10 +328,10 @@ def prepare_cancel_order(
 @tool
 def confirm_cancel_order(
     order_id: Annotated[
-        int,
+        str,
         Field(
-            description="要取消的订单ID",
-            examples=[1, 2, 100]
+            description="要取消的订单ID（订单号，字符串格式，如ORD123456或纯数字字符串如'123'）",
+            examples=["ORD123456", "ORD789012", "123", "456"]
         )
     ],
     user_id: Annotated[
@@ -333,18 +350,31 @@ def confirm_cancel_order(
         logger_cancel.info(f"🚫 [CANCEL_ORDER] 开始取消订单: order_id={order_id}, user_id={user_id}")
         
         with get_db_session() as db:
-            # 【关键日志】取消前的状态
-            order_before = get_order_by_id(db, order_id)
+            # 判断order_id是纯数字还是包含字母的订单号
+            if order_id.isdigit():
+                # 纯数字，作为数据库主键ID查询
+                order_before = get_order_by_id(db, int(order_id))
+            else:
+                # 包含字母，作为订单号（order_id字段）查询
+                order_before = get_order_by_number(db, order_id)
+            
             if order_before:
                 logger_cancel.info(f"🚫 [CANCEL_ORDER] 取消前状态: order_id={order_before.id}, status={order_before.status}, order_number={order_before.order_id}")
+                # 获取数据库主键ID，用于调用cancel_order_db
+                db_order_id = order_before.id
             else:
                 logger_cancel.warning(f"🚫 [CANCEL_ORDER] 取消前未找到订单: order_id={order_id}")
-            
-            order = get_order_by_id(db, order_id)
-            if not order:
-                logger_cancel.error(f"🚫 [CANCEL_ORDER] 未找到订单: order_id={order_id}")
                 return json.dumps({
-                    "text": f"未找到ID为 {order_id} 的订单",
+                    "text": f"未找到订单 {order_id}，请确认订单号是否正确。",
+                    "success": False
+                }, ensure_ascii=False)
+            
+            # 使用数据库主键ID查询订单（确保获取最新状态）
+            order = get_order_by_id(db, db_order_id, refresh=True)
+            if not order:
+                logger_cancel.error(f"🚫 [CANCEL_ORDER] 未找到订单: order_id={order_id}, db_id={db_order_id}")
+                return json.dumps({
+                    "text": f"未找到订单 {order_id}",
                     "success": False
                 }, ensure_ascii=False)
 
@@ -355,11 +385,11 @@ def confirm_cancel_order(
                     "success": False
                 }, ensure_ascii=False)
 
-            # 【关键日志】执行取消操作
-            logger_cancel.info(f"🚫 [CANCEL_ORDER] 执行取消操作: order_id={order_id}, 当前状态={order.status}")
-            order = cancel_order_db(db, order_id)
+            # 【关键日志】执行取消操作（使用数据库主键ID）
+            logger_cancel.info(f"🚫 [CANCEL_ORDER] 执行取消操作: order_number={order.order_id}, db_id={order.id}, 当前状态={order.status}")
+            order = cancel_order_db(db, db_order_id)
             if not order:
-                logger_cancel.error(f"🚫 [CANCEL_ORDER] 取消操作失败: order_id={order_id}")
+                logger_cancel.error(f"🚫 [CANCEL_ORDER] 取消操作失败: order_id={order_id}, db_id={db_order_id}")
                 return json.dumps({
                     "text": f"无法取消订单 {order_id}",
                     "success": False
@@ -375,7 +405,7 @@ def confirm_cancel_order(
             result_data = {
                 "text": f"订单 {order.order_id} 已成功取消",
                 "success": True,
-                "order_id": order.id,
+                "order_id": order.order_id,  # 返回订单号（业务标识）
                 "order_status": order.status  # 明确返回状态，用于前端显示
             }
             

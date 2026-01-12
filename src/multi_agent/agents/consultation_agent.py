@@ -117,13 +117,20 @@ class ConsultationAgent:
             if entities.get("product_id"):
                 hints.append(f"用户已选定的产品ID：{entities['product_id']}")
             
+            # 多个产品ID信息（对比场景）
+            if entities.get("product_ids"):
+                product_ids = entities["product_ids"]
+                if isinstance(product_ids, list) and len(product_ids) >= 2:
+                    hints.append(f"用户要对比的产品ID列表：{product_ids}")
+                    hints.append(f"请直接使用 compare_products 工具，传入 product_ids={product_ids}")
+            
             # 搜索关键词（如果用户之前搜索过）
             if entities.get("search_keyword"):
                 hints.append(f"之前的搜索关键词：{entities['search_keyword']}")
             
             # 显示其他上下文信息
             other_context = {k: v for k, v in entities.items() 
-                           if k not in ["product_id", "search_keyword"] and v is not None}
+                           if k not in ["product_id", "product_ids", "search_keyword"] and v is not None}
             if other_context:
                 hints.append("\n其他上下文信息：")
                 for key, value in other_context.items():

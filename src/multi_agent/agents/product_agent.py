@@ -34,6 +34,12 @@ PRODUCT_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 商�
 - 如果用户提供的搜索条件过于严格导致无结果，建议放宽条件
 - 所有工具参数都是可选的，根据用户输入动态构建查询
 
+**产品对比场景特殊处理**：
+- 如果用户想要对比多个产品（包含"对比"、"比较"、"哪个好"等关键词），且提到多个产品名称
+- 请为每个产品名称分别调用 search_products_tool 进行搜索
+- 例如：用户说"A相机和B相机哪个好"，需要分别搜索"A相机"和"B相机"
+- 每个产品名称搜索一次，确保找到对应的产品ID
+
 回复风格：
 - 使用友好的语气，用 emoji 让回复更生动
 - 如果找到多个结果，用列表展示
@@ -77,6 +83,45 @@ class ProductAgent:
         """获取 Agent 描述"""
         return "商品搜索专家 - 处理商品查询、搜索、比价等请求"
 
+    def _is_comparison_scenario(self, state: MultiAgentState) -> bool:
+        """检测是否为产品对比场景
+
+        企业级最佳实践：直接使用意图识别阶段（LLM已判断）的结果，
+        而不是硬编码关键词，这样可以更好地适配自然语言的多样性。
+
+        Args:
+            state: 当前多Agent状态
+
+        Returns:
+            是否为对比场景
+        """
+        # 直接使用意图识别结果（意图识别阶段已通过LLM判断）
+        query_intent = state.query_intent
+        if query_intent:
+            intent_type = query_intent.get("intent_type")
+            if intent_type == "comparison":
+                return True
+
+        return False
+
+    def _extract_product_ids_from_search_results(self, structured_result: Dict[str, Any]) -> list[int]:
+        """从搜索结果中提取产品ID列表
+
+        Args:
+            structured_result: 搜索结果的结构化数据
+
+        Returns:
+            产品ID列表
+        """
+        product_ids = []
+        if structured_result and "products" in structured_result:
+            products = structured_result["products"]
+            for product in products:
+                product_id = product.get("id") or product.get("product_id")
+                if product_id and isinstance(product_id, int):
+                    product_ids.append(product_id)
+        return product_ids
+
     def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
         """构建系统提示的上下文信息（一步一步智能模式）
 
@@ -91,10 +136,17 @@ class ProductAgent:
         """
         hints = []
         entities = state.entities
+        is_comparison = self._is_comparison_scenario(state)
 
         # 如果有实体信息，提示 LLM
-        if entities:
+        if entities or is_comparison:
             hints.append("\n\n=== 上下文信息 ===")
+            
+            if is_comparison:
+                hints.append("⚠️ **重要**：检测到产品对比场景！")
+                hints.append("用户想要对比多个产品，请为每个产品名称执行搜索，找到对应的产品ID。")
+                hints.append("如果用户提到多个产品名称（如'A相机和B相机'），请分别搜索每个产品。")
+            
             if entities.get("search_keyword"):
                 search_keyword = entities["search_keyword"]
                 hints.append(f"搜索关键词：{search_keyword}")
@@ -153,7 +205,8 @@ class ProductAgent:
             # 执行工具调用并构建 ToolMessage
             tool_messages = []
             tool_used_info = []
-            structured_result = None  # 存储结构化数据结果
+            structured_result = None  # 存储结构化数据结果（用于单个搜索场景）
+            all_search_results = []  # 存储所有搜索结果（用于对比场景）
 
             for tool_call in response.tool_calls:
                 tool = next((t for t in self.tools if t.name == tool_call["name"]), None)
@@ -167,6 +220,10 @@ class ProductAgent:
                             if isinstance(result_json, dict):
                                 # 检查是否包含结构化数据（products/product/orders/brands/categories）
                                 if any(key in result_json for key in ["products", "product", "orders", "brands", "categories"]):
+                                    # 如果是产品搜索结果，收集到all_search_results
+                                    if "products" in result_json:
+                                        all_search_results.append(result_json)
+                                    # 保持最后一个结果作为structured_result（向后兼容）
                                     structured_result = result_json
                         except (json.JSONDecodeError, TypeError):
                             pass
@@ -192,6 +249,29 @@ class ProductAgent:
                             )
                         )
 
+            # 合并多个搜索结果（对比场景）
+            is_comparison = self._is_comparison_scenario(state)
+            if is_comparison and all_search_results and len(all_search_results) > 1:
+                # 合并所有搜索结果
+                merged_products = []
+                merged_text_parts = []
+                total_count = 0
+                
+                for idx, search_result in enumerate(all_search_results, 1):
+                    products = search_result.get("products", [])
+                    merged_products.extend(products)
+                    total_count += search_result.get("total", 0)
+                    if search_result.get("text"):
+                        merged_text_parts.append(f"搜索结果{idx}：\n{search_result['text']}")
+                
+                structured_result = {
+                    "products": merged_products,
+                    "total": len(merged_products),
+                    "text": "\n\n".join(merged_text_parts) if merged_text_parts else f"找到{len(merged_products)}个产品",
+                    "query_summary": f"对比场景：搜索了{len(all_search_results)}个产品"
+                }
+                logger.info(f"合并{len(all_search_results)}个搜索结果，共{len(merged_products)}个产品")
+
             # 如果有结构化数据，直接使用工具的 text，不再调用 LLM
             if structured_result and "text" in structured_result:
                 # 使用工具返回的简短文本，避免 LLM 重新生成长文本
@@ -214,12 +294,49 @@ class ProductAgent:
                     query_summary=structured_result.get("query_summary", ""),
                     content=content_text  # 使用工具返回的原始 text
                 )
+                
+                # 检测对比场景，提取产品ID到entities（is_comparison已在上面计算）
+                entities_update = {}
+                
+                if is_comparison and all_search_results:
+                    # 对比场景：从所有搜索结果中提取产品ID
+                    all_product_ids = []
+                    for search_result in all_search_results:
+                        product_ids = self._extract_product_ids_from_search_results(search_result)
+                        all_product_ids.extend(product_ids)
+                    
+                    # 去重并保持顺序
+                    unique_product_ids = []
+                    seen = set()
+                    for pid in all_product_ids:
+                        if pid not in seen:
+                            unique_product_ids.append(pid)
+                            seen.add(pid)
+                    
+                    if unique_product_ids:
+                        entities_update["product_ids"] = unique_product_ids
+                        logger.info(f"检测到对比场景，从{len(all_search_results)}个搜索结果中提取产品ID: {unique_product_ids}")
+                elif is_comparison:
+                    # 对比场景但只有一个搜索结果，也提取产品ID
+                    product_ids = self._extract_product_ids_from_search_results(structured_result)
+                    if product_ids:
+                        entities_update["product_ids"] = product_ids
+                        logger.info(f"检测到对比场景，提取产品ID: {product_ids}")
+                else:
+                    # 普通搜索场景：更新last_product_search_context
+                    entities_update["last_product_search_context"] = {
+                        "products": structured_result.get("products", []),
+                        "search_keyword": state.entities.get("search_keyword"),
+                        "quantity": state.entities.get("quantity", 1)
+                    }
+                
                 result = {
                     "result": structured_result,  # 必需：权威数据源
                     "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
                     "current_agent": self.name,
                     "tools_used": state.tools_used + tool_used_info,
                     "conversation_phase": "product_selecting",  # 设置对话阶段
+                    "entities": entities_update,  # 更新entities
                     **response_model.to_full_response()
                 }
             else:

@@ -131,18 +131,6 @@ class BaseAgent(ABC):
         """获取Agent描述"""
         return self.description
 
-    def validate_state(self, state: MultiAgentState) -> bool:
-        """
-        验证状态是否有效
-
-        Args:
-            state: 要验证的状态
-
-        Returns:
-            如果状态有效返回True，否则返回False
-        """
-        return hasattr(state, "messages") and isinstance(state.messages, list)
-
 
 class ToolEnabledAgent(BaseAgent):
     """支持工具的Agent基类
@@ -197,29 +185,6 @@ class ToolEnabledAgent(BaseAgent):
                 tags=self.tool_tags
             )
         return self._available_tools or []
-
-    async def call_tool(self, tool_name: str, **kwargs) -> Any:
-        """
-        调用工具（带权限检查）
-
-        Args:
-            tool_name: 工具名称
-            **kwargs: 工具参数
-
-        Returns:
-            工具执行结果
-
-        Raises:
-            ValueError: 如果工具注册表未配置
-        """
-        if not self.tool_registry:
-            raise ValueError("工具注册表未配置")
-
-        return await self.tool_registry.acall_tool(
-            tool_name=tool_name,
-            agent_name=self.name,
-            **kwargs
-        )
 
     def refresh_tools(self):
         """刷新可用工具列表（当工具注册表更新时调用）"""
