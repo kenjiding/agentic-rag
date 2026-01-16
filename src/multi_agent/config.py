@@ -5,7 +5,6 @@
 2025最佳实践：
 - 将硬编码值提取到配置中
 - 支持通过配置扩展关键词和模式
-- 保持向后兼容
 """
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field

@@ -12,6 +12,8 @@ from src.multi_agent.state import MultiAgentState
 from src.multi_agent.tools.tool_registry import ToolRegistry
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.response_models import TextResponse, ErrorResponse
+from src.multi_agent.prompts import prompt_registry
+from src.multi_agent.constants import AgentName
 import logging
 
 logger = logging.getLogger(__name__)
@@ -55,7 +57,7 @@ class ChatAgent(ToolEnabledAgent):
             tool_tags: 允许使用的工具标签（企业级功能）
         """
         super().__init__(
-            name="chat_agent",
+            name=AgentName.CHAT_AGENT,
             llm=llm,
             description="通用对话Agent，可以处理一般性对话和工具调用任务。",
             tool_registry=tool_registry,
@@ -63,7 +65,7 @@ class ChatAgent(ToolEnabledAgent):
             tool_tags=tool_tags
         )
         
-        self.system_prompt = system_prompt or (
+        default_prompt = (
             "Your name is Novid Assistant. You are a professional, courteous, and helpful AI assistant.\n\n"
             "**Greeting Protocol:**\n"
             "When users greet you politely (e.g., '你好', 'Hello', 'Hi', '您好', '早上好', '下午好', '晚上好'), "
@@ -82,6 +84,9 @@ class ChatAgent(ToolEnabledAgent):
             "- When RAG system cannot find answers, use available web search tools to find information from the internet\n"
             "- If previous RAG search failed or returned low-quality results, proactively use web search tools to find accurate answers\n"
             "- Provide clear, accurate, and helpful responses"
+        )
+        self.system_prompt = system_prompt or (
+            prompt_registry.render("base_tone") + "\n\n" + default_prompt
         )
         self._agent = None  # 延迟初始化
     
@@ -110,7 +115,7 @@ class ChatAgent(ToolEnabledAgent):
         
         Args:
             state: 当前的多Agent系统状态
-            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
+            session_id: 会话ID（用于会话管理）
             
         Returns:
             包含以下字段的字典：
@@ -131,7 +136,7 @@ class ChatAgent(ToolEnabledAgent):
                 return {
                     "result": {"response": "未找到用户消息"},
                     "messages": [AIMessage(content="未找到用户消息")],
-                    "current_agent": self.name,
+                    "current_agent": AgentName.CHAT_AGENT,
                     **response_model.to_full_response(),
                     "metadata": {"error": "未找到用户消息"}
                 }
@@ -230,7 +235,7 @@ class ChatAgent(ToolEnabledAgent):
             result = {
                 "result": {"response": ai_message.content},
                 "messages": [ai_message],
-                "current_agent": self.name,
+                "current_agent": AgentName.CHAT_AGENT,
                 **response_model.to_full_response(),
                 "metadata": {
                     "agent": self.name,
@@ -253,7 +258,7 @@ class ChatAgent(ToolEnabledAgent):
             return {
                 "result": None,
                 "messages": [AIMessage(content=error_message)],
-                "current_agent": self.name,
+                "current_agent": AgentName.CHAT_AGENT,
                 **response_model.to_full_response(),
                 "metadata": {"error": str(e)},
                 "error": str(e)

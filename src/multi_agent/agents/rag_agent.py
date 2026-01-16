@@ -10,6 +10,7 @@ from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.state import MultiAgentState
 from src.agentic_rag.agentic_rag import AgenticRAG
 from src.multi_agent.response_models import TextResponse, ErrorResponse
+from src.multi_agent.constants import AgentName
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class RAGAgent(BaseAgent):
     - 需要多轮检索优化的问题
     
     2025-2026 最佳实践：
-    - 封装现有系统，保持向后兼容
+    - 封装现有系统，保持清晰边界
     - 提供统一的Agent接口
     - 支持异步执行（未来扩展）
     - 详细的日志记录
@@ -55,7 +56,7 @@ class RAGAgent(BaseAgent):
             max_iterations: RAG最大迭代次数
         """
         super().__init__(
-            name="rag_agent",
+            name=AgentName.RAG_AGENT,
             llm=llm,
             description="专门用于从知识库中检索信息并生成答案的Agent。适用于需要基于文档内容回答的问题。"
         )
@@ -80,7 +81,7 @@ class RAGAgent(BaseAgent):
         
         Args:
             state: 当前的多Agent系统状态
-            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
+            session_id: 会话ID（用于会话管理）
             
         Returns:
             包含以下字段的字典：

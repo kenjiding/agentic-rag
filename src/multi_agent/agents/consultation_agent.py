@@ -18,6 +18,8 @@ from src.tools.consultation_tools import get_consultation_tools
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.response_models import TextResponse, ProductComparisonResponse
+from src.multi_agent.prompts import prompt_registry, render_context_bundle
+from src.multi_agent.constants import AgentName
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +81,7 @@ class ConsultationAgent:
         """
         self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_consultation_tools()
-        self.name = "consultation_agent"
+        self.name = AgentName.CONSULTATION_AGENT
 
         # 绑定工具到 LLM
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -140,50 +142,6 @@ class ConsultationAgent:
         
         return processed_args
 
-    def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
-        """构建系统提示的上下文信息
-
-        企业级最佳实践：通过 system prompt 提示 LLM 上下文信息，
-        让 LLM 自己判断如何使用工具，而不是硬编码工具调用。
-
-        Args:
-            state: 当前多Agent状态
-
-        Returns:
-            上下文提示字符串
-        """
-        hints = []
-        entities = state.entities
-
-        # 如果有实体信息，提示 LLM
-        if entities:
-            hints.append("\n\n=== 上下文信息 ===")
-            
-            # 产品ID信息（如果用户之前选择了产品）
-            if entities.get("product_id"):
-                hints.append(f"用户已选定的产品ID：{entities['product_id']}")
-            
-            # 多个产品ID信息（对比场景）
-            if entities.get("product_ids"):
-                product_ids = entities["product_ids"]
-                if isinstance(product_ids, list) and len(product_ids) >= 2:
-                    hints.append(f"用户要对比的产品ID列表：{product_ids}")
-                    hints.append(f"请直接使用 compare_products 工具，传入 product_ids={product_ids}")
-            
-            # 搜索关键词（如果用户之前搜索过）
-            if entities.get("search_keyword"):
-                hints.append(f"之前的搜索关键词：{entities['search_keyword']}")
-            
-            # 显示其他上下文信息
-            other_context = {k: v for k, v in entities.items() 
-                           if k not in ["product_id", "product_ids", "search_keyword"] and v is not None}
-            if other_context:
-                hints.append("\n其他上下文信息：")
-                for key, value in other_context.items():
-                    hints.append(f"- {key}: {value}")
-
-        return "\n".join(hints) if hints else ""
-
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行咨询查询（异步接口，符合LangGraph 1.x规范）
 
@@ -192,7 +150,7 @@ class ConsultationAgent:
 
         Args:
             state: 当前多 Agent 状态
-            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
+            session_id: 会话ID（用于会话管理）
 
         Returns:
             更新后的状态片段（遵循统一的返回格式规范）
@@ -208,16 +166,31 @@ class ConsultationAgent:
                 "current_agent": self.name,
             }
 
-        # 构建系统提示（包含任务链上下文）
-        hints = self._build_system_prompt_hints(state)
-        system_prompt = CONSULTATION_AGENT_SYSTEM_PROMPT + hints
+        # 构建系统提示（模板组合，结构化上下文注入）
+        # 企业级最佳实践：明确区分指令和上下文，确保 LLM 理解必须调用工具
+        system_prompt = "\n\n".join([
+            prompt_registry.render("base_tone"),
+            prompt_registry.render("consultation_capabilities"),
+            CONSULTATION_AGENT_SYSTEM_PROMPT
+        ]).strip()
+        context_block = render_context_bundle(state.context_bundle)
+
+        # 合并系统提示和上下文到一个 SystemMessage
+        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        unified_system_content = "\n\n".join([
+            system_prompt,
+            "---",
+            context_block
+        ]).strip()
 
         # 构建 Agent 消息
         # 使用最新的用户消息和最近的几轮对话
         # 清理消息历史，确保消息序列完整性
         cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=10)
 
-        agent_messages = [SystemMessage(content=system_prompt)]
+        agent_messages = [
+            SystemMessage(content=unified_system_content),
+        ]
         agent_messages.extend(cleaned_messages)
 
         # 调用 LLM（异步执行）

@@ -257,6 +257,15 @@ def get_product_detail(
         main_cat_name = getattr(getattr(product, 'main_category', None), 'name', None) if hasattr(product, 'main_category') and product.main_category else None
         sub_cat_name = getattr(getattr(product, 'sub_category', None), 'name', None) if hasattr(product, 'sub_category') and product.sub_category else None
         
+        # 规范化图片字段，兼容 list/dict/None
+        raw_images = getattr(product, 'images', None)
+        if isinstance(raw_images, list):
+            normalized_images = [img for img in raw_images if isinstance(img, str)]
+        elif isinstance(raw_images, dict):
+            normalized_images = [v for v in raw_images.values() if isinstance(v, str)]
+        else:
+            normalized_images = []
+
         product_data = {
             "id": getattr(product, 'id', product_id),
             "name": getattr(product, 'name', '未知产品'),
@@ -269,7 +278,7 @@ def get_product_detail(
             "rating": float(getattr(product, 'rating', 0)) if hasattr(product, 'rating') else 0.0,
             "special": getattr(product, 'special', False),
             "description": getattr(product, 'description', None),
-            "images": getattr(product, 'images', []) if getattr(product, 'images', None) else [],
+            "images": normalized_images,
         }
 
         # 生成人类可读文本（使用ProductDisplay.from_db需要兼容SimpleNamespace）

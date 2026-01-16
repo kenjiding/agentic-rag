@@ -9,6 +9,7 @@
 """
 import logging
 from src.multi_agent.state import MultiAgentState
+from src.multi_agent.constants import ActionName, AgentName
 
 logger = logging.getLogger(__name__)
 
@@ -27,20 +28,20 @@ class GraphRouter:
 
     def route_after_supervisor(self, state: MultiAgentState) -> str:
         """Supervisor后的路由决策（一步一步智能模式）"""
-        next_action = state.next_action or "finish"
+        next_action = state.next_action or ActionName.FINISH
 
-        if next_action == "rag_search":
-            return "rag_agent"
-        elif next_action == "chat":
-            return "chat_agent"
-        elif next_action == "product_search" and self.graph.enable_business_agents:
-            return "product_agent"
-        elif next_action == "order_management" and self.graph.enable_business_agents:
-            return "order_agent"
-        elif next_action == "consultation" and self.graph.enable_business_agents:
-            return "consultation_agent"
+        if next_action == ActionName.RAG_SEARCH:
+            return AgentName.RAG_AGENT.value
+        elif next_action == ActionName.CHAT:
+            return AgentName.CHAT_AGENT.value
+        elif next_action == ActionName.PRODUCT_SEARCH and self.graph.enable_business_agents:
+            return AgentName.PRODUCT_AGENT.value
+        elif next_action == ActionName.ORDER_MANAGEMENT and self.graph.enable_business_agents:
+            return AgentName.ORDER_AGENT.value
+        elif next_action == ActionName.CONSULTATION and self.graph.enable_business_agents:
+            return AgentName.CONSULTATION_AGENT.value
         else:
-            return "finish"
+            return ActionName.FINISH.value
 
     def route_after_agent(self, state: MultiAgentState) -> str:
         """Agent执行后的路由决策（一步一步智能模式）
@@ -54,18 +55,18 @@ class GraphRouter:
         current_agent = state.current_agent
         
         # RAG降级：答案质量低时切换到Chat Agent
-        if current_agent == "rag_agent":
-            rag_result = state.agent_results.get("rag_agent")
+        if current_agent == AgentName.RAG_AGENT:
+            rag_result = state.agent_results.get(AgentName.RAG_AGENT.value)
             if rag_result:
                 answer = rag_result.get("answer", "")
                 if (rag_result.get("answer_quality", 0.0) < 0.5 or
                     not answer or "无法从知识库中找到" in answer):
                     agent_names = [r.get("agent") for r in state.agent_history]
-                    if "chat_agent" not in agent_names:
-                        return "chat_agent"
+                    if AgentName.CHAT_AGENT.value not in agent_names:
+                        return AgentName.CHAT_AGENT.value
         
         # Product Agent：对比场景需要继续路由到consultation_agent
-        if current_agent == "product_agent":
+        if current_agent == AgentName.PRODUCT_AGENT:
             # 检查是否为对比场景
             # 方法1：从query_intent判断（意图识别阶段已通过LLM判断）
             query_intent = state.query_intent
@@ -81,4 +82,4 @@ class GraphRouter:
                     logger.info(f"检测到product_agent对比场景，已提取product_ids={product_ids}，路由回supervisor进行下一次决策")
                     return "supervisor"
         
-        return "finish"
+        return ActionName.FINISH.value

@@ -19,6 +19,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, AI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, model_validator
 from src.multi_agent.state import MultiAgentState, ConversationPhase
+from src.multi_agent.constants import ActionName, AgentName
+from src.multi_agent.routing_engine import RoutingEngine
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.config import get_keywords_config
 from src.utils.llm_factory import create_llm_for_agent
@@ -107,6 +109,7 @@ class SupervisorAgent:
         self.llm = llm or create_llm_for_agent()
         self.agents: Dict[str, BaseAgent] = {}
         self.agent_registry = agent_registry
+        self.routing_engine = RoutingEngine()
 
         # 创建结构化输出的LLM（使用with_structured_output）
         self.structured_llm = self.llm.with_structured_output(RoutingDecision)
@@ -185,13 +188,18 @@ class SupervisorAgent:
 
             if not user_message:
                 return {
-                    "next_action": "finish",
+                    "next_action": ActionName.FINISH,
                     "selected_agent": None,
                     "routing_reason": "未找到用户消息",
                     "confidence": 0.0
                 }
 
-            # 执行 LLM 路由决策（由 LLM 智能判断是否需要结束对话或清理状态）
+            # 1) 先走规则路由（可测试、可解释）
+            rule_result = self.routing_engine.route(state)
+            if rule_result:
+                return rule_result
+
+            # 2) LLM 路由兜底
             llm_result = await self._do_llm_routing(state, user_message)
             return llm_result
 
@@ -211,6 +219,24 @@ class SupervisorAgent:
         context_parts.append(f"意图类型: {intent_type}")
         context_parts.append(f"复杂度: {complexity}")
 
+        reasoning = query_intent.get("reasoning")
+        if reasoning:
+            context_parts.append(f"意图推理: {reasoning}")
+
+        intent_entities = query_intent.get("entities")
+        if intent_entities:
+            if hasattr(intent_entities, "model_dump"):
+                entities_dict = intent_entities.model_dump(exclude_none=True)
+            elif isinstance(intent_entities, dict):
+                entities_dict = intent_entities
+            else:
+                entities_dict = {}
+
+            if entities_dict:
+                compact = {k: v for k, v in entities_dict.items() if v not in (None, [], "")}
+                if compact:
+                    context_parts.append(f"意图实体: {compact}")
+
         return "\n".join(context_parts)
 
     def _build_entity_context(self, state: MultiAgentState) -> str:
@@ -229,11 +255,8 @@ class SupervisorAgent:
         all_entities = state.entities
 
         if not all_entities:
-            # 即使没有实体信息，也尝试从消息历史中提取上下文
-            message_context = self._build_message_context(state.messages)
-            if message_context:
-                return message_context
-            return "（无累积实体信息）"
+            formatted_bundle = self._format_context_bundle(state.context_bundle)
+            return formatted_bundle if formatted_bundle else "（无累积实体信息）"
 
         context_parts = []
 
@@ -308,11 +331,6 @@ class SupervisorAgent:
             for key, value in all_entities.items():
                 if value is not None:
                     context_parts.append(f"  - {key}: {value}")
-
-        # 从消息历史中提取上下文信息（更全面的上下文）
-        message_context = self._build_message_context(state.messages)
-        if message_context:
-            context_parts.append(message_context)
 
         return "\n".join(context_parts)
         
@@ -624,14 +642,17 @@ class SupervisorAgent:
             for agent in self.get_available_agents()
         ])
 
-    def _validate_selected_agent(self, agent_name: Optional[str]) -> Optional[str]:
+    def _normalize_agent(self, agent_name: Optional[str]) -> Optional[AgentName]:
         """验证并返回有效的 Agent 名称"""
         if not agent_name:
             return None
         if agent_name not in self.agents:
             logger.warning(f"选中的 Agent {agent_name} 不存在，使用 chat_agent")
-            return "chat_agent" if "chat_agent" in self.agents else None
-        return agent_name
+            return AgentName.CHAT_AGENT if AgentName.CHAT_AGENT.value in self.agents else None
+        return AgentName(agent_name)
+
+    def _normalize_action(self, action: str) -> ActionName:
+        return ActionName(action)
 
     def _extract_user_message(self, state: MultiAgentState) -> Optional[str]:
         """从状态中提取最新的用户消息"""
@@ -644,142 +665,63 @@ class SupervisorAgent:
         """
         执行 LLM 单步路由（一步一步智能模式）
 
-        设计说明：
+        改进说明：
         - user_message 只包含当前查询（最后一条 HumanMessage）
-        - 历史上下文通过 entity_context 提供（累积的实体信息）
-        - entity_context 已包含累积实体信息，足以判断多轮补充场景
+        - 历史上下文由 context_bundle 提供
         """
         query_intent = state.query_intent
         intent_context = self._build_intent_context(query_intent)
-        entity_context = self._build_entity_context(state)
+
+        # 【改进】优先使用统一上下文包
+        entity_context = self._format_context_bundle(state.context_bundle)
+
         agents_description = self._get_agents_description()
 
         routing_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个智能路由系统，负责根据用户问题和上下文信息决定调用哪个Agent。
+            ("system", """你是路由决策助手。系统已通过规则引擎处理确定性路由。
+你的任务：仅在规则无法匹配时，基于上下文选择最合适的Agent。
 
-可用Agent列表：
+可用Agent：
 {agents}
 
-路由规则（基于用户问题和上下文信息）：
+要求：
+1. 输出必须符合RoutingDecision结构。
+2. 若无法判断，优先选择chat_agent而非finish。
+3. 仅使用上下文中的事实，不要自行假设。
 
-【核心规则 - 购买流程】（最高优先级）：
+上下文：
+{entity_context}
 
-**规则1：搜索产品**（以下情况路由到 product_agent）：
-- ✗ 用户未选定产品（entities中无product_id）
-- **关键判断：只要 product_id 为 None，无论用户是否提供了手机号，都必须先路由到 product_agent 搜索产品！**
-- 例如："帮我购买3个西门子产品"、"买2台华为手机"、"我要下单买冰箱"
-- **即使用户说"我的电话是XXX"，只要没有选定产品，也要先搜索产品！**
-- next_action设为"product_search"，selected_agent设为"product_agent"
-
-**规则2：创建订单**（以下情况路由到 order_agent）：
-- ✓ 用户已选定产品（entities中有product_id）
-- **注意**：用户已登录，无需提供手机号，系统会从session中获取用户信息
-- next_action设为"order_management"，selected_agent设为"order_agent"
-
-
-【深度咨询规则】（新增，高优先级）：
-- **产品对比查询**：根据entities状态智能路由
-  - 包含"对比"、"比较"、"哪个好"、"哪个更适合"等关键词
-  - 包含多个产品名称或ID（至少2个）
-  - **关键路由逻辑**（严格按照以下顺序判断）：
-    1. **优先级最高**：检查entities字典中是否存在product_ids字段，如果product_ids是列表类型且长度>=2，说明产品ID已提取完成，**必须直接路由到consultation_agent进行对比**，不能再路由到product_agent
-    2. 如果entities中没有product_ids或product_ids为空，但用户提到了多个产品名称，则先路由到product_agent搜索产品，获取product_ids后，再路由到consultation_agent
-  - **重要原则**：如果entities中已有product_ids（非空列表），说明前置任务已完成，必须路由到consultation_agent，避免重复执行相同任务
-  - 例如：
-    - 用户询问产品对比，entities中product_ids=[1, 2] → 直接路由到consultation_agent
-    - 用户询问产品对比，entities中没有product_ids或product_ids为空 → 先路由到product_agent搜索
-  - next_action设为"consultation"（当entities中有product_ids时）或"product_search"（当需要搜索时），selected_agent设为对应的agent
-
-- **参数查询**：选择 consultation_agent
-  - 询问产品详细参数、规格、配置等
-  - 包含"参数"、"配置"、"规格"、"性能"等关键词
-  - 例如："这款相机的夜景拍摄参数是什么？"、"请提取一下产品1的参数"
-  - next_action设为"consultation"，selected_agent设为"consultation_agent"
-
-- **适配性确认查询**（待实现功能）：选择 consultation_agent
-  - 包含"能用吗"、"适配"、"兼容"、"适合我的XXX"等关键词
-  - 包含用户设备描述（如车型、手机型号）
-  - 例如："我车是2022款SUV，这款脚垫能用吗？"
-  - next_action设为"consultation"，selected_agent设为"consultation_agent"
-
-- **隐性需求挖掘查询**（待实现功能）：选择 consultation_agent
-  - 包含"推荐"、"适合"、"有档次"、"送给XXX"等关键词
-  - 包含受众、场景、预算等多维度信息
-  - 例如："送给50岁女性的生日礼物，预算500元，要有档次"
-  - next_action设为"consultation"，selected_agent设为"consultation_agent"
-
-- **简单商品搜索**（保持原逻辑）：选择 product_agent
-  - 简单的关键词搜索，没有复杂推理需求
-  - 例如："帮我找iPhone 15"、"搜索华为手机"
-
-【商品查询规则】：
-- 用户询问商品信息、价格、参数等（但没有购买意图和对比需求）：选择 product_agent
-- 例如："西门子产品有哪些"、"这款冰箱多少钱"、"华为手机有什么型号"
-
-【订单管理规则】（关键，高优先级）：
-- **查询/取消订单**：选择 order_agent
-- **关键判断**：
-  - 如果entities中有order_id（无论是字符串格式的订单号如"ORD906278"还是纯数字），**必须路由到order_agent**
-  - 如果用户说"取消订单"、"取消这个订单"、"帮我取消订单"等，即使当前消息中没有明确的order_id，也要路由到order_agent
-  - **重要**：order_agent有能力从历史消息中查找订单信息（如之前查询过的订单）
-  - 当用户说"这个订单"、"刚才的订单"等指代性表达时，应该从"累积实体信息"中查找order_id，如果找到则路由到order_agent
-- 例如：
-  - "查一下我的订单" → order_agent
-  - "取消刚才的订单" → order_agent（从历史消息或entities中查找order_id）
-  - "帮我取消这个订单" → order_agent（从entities或历史消息中查找order_id，如果entities中有order_id则直接使用）
-  - "谢谢，帮我查一下ORD906278订单" → order_agent（提取order_id=ORD906278）
-  - "帮我取消这个订单"（entities中有order_id=ORD906278） → order_agent（使用entities中的order_id）
-- next_action设为"order_management"，selected_agent设为"order_agent"
-
-【对话阶段路由规则】（重要）：
-- **如果对话阶段为"正在选择产品"(product_selecting)**：
-  - 用户提供了手机号 → 路由到 order_agent（继续订单流程）
-  - 用户说"选择ID:1"、"买这个"、"我要这个"等 → 路由到 order_agent（用户已选定产品）
-  - 用户说"不要了"、"换个"、"重新搜索"等 → 路由到 product_agent（重新搜索）
-- **如果对话阶段为"正在创建订单"(order_creating)**：
-  - 用户说"确认"、"好的"、"可以"等 → 路由到 order_agent（确认订单）
-  - 用户说"取消"、"不要了"等 → 路由到 chat_agent（取消订单）
-- **如果对话阶段为"订单已完成"(order_completed)**：
-  - **关键判断**：必须完整理解用户意图，不要仅因为包含"谢谢"就结束对话
-  - 如果用户说"谢谢"后还有业务请求（如"谢谢，帮我查询订单"、"谢谢，帮我找产品"），应路由到对应的 agent 处理业务请求
-  - 只有当用户纯粹表达感谢、告别且没有后续业务需求时（如"谢谢"、"谢谢，再见"），才路由到 chat_agent 进行礼貌回复
-  - 用户提出新的业务需求（查询订单、搜索产品、下单等） → 路由到对应的 agent（开始新任务）
-
-【普通交流/闲聊规则】（重要）：
-- **用户表达感谢、问候、礼貌用语**：必须路由到 chat_agent，返回友好温暖的回复！
-  - 例如："谢谢"、"感谢"、"你好"、"��见"、"好的"、"知道了"、"哈哈"等
-  - **关键判断**：如果"谢谢"、"感谢"等词后面还有业务请求（如"谢谢，帮我查询订单ORD479360"），应优先处理业务请求，而不是简单回复感谢
-  - 只有当用户纯粹表达感谢、问候且没有后续业务需求时，才路由到 chat_agent
-  - next_action设为"chat"，selected_agent设为"chat_agent"
-  - **严禁将普通交流设为finish！**
-
-【知识检索规则】：
-- 用户询问产品使用方法、功能介绍、技术问题等 → rag_agent
-- 例如："怎么使用"、"如何操作"、"有什么功能"等
-
-【finish使用规则】（极少使用）：
-- 只有在完全无法理解用户意图，且没有任何agent能处理时才使用finish
-- finish会导致直接结束对话返回空白，所以**优先选择chat_agent处理**
-- 宁可路由到chat_agent让LLM尝试理解，也不要直接finish
-
-【字段一致性规则】：
-- 如果next_action不是"finish"，则必须指定一个有效的selected_agent
-- 如果next_action是"finish"，则selected_agent必须为null（None）
-
-【多轮对话处理】：
-- 根据"累积实体信息"判断用户进度
-- 如果 entities 中有 product_id，说明用户已选定产品，可以进入订单流程
-- 如果 entities 中有 search_keyword 但没有 product_id，说明还在搜索阶段
-
-【重新开始购买场景】：
-- 如果用户说"我还是想买"、"重新开始"、"还是那个"、"再试试"等，且"最近产品搜索记录"中有产品信息
-- 应该重新展示之前的产品列表，路由到 product_agent
-
-**意图识别结果**（已由前置节点完成，仅供参考）：
-{intent_context}
-
-**累积实体信息**（包含用户已提供的所有信息）：
-{entity_context}"""),
+意图识别（仅供参考）：
+{intent_context}"""),
+            ("human", "用户问题: 我想买一台65寸电视，有什么推荐？"),
+            ("assistant", """{
+  "next_action": "product_search",
+  "selected_agent": "product_agent",
+  "routing_reason": "用户明确表达购买需求且未指定产品，需先搜索产品",
+  "confidence": 0.75
+}"""),
+            ("human", "用户问题: 帮我取消订单ORD123456"),
+            ("assistant", """{
+  "next_action": "order_management",
+  "selected_agent": "order_agent",
+  "routing_reason": "包含订单号且是取消需求，需订单管理",
+  "confidence": 0.8
+}"""),
+            ("human", "用户问题: 这两个型号X1和X2有什么区别？"),
+            ("assistant", """{
+  "next_action": "consultation",
+  "selected_agent": "consultation_agent",
+  "routing_reason": "涉及两个产品对比，需咨询/对比能力",
+  "confidence": 0.7
+}"""),
+            ("human", "用户问题: 谢谢你！"),
+            ("assistant", """{
+  "next_action": "chat",
+  "selected_agent": "chat_agent",
+  "routing_reason": "普通致谢/闲聊，走通用对话",
+  "confidence": 0.6
+}"""),
             ("user", "用户问题: {question}")
         ])
 
@@ -793,10 +735,11 @@ class SupervisorAgent:
                 )
             )
 
-            selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
+            selected_agent = self._normalize_agent(routing_decision.selected_agent)
+            next_action = self._normalize_action(routing_decision.next_action)
 
             result = {
-                "next_action": routing_decision.next_action,
+                "next_action": next_action,
                 "selected_agent": selected_agent,
                 "routing_reason": routing_decision.routing_reason,
                 "confidence": routing_decision.confidence
@@ -843,10 +786,11 @@ IMPORTANT: 普通交流（如"谢谢"）必须路由到chat_agent，不要用fin
                 )
             )
 
-            selected_agent = self._validate_selected_agent(routing_decision.selected_agent)
+            selected_agent = self._normalize_agent(routing_decision.selected_agent)
+            next_action = self._normalize_action(routing_decision.next_action)
 
             # 防御性检查
-            if routing_decision.next_action == "finish" and selected_agent is not None:
+            if next_action == ActionName.FINISH and selected_agent is not None:
                 logger.warning(
                     f"降级策略检测到逻辑不一致：next_action='finish'但selected_agent={selected_agent}，"
                     f"强制将selected_agent设置为None"
@@ -854,7 +798,7 @@ IMPORTANT: 普通交流（如"谢谢"）必须路由到chat_agent，不要用fin
                 selected_agent = None
 
             result = {
-                "next_action": routing_decision.next_action,
+                "next_action": next_action,
                 "selected_agent": selected_agent,
                 "routing_reason": f"降级策略（LLM）: {routing_decision.routing_reason}",
                 "confidence": routing_decision.confidence * 0.8
@@ -877,16 +821,87 @@ IMPORTANT: 普通交流（如"谢谢"）必须路由到chat_agent，不要用fin
         # 如果包含问题特征，倾向于使用RAG搜索
         if has_question_mark:
             return {
-                "next_action": "rag_search",
-                "selected_agent": "rag_agent" if "rag_agent" in self.agents else None,
+                "next_action": ActionName.RAG_SEARCH,
+                "selected_agent": AgentName.RAG_AGENT if AgentName.RAG_AGENT.value in self.agents else None,
                 "routing_reason": "最终降级策略：基于通用问题模式检测",
                 "confidence": 0.4
             }
 
         # 默认使用chat_agent
         return {
-            "next_action": "chat",
-            "selected_agent": "chat_agent" if "chat_agent" in self.agents else None,
+            "next_action": ActionName.CHAT,
+            "selected_agent": AgentName.CHAT_AGENT if AgentName.CHAT_AGENT.value in self.agents else None,
             "routing_reason": "最终降级策略：默认使用chat_agent",
             "confidence": 0.3
         }
+
+    def _format_context_bundle(
+        self,
+        context_bundle: Optional[Dict[str, Any]],
+    ) -> str:
+        """格式化统一上下文包，必要时回退到summary."""
+        if not context_bundle:
+            return "（无上下文信息）"
+
+        parts = ["【统一上下文包】"]
+
+        short_term = context_bundle.get("short_term_context", {})
+        task_input = context_bundle.get("task_input", {})
+
+        # 对话阶段
+        phase = task_input.get("conversation_phase")
+        if phase:
+            parts.append(f"【对话阶段】: {phase}")
+
+        # 关键实体
+        entities = task_input.get("entities", {})
+        if entities:
+            parts.append("【关键实体】:")
+            for k, v in entities.items():
+                parts.append(f"  - {k}: {v}")
+
+        # 来自上下文摘要的关键实体（避免entities缺失时丢信息）
+        key_entities = short_term.get("key_entities", {})
+        if key_entities:
+            parts.append("【摘要关键实体】:")
+            for k, v in key_entities.items():
+                parts.append(f"  - {k}: {v}")
+
+        # 最近对话（从short_term_context复用）
+        history = short_term.get("conversation_history", [])
+        if history:
+            parts.append(f"\n【对话历史】(最近{len(history)}轮):")
+            for idx, turn in enumerate(history[-3:], 1):
+                parts.append(f"\n  轮次{idx}:")
+                if turn.get("human"):
+                    human_msg = turn['human']
+                    if len(human_msg) > 100:
+                        human_msg = human_msg[:100] + "..."
+                    parts.append(f"    用户: {human_msg}")
+                if turn.get("ai"):
+                    ai_msg = turn['ai']
+                    if len(ai_msg) > 100:
+                        ai_msg = ai_msg[:100] + "..."
+                    parts.append(f"    AI: {ai_msg}")
+
+        tool_calls = short_term.get("recent_tool_calls", [])
+        if tool_calls:
+            parts.append("\n【最近工具调用】:")
+            for tc in tool_calls[-5:]:
+                name = tc.get('name', 'unknown')
+                summary = tc.get('summary', '')
+                parts.append(f"  - {name}: {summary}")
+
+        # 意图信息（仅供路由参考）
+        intent = task_input.get("intent")
+        if intent:
+            parts.append("\n【意图信息】:")
+            if isinstance(intent, dict):
+                intent_type = intent.get("intent_type")
+                complexity = intent.get("complexity")
+                if intent_type:
+                    parts.append(f"  - intent_type: {intent_type}")
+                if complexity:
+                    parts.append(f"  - complexity: {complexity}")
+
+        return "\n".join(parts) if parts else "（无上下文信息）"

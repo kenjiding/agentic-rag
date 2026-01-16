@@ -87,14 +87,11 @@ class InterruptData:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InterruptData":
         """从字典创建实例"""
-        interrupt_type = data.get("interrupt_type", InterruptType.CONFIRMATION)
-        # 兼容旧数据：如果没有 interrupt_type，默认为 CONFIRMATION
+        if "interrupt_type" not in data:
+            raise ValueError("interrupt_type is required")
+        interrupt_type = data.get("interrupt_type")
         if isinstance(interrupt_type, str):
-            try:
-                interrupt_type = InterruptType(interrupt_type)
-            except ValueError:
-                interrupt_type = InterruptType.CONFIRMATION
-
+            interrupt_type = InterruptType(interrupt_type)
         return cls(
             interrupt_type=interrupt_type,
             action_type=data.get("action_type", ""),
@@ -161,11 +158,7 @@ def create_interrupt(
         ```
     """
     if isinstance(interrupt_type, str):
-        try:
-            interrupt_type = InterruptType(interrupt_type)
-        except ValueError:
-            logger.warning(f"未知的 interrupt_type: {interrupt_type}，使用默认值 CONFIRMATION")
-            interrupt_type = InterruptType.CONFIRMATION
+        interrupt_type = InterruptType(interrupt_type)
 
     data = InterruptData(
         interrupt_type=interrupt_type,
@@ -271,10 +264,9 @@ class InterruptState:
         """获取 state 中 interrupt 的类型"""
         data = InterruptState.get_interrupt_data(state_dict)
         if data:
-            interrupt_type = data.get("interrupt_type", InterruptType.CONFIRMATION)
+            if "interrupt_type" not in data:
+                raise ValueError("interrupt_type is required in interrupt data")
+            interrupt_type = data.get("interrupt_type")
             if isinstance(interrupt_type, str):
-                try:
-                    return InterruptType(interrupt_type)
-                except ValueError:
-                    return InterruptType.CONFIRMATION
+                return InterruptType(interrupt_type)
         return None

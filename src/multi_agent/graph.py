@@ -127,6 +127,16 @@ class MultiAgentGraph:
         # 初始化意图分类器
         self.intent_classifier = IntentClassifier(llm=self.llm) if self.enable_intent_classification else None
 
+        # 初始化上下文管理器
+        from src.multi_agent.context_manager import ContextManager
+        from src.multi_agent.context_pipeline import ContextPipeline
+        self.context_manager = ContextManager(
+            max_history_rounds=5,
+            max_tool_calls=10
+        )
+        self.context_pipeline = ContextPipeline(self.context_manager)
+        logger.info("已初始化ContextManager（上下文管理器）")
+
         # 初始化Agent注册表
         self.agent_registry = AgentRegistry()
 
@@ -342,6 +352,7 @@ class MultiAgentGraph:
         graph = StateGraph(MultiAgentState)
 
         # 添加系统节点
+        graph.add_node("context_manager", self.node_handler.context_manager_node)  # 新增：上下文管理节点
         graph.add_node("intent_recognition", self.node_handler.intent_recognition_node)
         graph.add_node("supervisor", self.node_handler.supervisor_node)
 
@@ -350,8 +361,9 @@ class MultiAgentGraph:
             graph.add_node(descriptor.name, descriptor.node)
             logger.info(f"添加Agent节点: {descriptor.name}")
 
-        # 设置入口点
-        graph.set_entry_point("intent_recognition")
+        # 设置入口点（修改：从context_manager开始）
+        graph.set_entry_point("context_manager")
+        graph.add_edge("context_manager", "intent_recognition")
         graph.add_edge("intent_recognition", "supervisor")
 
         # 自动配置所有路由

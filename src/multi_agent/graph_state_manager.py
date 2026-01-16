@@ -48,7 +48,8 @@ class GraphStateManager:
             "original_question": question,
             "confirmation_pending": None,
             "entities": {},
-            "conversation_phase": "idle"
+            "conversation_phase": "idle",
+            "context_bundle": None
         }
 
     def prepare_config(

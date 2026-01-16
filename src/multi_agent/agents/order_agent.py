@@ -20,6 +20,8 @@ from src.utils.llm_factory import create_llm_for_agent
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.response_models import OrderListResponse, TextResponse, ConfirmationResponse
+from src.multi_agent.prompts import prompt_registry, render_context_bundle
+from src.multi_agent.constants import AgentName
 from src.confirmation import get_confirmation_manager, ConfirmationManager, ConfirmationStatus
 from src.multi_agent.interrupt_framework import (
     create_confirmation_interrupt,
@@ -29,7 +31,6 @@ from src.multi_agent.interrupt_framework import (
 logger = logging.getLogger(__name__)
 
 
-# System Prompt
 ORDER_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 订单管理专家。
 
 你的职责是帮助用户处理订单相关事务，包括：
@@ -119,7 +120,7 @@ class OrderAgent:
         """
         self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_order_tools()
-        self.name = "order_agent"
+        self.name = AgentName.ORDER_AGENT
         self.confirmation_manager = confirmation_manager or get_confirmation_manager()
 
         # 绑定工具到 LLM
@@ -588,57 +589,6 @@ class OrderAgent:
             logger.error(f"prepare_cancel_order 失败: {e}", exc_info=True)
             return None
 
-    def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
-        """构建系统提示的上下文信息
-
-        通用解决方案：只提供累积的上下文信息，不做硬编码的条件判断。
-        LLM 会根据工具描述和这些上下文信息，自动判断是否可以执行工具，
-        或者需要向用户询问什么信息。
-
-        Args:
-            state: 多Agent状态，从中提取所有可用的上下文信息
-
-        Returns:
-            提示文本
-        """
-        # 收集所有可用的实体信息
-        all_entities = state.entities
-
-        # 构建上下文提示，让 LLM 自己判断如何使用这些信息
-        hints = []
-
-        # 【关键】明确告诉 LLM 要从对话历史中提取信息
-        hints.append("\n\n=== 重要提示：信息提取优先级 ===")
-        hints.append("1. **首先检查对话历史**：仔细阅读所有历史消息，提取用户已明确提供的信息")
-        hints.append("   - 用户可能在之前的对话中提供过手机号、数量、地址等信息")
-        hints.append("   - 如果工具需要的参数在历史消息中已存在，必须直接使用，不要重复询问")
-        hints.append("2. 其次检查以下上下文信息（如果已收集）：")
-
-        if all_entities:
-            hints.append("\n=== 已收集的上下文信息 ===")
-            for key, value in all_entities.items():
-                if value is not None:
-                    hints.append(f"- {key}: {value}")
-
-        # 【场景处理】当有 order_id 时（查询订单详情）
-        if all_entities.get("order_id"):
-            hints.append("\n=== 当前场景：查询订单详情 ===")
-            hints.append("检测到用户提供了订单ID（订单号），应该调用 query_order 工具查询订单详情。")
-            hints.append(f"- 订单ID: {all_entities.get('order_id')}（使用 order_id 参数，字符串类型）")
-            hints.append("注意：query_order 工具接受 user_id（必填）和 order_id（可选）参数。如果提供 order_id，会优先查询特定订单并验证权限；如果不提供 order_id，会查询用户所有订单。")
-
-        # 【场景处理】当有 product_id 时（用户已登录，无需手机号）
-        if all_entities.get("product_id"):
-            hints.append("\n=== 当前场景：可以创建订单 ===")
-            hints.append("检测到用户已选定产品（product_id存在）。用户已登录，系统会自动识别用户身份。")
-            hints.append("你应该立即调用 prepare_create_order 工具来创建订单，不需要再询问用户。")
-            hints.append(f"- 产品ID: {all_entities.get('product_id')}")
-            hints.append(f"- 数量: {all_entities.get('quantity', 1)}")
-
-        hints.append("\n请根据对话历史、上下文信息和工具描述，判断是否可以执行操作，或需要向用户询问什么信息。")
-
-        return "\n".join(hints)
-
     async def _handle_with_llm(
         self,
         state: MultiAgentState,
@@ -658,13 +608,29 @@ class OrderAgent:
         Returns:
             处理结果
         """
-        hints = self._build_system_prompt_hints(state)
         # 保留更多历史消息，确保 LLM 能看到用户之前提供的信息（如手机号、数量等）
         # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
         cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=20)
 
+        # 构建系统提示（模板组合，结构化上下文注入）
+        # 企业级最佳实践：明确区分指令和上下文，确保 LLM 理解必须调用工具
+        system_prompt = "\n\n".join([
+            prompt_registry.render("base_tone"),
+            prompt_registry.render("order_capabilities"),
+            ORDER_AGENT_SYSTEM_PROMPT
+        ]).strip()
+        context_block = render_context_bundle(state.context_bundle)
+
+        # 合并系统提示和上下文到一个 SystemMessage
+        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        unified_system_content = "\n\n".join([
+            system_prompt,
+            "---",
+            context_block
+        ]).strip()
+
         agent_messages = [
-            SystemMessage(content=ORDER_AGENT_SYSTEM_PROMPT + hints)
+            SystemMessage(content=unified_system_content),
         ]
         agent_messages.extend(cleaned_messages)
 

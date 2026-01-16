@@ -15,6 +15,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 
 from src.multi_agent.state import MultiAgentState
+from src.multi_agent.constants import ActionName, MetadataKeys
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,73 @@ class GraphNodeHandler:
         """
         return getattr(self.graph, agent_name, None)
 
+    async def context_manager_node(self, state: MultiAgentState) -> MultiAgentState:
+        """上下文管理节点 - 智能提取和压缩上下文
+
+        职责：
+        1. 提取当前查询（最后一条HumanMessage）
+        2. 使用ContextManager构建上下文摘要
+        3. 更新state.context_summary
+
+        Args:
+            state: 当前状态
+
+        Returns:
+            更新后的状态（包含context_summary）
+        """
+        try:
+            # 1. 提取当前查询（从messages中获取最后一条HumanMessage）
+            current_query = None
+            for msg in reversed(state.messages):
+                if hasattr(msg, 'content') and msg.content:
+                    from langchain_core.messages import HumanMessage
+                    if isinstance(msg, HumanMessage):
+                        current_query = msg.content
+                        break
+
+            if not current_query:
+                current_query = state.original_question or ""
+
+            # 2. 使用ContextPipeline构建统一上下文与摘要
+            context_bundle = await self.graph.context_pipeline.build(
+                state=state,
+                current_query=current_query
+            )
+
+            logger.info(
+                f"📊【上下文管理】构建摘要完成: "
+                f"{len(context_bundle.short_term_context.get('conversation_history', []))}轮对话, "
+                f"{len(context_bundle.short_term_context.get('recent_tool_calls', []))}个工具调用"
+            )
+
+            # 3. 更新state
+            # 更新上下文缓存元数据（轻量缓存）
+            context_cache = {
+                "message_count": len(state.messages),
+                "history_rounds": len(context_bundle.short_term_context.get("conversation_history", [])),
+                "tool_calls_count": len(context_bundle.short_term_context.get("recent_tool_calls", [])),
+            }
+            context_version = (state.metadata or {}).get("context_version", 0) + 1
+
+            return {
+                "context_bundle": context_bundle.model_dump(),
+                "original_question": current_query,
+                "metadata": {
+                    **state.metadata,
+                    MetadataKeys.CONTEXT_CACHE.value: context_cache,
+                    MetadataKeys.CONTEXT_VERSION.value: context_version,
+                    MetadataKeys.CONTEXT_OWNER.value: "context_manager",
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"上下文管理节点执行错误: {str(e)}", exc_info=True)
+            # 返回None，避免阻塞流程
+            return {
+                "context_bundle": None,
+                "original_question": state.original_question,
+            }
+
     async def intent_recognition_node(self, state: MultiAgentState) -> MultiAgentState:
         """意图识别节点 - 分析用户查询意图并提取实体"""
         try:
@@ -66,12 +134,21 @@ class GraphNodeHandler:
 
             logger.info(f"🎯【意图识别+实体提取】分析查询: {question}")
 
+            # 【改进】构建增强查询（包含上下文）
+            enhanced_query = self._build_enhanced_query(
+                current_query=question,
+                context_bundle=state.context_bundle
+            )
+
+            if enhanced_query != question:
+                logger.info(f"📊【意图识别】使用增强查询（包含上下文）")
+
             # 执行意图识别（Joint Intent Detection and Slot Filling）
             if not self.graph.intent_classifier:
                 return {"query_intent": None, "original_question": question}
 
-            # 使用异步方法提高性能
-            intent = await self.graph.intent_classifier.aclassify(question)
+            # 使用异步方法提高性能（使用增强后的查询）
+            intent = await self.graph.intent_classifier.aclassify(enhanced_query)
 
             # 提取实体 - 合并新提取的实体到现有实体中
             entities = {**state.entities}
@@ -106,7 +183,7 @@ class GraphNodeHandler:
             if iteration_count >= self.graph.max_iterations:
                 logger.warning(f"达到最大迭代次数 {self.graph.max_iterations}，结束执行")
                 return {
-                    "next_action": "finish",
+                    "next_action": ActionName.FINISH,
                     "routing_reason": f"达到最大迭代次数 {self.graph.max_iterations}"
                 }
 
@@ -125,7 +202,7 @@ class GraphNodeHandler:
         except Exception as e:
             logger.error(f"Supervisor节点执行错误: {str(e)}", exc_info=True)
             return {
-                "next_action": "finish",
+                "next_action": ActionName.FINISH,
                 "error_message": f"Supervisor错误: {str(e)}",
                 "routing_reason": f"执行错误: {str(e)}"
             }
@@ -158,7 +235,7 @@ class GraphNodeHandler:
             if not agent:
                 logger.error(f"{agent_name} 未找到")
                 return {
-                    "next_action": "finish",
+                    "next_action": ActionName.FINISH,
                     "error_message": f"{agent_name} 未找到"
                 }
 
@@ -212,7 +289,6 @@ class GraphNodeHandler:
                 if hasattr(interrupt_obj, 'value'):
                     interrupt_value = interrupt_obj.value
                 else:
-                    # 如果 args[0] 本身就是值（向后兼容）
                     interrupt_value = interrupt_obj
 
             # 【关键修复】GraphInterrupt 的 value 可能是 (Interrupt(...),) 这样的 tuple
@@ -234,7 +310,7 @@ class GraphNodeHandler:
         except Exception as e:
             logger.error(f"{agent_name} 节点执行错误: {str(e)}", exc_info=True)
             return {
-                "next_action": "finish",
+                "next_action": ActionName.FINISH,
                 "error_message": f"{agent_name} 错误: {str(e)}"
             }
 
@@ -260,22 +336,64 @@ class GraphNodeHandler:
         agent_node.__name__ = f"{agent_name}_node"
         return agent_node
 
-    # ===== 以下为向后兼容保留的方法，内部使用create_agent_node =====
+    def _build_enhanced_query(
+        self,
+        current_query: str,
+        context_bundle: Optional[Dict[str, Any]],
+        max_history_turns: int = 10
+    ) -> str:
+        """构建增强的查询（包含上下文）
 
-    async def rag_agent_node(self, state: MultiAgentState) -> MultiAgentState:
-        """RAG Agent节点（向后兼容）"""
-        return await self._execute_agent_node(state, "rag_agent")
+        将上下文信息附加到当前查询前，帮助意图识别理解历史对话和累积实体。
 
-    async def chat_agent_node(self, state: MultiAgentState) -> MultiAgentState:
-        """Chat Agent节点（向后兼容）"""
-        return await self._execute_agent_node(state, "chat_agent")
+        Args:
+            current_query: 当前用户查询
+            context_summary: 上下文摘要
+            max_history_turns: 最大显示对话历史轮数，默认10轮
 
-    async def product_agent_node(self, state: MultiAgentState) -> MultiAgentState:
-        """Product Agent节点（向后兼容）"""
-        return await self._execute_agent_node(state, "product_agent")
+        Returns:
+            增强后的查询（包含上下文）
+        """
+        if not context_bundle:
+            return current_query
 
-    async def order_agent_node(
-        self, state: MultiAgentState, config: Optional[RunnableConfig] = None
-    ) -> MultiAgentState:
-        """Order Agent节点（向后兼容）"""
-        return await self._execute_agent_node(state, "order_agent", config)
+        # 构建上下文字符串
+        context_parts = []
+
+        # 添加对话历史摘要（最近N轮）
+        short_term = context_bundle.get("short_term_context", {})
+        history = short_term.get("conversation_history", [])
+        if history:
+            context_parts.append("【最近对话】")
+            # 显示最近N轮（由参数控制）
+            for idx, turn in enumerate(history[-max_history_turns:], 1):
+                if turn.get("human"):
+                    human_msg = turn['human']
+                    # 限制长度，避免token消耗过大
+                    if len(human_msg) > 100:
+                        human_msg = human_msg[:100] + "..."
+                    context_parts.append(f"  用户: {human_msg}")
+                if turn.get("ai"):
+                    ai_msg = turn['ai']
+                    if len(ai_msg) > 100:
+                        ai_msg = ai_msg[:100] + "..."
+                    context_parts.append(f"  AI: {ai_msg}")
+
+        # 添加关键实体
+        key_entities = short_term.get("key_entities", {})
+        if key_entities:
+            context_parts.append("\n【当前状态】")
+            if key_entities.get("product_id"):
+                context_parts.append(f"  已选定产品ID: {key_entities['product_id']}")
+            if key_entities.get("product_ids"):
+                context_parts.append(f"  已选定产品IDs: {key_entities['product_ids']}")
+            if key_entities.get("order_id"):
+                context_parts.append(f"  订单ID: {key_entities['order_id']}")
+
+        # 组合上下文和当前查询
+        if context_parts:
+            context_str = "\n".join(context_parts)
+            return f"{context_str}\n\n当前问题: {current_query}"
+
+        return current_query
+

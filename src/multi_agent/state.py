@@ -11,6 +11,7 @@
 """
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
+from src.multi_agent.constants import ActionName, AgentName
 from langchain_core.messages import BaseMessage
 
 
@@ -67,7 +68,7 @@ class MultiAgentState(BaseModel):
     messages: List[BaseMessage] = Field(default_factory=list)
 
     # Agent管理
-    current_agent: Optional[str] = None  # 当前执行的Agent名称
+    current_agent: Optional[AgentName] = None  # 当前执行的Agent名称
     agent_results: Dict[str, Any] = Field(default_factory=dict)  # 各Agent的执行结果
     agent_history: List[Dict[str, Any]] = Field(default_factory=list)  # Agent执行历史记录
 
@@ -83,7 +84,7 @@ class MultiAgentState(BaseModel):
     max_iterations: int = 10  # 最大迭代次数，默认10
 
     # 路由决策（一步一步智能模式：基于 entities 智能路由）
-    next_action: Optional[Literal["rag_search", "chat", "product_search", "order_management", "consultation", "finish"]] = None
+    next_action: Optional[ActionName] = None
     routing_reason: Optional[str] = None  # 路由决策的原因说明
 
     # 意图识别
@@ -115,6 +116,12 @@ class MultiAgentState(BaseModel):
     entities: Dict[str, Any] = Field(
         default_factory=dict,
         description="提取的实体信息，用于多轮对话状态管理"
+    )
+
+    # 统一上下文包（分层结构：long_term/short_term/task_input）
+    context_bundle: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="统一上下文包（结构化上下文，避免重复构建）"
     )
 
     # 对话阶段（用于跟踪当前对话状态，实现任务完成后的状态清理）

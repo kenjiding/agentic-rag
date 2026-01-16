@@ -126,7 +126,7 @@ class BaseAgent(ABC):
 
     def get_name(self) -> str:
         """获取Agent名称"""
-        return self.name
+        return self.name.value if hasattr(self.name, "value") else self.name
 
     def get_description(self) -> str:
         """获取Agent描述"""
@@ -181,7 +181,7 @@ class ToolEnabledAgent(BaseAgent):
         """
         if self._available_tools is None and self.tool_registry:
             self._available_tools = self.tool_registry.get_tools_for_agent(
-                agent_name=self.name,
+                agent_name=self.get_name(),
                 categories=self.tool_categories,
                 tags=self.tool_tags
             )

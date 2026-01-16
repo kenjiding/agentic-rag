@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>AI Agent Engineer 2026 超详细学习路线图 & 企业招聘知识面要求</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            line-height: 1.7;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 30px;
+            background: #f9fcff;
+            color: #222;
+        }
+        h1, h2, h3, h4 { color: #0d47a1; }
+        h1 { border-bottom: 4px solid #1976d2; padding-bottom: 12px; margin-bottom: 1.2em; }
+        h2 { border-bottom: 3px solid #2196f3; padding-bottom: 10px; margin-top: 2.8em; }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1.8em 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        th, td {
+            border: 1px solid #bbdefb;
+            padding: 14px;
+            text-align: left;
+        }
+        th { background: #1976d2; color: white; font-weight: bold; }
+        .phase { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); margin-bottom: 2.5em; }
+        .highlight { background: #e3f2fd; padding: 4px 8px; border-radius: 4px; font-weight: 600; }
+        .star { color: #ff9800; }
+        ul.checklist { list-style: none; padding-left: 0; }
+        ul.checklist li:before { content: "✔ "; color: #4caf50; margin-right: 8px; }
+        .english { color: #1976d2; font-weight: 600; }
+        .warning { color: #d32f2f; font-style: italic; }
+        footer { margin-top: 4em; text-align: center; color: #666; font-size: 0.95em; }
+    </style>
+</head>
+<body>
+
+<h1>AI Agent Engineer 2026 超详细学习路线图 & 企业招聘知识面</h1>
+<p><strong>目标职位</strong>：AI Agent Engineer / Agentic AI Engineer / Autonomous Agent Developer / LLM Agent Engineer<br>
+<strong>数据来源</strong>：2026年1月 LinkedIn、Indeed、Siemens、Deloitte、Decagon、JPMorganChase、ZipRecruiter等JD统计<br>
+<strong>核心趋势</strong>：企业最看重<strong>生产级可靠Agent</strong>（multi-agent、tool use、observability、safety），而非简单demo</p>
+
+<h2>一、企业真实招聘高频要求知识面（2026 Top Requirements）</h2>
+
+<table>
+    <tr><th>类别</th><th>必须掌握（Must-have, 90%+ JD出现）</th><th>强烈加分（Nice-to-have, 60~80% JD）</th><th>出现频率</th></tr>
+    <tr>
+        <td>编程 & 基础</td>
+        <td>Python（async/await、type hints、decorators）、Git、RESTful API设计</td>
+        <td>TypeScript/JS、Go（高并发）、Docker/Kubernetes</td>
+        <td>★★★★★</td>
+    </tr>
+    <tr>
+        <td>LLM & GenAI</td>
+        <td>Prompt Engineering（CoT, ReAct, ToT）、RAG（Advanced/Agentic RAG）、LLM API（OpenAI/Claude/Gemini/Qwen）</td>
+        <td>Fine-tuning（QLoRA/LoRA）、DPO/RLHF、KV Cache、Long-context</td>
+        <td>★★★★★</td>
+    </tr>
+    <tr>
+        <td>Agent框架</td>
+        <td><strong>LangChain + LangGraph</strong>（stateful graph orchestration）</td>
+        <td>AutoGen、CrewAI、LlamaIndex Workflows、Semantic Kernel</td>
+        <td>★★★★½</td>
+    </tr>
+    <tr>
+        <td>Agent核心能力</td>
+        <td>Tool Calling / Function Calling、Memory（short/long-term、vector store）、ReAct / Plan-and-Execute / ReWOO</td>
+        <td>Multi-Agent（Supervisor/Hierarchical/Group Chat）、Human-in-the-loop、Reflexion</td>
+        <td>★★★★★</td>
+    </tr>
+    <tr>
+        <td>向量 & 检索</td>
+        <td>Vector DB（Chroma/FAISS/Pinecone/Weaviate）、Embeddings（OpenAI/HuggingFace/BGE）</td>
+        <td>GraphRAG、Hybrid Search、Rerank</td>
+        <td>★★★★</td>
+    </tr>
+    <tr>
+        <td>工程 & 生产化</td>
+        <td>FastAPI/Flask、Docker、Observability（LangSmith/LangFuse/Prometheus）、Error recovery & Guardrails</td>
+        <td>Kubernetes、CI/CD（GitHub Actions）、Cloud（AWS/GCP/Azure）、Auto-scaling</td>
+        <td>★★★★</td>
+    </tr>
+    <tr>
+        <td>评估 & 安全</td>
+        <td>Agent Evaluation（LLM-as-a-Judge、trajectory eval）、Prompt Injection防御、Output Validation</td>
+        <td>Drift Detection、Moderation、Ethical AI</td>
+        <td>★★★½</td>
+    </tr>
+    <tr>
+        <td>ML基础</td>
+        <td>Transformer基础、Gradient Descent & Adam/AdamW、Backpropagation</td>
+        <td>Scaling Laws、Gradient Clipping、Warmup Scheduler</td>
+        <td>★★★</td>
+    </tr>
+</table>
+
+<h2>二、分阶段超详细学习清单（Step-by-Step Roadmap 2026）</h2>
+
+<div class="phase">
+<h3>阶段1：基础 & LLM工程入门（0~3个月）</h3>
+<p><span class="english">Goal</span>：Build strong engineering foundation & understand how LLMs work.</p>
+
+<ul class="checklist">
+    <li>Python高级（async/await、context managers、type hints、error handling & retry）</li>
+    <li>Git最佳实践 + 模块化开发</li>
+    <li>Transformer架构（Decoder-Only、Self-Attention、Multi-Head、RoPE、KV Cache）</li>
+    <li>Prompt Engineering（Few-shot、Chain-of-Thought、ReAct、Structured Output JSON）</li>
+    <li>LLM API调用 + Tool Calling基础（OpenAI function calling）</li>
+    <li>简单RAG（embedding + Chroma/FAISS）</li>
+</ul>
+<p><strong>实战</strong>：命令行多轮对话机器人 + 天气/搜索工具调用</p>
+</div>
+
+<div class="phase">
+<h3>阶段2：核心Agent开发能力（3~7个月）</h3>
+<p><span class="english">Goal</span>：Build reliable single-agent & basic multi-agent systems.</p>
+
+<ul class="checklist">
+    <li>LangChain核心（Chains、Agents、Tools、Memory types）</li>
+    <li><strong>LangGraph</strong>深度（State、Nodes、Edges、Persistence、Human-in-the-loop、conditional edges）</li>
+    <li>Advanced RAG（Hypothetical Questions、HyDE、Parent-Doc、Agentic RAG）</li>
+    <li>Tool Use高级（自定义工具、API集成、Error handling & retry）</li>
+    <li>Memory管理（ConversationBuffer、Entity、Summary、Vector Store Memory）</li>
+    <li>后端服务（FastAPI暴露Agent API + Streaming）</li>
+</ul>
+<p><strong>推荐项目</strong>（Portfolio必备）：</p>
+<ul>
+    <li>个人知识库Agent（PDF/网页 → Agentic RAG + LangGraph）</li>
+    <li>ReAct式私人助理（多工具：邮件/日历/搜索/计算器）</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>阶段3：生产级 & 多Agent系统（7~12+个月）</h3>
+<p><span class="english">Goal</span>：Architect scalable, observable, safe enterprise-grade agent platforms.</p>
+
+<ul class="checklist">
+    <li>Multi-Agent Orchestration（Supervisor、Hierarchical、Group Chat、AutoGen/CrewAI协作）</li>
+    <li>高级推理模式（ReWOO、Reflexion、Self-Refine、Plan-and-Execute）</li>
+    <li>Evaluation & Debugging（LangSmith tracing、LLM-as-a-Judge、Trajectory eval）</li>
+    <li>Reliability & Safety（Guardrails、Moderation、Prompt Injection防御、Fallback mechanisms）</li>
+    <li>MLOps & 部署（Docker/K8s、CI/CD、Auto-scaling、Observability）</li>
+    <li>可选扩展：QLoRA/DPO微调Agent行为、GraphRAG</li>
+</ul>
+<p><strong>杀手级项目</strong>（顶级简历）：</p>
+<ul>
+    <li>多Agent研究团队（研究员+分析师+撰写+审校闭环）</li>
+    <li>企业自动化客服Agent（订单查询→退款→售后→知识更新）</li>
+    <li>带长期记忆 & 个性化偏好的生产级助理（云部署 + LangSmith监控）</li>
+</ul>
+</div>
+
+<h2>三、能力自评Checklist & 面试高频问题</h2>
+
+<table>
+    <tr><th>能力项</th><th>企业要求程度</th><th>自评（填1-5星）</th></tr>
+    <tr><td>Python & Async工程能力</td><td>★★★★★</td><td></td></tr>
+    <tr><td>LangGraph / LangChain深度使用</td><td>★★★★★</td><td></td></tr>
+    <tr><td>Tool Calling & Reliability</td><td>★★★★★</td><td></td></tr>
+    <tr><td>RAG / Agentic RAG</td><td>★★★★</td><td></td></tr>
+    <tr><td>Multi-Agent系统设计</td><td>★★★★</td><td></td></tr>
+    <tr><td>Observability & Debugging</td><td>★★★★</td><td></td></tr>
+    <tr><td>Deployment & MLOps</td><td>★★★½</td><td></td></tr>
+    <tr><td>LLM基础 & Optimization</td><td>★★★</td><td></td></tr>
+</table>
+
+<p><strong>面试最常问Top 8问题</strong>（准备英文回答）：</p>
+<ol>
+    <li>How do you design a reliable tool-calling system in LangGraph?（工具调用可靠性）</li>
+    <li>How to prevent infinite loops, hallucination, and cost explosion in agents?</li>
+    <li>Explain the difference between ReAct, ReWOO, and Plan-and-Execute patterns.</li>
+    <li>How do you implement human-in-the-loop in production agents?</li>
+    <li>What observability tools do you use for debugging multi-agent systems?</li>
+    <li>How to handle long context and memory in autonomous agents?</li>
+    <li>Describe a production agent architecture you've built or would build.</li>
+    <li>How do you ensure safety and prevent prompt injection in enterprise agents?</li>
+</ol>
+
+<footer>
+    <p>祝伦早日拿到心仪AI Agent Engineer Offer！Keep building real systems, not just demos. 🚀<br>
+    持续更新中... 2026年1月版</p>
+</footer>
+
+</body>
+</html>

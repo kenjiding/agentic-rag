@@ -18,35 +18,13 @@ from src.tools.product_tools import get_product_tools
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import clean_messages_for_llm
 from src.multi_agent.response_models import ProductListResponse, TextResponse
+from src.multi_agent.prompts import prompt_registry, render_context_bundle
+from src.multi_agent.constants import AgentName
 
 logger = logging.getLogger(__name__)
 
 
-# System Prompt
-PRODUCT_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 商品查询专家。
-
-你的职责是帮助用户查找商品信息，包括：
-1. 根据用户需求搜索商品（支持价格、品牌、分类等多条件筛选）
-2. 提供商品详细信息
-3. 推荐符合条件的商品
-
-重要业务规则：
-- 优先展示评分高、有库存的商品
-- 如果用户提供的搜索条件过于严格导致无结果，建议放宽条件
-- 所有工具参数都是可选的，根据用户输入动态构建查询
-
-**产品对比场景特殊处理**：
-- 如果用户想要对比多个产品（包含"对比"、"比较"、"哪个好"等关键词），且提到多个产品名称
-- 请为每个产品名称分别调用 search_products_tool 进行搜索
-- 例如：用户说"A相机和B相机哪个好"，需要分别搜索"A相机"和"B相机"
-- 每个产品名称搜索一次，确保找到对应的产品ID
-
-回复风格：
-- 使用友好的语气，用 emoji 让回复更生动
-- 如果找到多个结果，用列表展示
-- 如果没有找到，给出建议（如放宽筛选条件）
-- 主动询问用户是否需要更详细的信息
-"""
+PRODUCT_AGENT_SYSTEM_PROMPT = """你是一个专业的电商客服助手 - 商品查询专家。"""
 
 
 class ProductAgent:
@@ -68,7 +46,7 @@ class ProductAgent:
         """
         self.llm = llm or create_llm_for_agent(temperature=0.7)
         self.tools = tools or get_product_tools()
-        self.name = "product_agent"
+        self.name = AgentName.PRODUCT_AGENT
 
         # 绑定工具到 LLM
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -168,45 +146,6 @@ class ProductAgent:
         
         return structured_result, unique_product_ids
 
-    def _build_system_prompt_hints(self, state: MultiAgentState) -> str:
-        """构建系统提示的上下文信息（一步一步智能模式）
-
-        企业级最佳实践：通过 system prompt 提示 LLM 上下文信息，
-        让 LLM 自己判断如何使用工具，而不是硬编码工具调用。
-
-        Args:
-            state: 当前多Agent状态
-
-        Returns:
-            上下文提示字符串
-        """
-        hints = []
-        entities = state.entities
-        is_comparison = self._is_comparison_scenario(state)
-
-        # 如果有实体信息，提示 LLM
-        if entities or is_comparison:
-            hints.append("\n\n=== 上下文信息 ===")
-            
-            if is_comparison:
-                hints.append("⚠️ **重要**：检测到产品对比场景！")
-                hints.append("用户想要对比多个产品，请为每个产品名称执行搜索，找到对应的产品ID。")
-                hints.append("如果用户提到多个产品名称（如'A相机和B相机'），请分别搜索每个产品。")
-            
-            if entities.get("search_keyword"):
-                search_keyword = entities["search_keyword"]
-                hints.append(f"搜索关键词：{search_keyword}")
-                hints.append("请使用 search_products_tool 工具执行搜索，根据工具描述选择合适的参数。")
-
-            # 显示其他上下文信息
-            other_context = {k: v for k, v in entities.items() if k != "search_keyword" and v is not None}
-            if other_context:
-                hints.append("\n其他上下文信息：")
-                for key, value in other_context.items():
-                    hints.append(f"- {key}: {value}")
-
-        return "\n".join(hints) if hints else ""
-
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行商品查询（异步接口，符合LangGraph 1.x规范）
 
@@ -215,7 +154,7 @@ class ProductAgent:
 
         Args:
             state: 当前多 Agent 状态
-            session_id: 会话ID（用于会话管理，默认值保证向后兼容）
+            session_id: 会话ID（用于会话管理）
 
         Returns:
             更新后的状态片段（遵循统一的返回格式规范）
@@ -228,19 +167,34 @@ class ProductAgent:
                 "messages": [
                     AIMessage(content="您好！我是商品查询助手，请问有什么可以帮您？")
                 ],
-                "current_agent": self.name,
+                "current_agent": AgentName.PRODUCT_AGENT,
             }
 
-        # 构建系统提示（包含任务链上下文）
-        hints = self._build_system_prompt_hints(state)
-        system_prompt = PRODUCT_AGENT_SYSTEM_PROMPT + hints
+        # 构建系统提示（模板组合，结构化上下文注入）
+        # 企业级最佳实践：明确区分指令和上下文，确保 LLM 理解必须调用工具
+        system_prompt = "\n\n".join([
+            prompt_registry.render("base_tone"),
+            prompt_registry.render("product_capabilities"),
+            PRODUCT_AGENT_SYSTEM_PROMPT
+        ]).strip()
+        context_block = render_context_bundle(state.context_bundle)
+
+        # 合并系统提示和上下文到一个 SystemMessage
+        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        unified_system_content = "\n\n".join([
+            system_prompt,
+            "---",
+            context_block
+        ]).strip()
 
         # 构建 Agent 消息
         # 使用最新的用户消息和最近的几轮对话
         # 清理消息历史，确保消息序列完整性（过滤无效的 ToolMessage）
         cleaned_messages = clean_messages_for_llm(messages, keep_recent_n=5)
 
-        agent_messages = [SystemMessage(content=system_prompt)]
+        agent_messages = [
+            SystemMessage(content=unified_system_content),
+        ]
         agent_messages.extend(cleaned_messages)
 
         # 调用 LLM（异步执行）
@@ -269,7 +223,7 @@ class ProductAgent:
                                     # 如果是产品搜索结果，收集到all_search_results
                                     if "products" in result_json:
                                         all_search_results.append(result_json)
-                                    # 保持最后一个结果作为structured_result（向后兼容）
+                                    # 保持最后一个结果作为structured_result
                                     structured_result = result_json
                         except (json.JSONDecodeError, TypeError):
                             pass
@@ -345,7 +299,7 @@ class ProductAgent:
                 result = {
                     "result": structured_result,  # 必需：权威数据源
                     "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
-                    "current_agent": self.name,
+                    "current_agent": AgentName.PRODUCT_AGENT,
                     "tools_used": state.tools_used + tool_used_info,
                     "conversation_phase": "product_selecting",  # 设置对话阶段
                     "entities": entities_update,  # 更新entities
@@ -357,7 +311,7 @@ class ProductAgent:
                 result = {
                     "result": {"response": final_response.content},
                     "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
-                    "current_agent": self.name,
+                    "current_agent": AgentName.PRODUCT_AGENT,
                     "tools_used": state.tools_used + tool_used_info,
                     **response_model.to_full_response()
                 }
@@ -369,7 +323,7 @@ class ProductAgent:
         result = {
             "result": {"response": response.content},  # 必需字段：Agent执行结果
             "messages": [response],  # 只返回新增消息
-            "current_agent": self.name,
+            "current_agent": AgentName.PRODUCT_AGENT,
             **response_model.to_full_response()
         }
 
