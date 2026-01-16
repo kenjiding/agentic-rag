@@ -133,22 +133,8 @@ class GraphNodeHandler:
                 return {"query_intent": None, "original_question": question}
 
             logger.info(f"🎯【意图识别+实体提取】分析查询: {question}")
-
-            # 【改进】构建增强查询（包含上下文）
-            enhanced_query = self._build_enhanced_query(
-                current_query=question,
-                context_bundle=state.context_bundle
-            )
-
-            if enhanced_query != question:
-                logger.info(f"📊【意图识别】使用增强查询（包含上下文）")
-
-            # 执行意图识别（Joint Intent Detection and Slot Filling）
-            if not self.graph.intent_classifier:
-                return {"query_intent": None, "original_question": question}
-
-            # 使用异步方法提高性能（使用增强后的查询）
-            intent = await self.graph.intent_classifier.aclassify(enhanced_query)
+            # 使用异步方法提高性能
+            intent = await self.graph.intent_classifier.aclassify(question)
 
             # 提取实体 - 合并新提取的实体到现有实体中
             entities = {**state.entities}
@@ -177,7 +163,7 @@ class GraphNodeHandler:
     async def supervisor_node(
         self, state: MultiAgentState, config: Optional[RunnableConfig] = None
     ) -> MultiAgentState:
-        """Supervisor节点 - 路由决策（一步一步智能模式）"""
+        """Supervisor节点 - 路由决策"""
         try:
             iteration_count = state.iteration_count
             if iteration_count >= self.graph.max_iterations:
@@ -196,7 +182,9 @@ class GraphNodeHandler:
                 "iteration_count": iteration_count + 1
             }
 
-            logger.info(f"Supervisor决策: {routing_decision}")
+            logger.info(
+                f"Supervisor决策: {routing_decision.get('next_action')} → {routing_decision.get('selected_agent')}"
+            )
             return updated_state
 
         except Exception as e:
@@ -335,65 +323,3 @@ class GraphNodeHandler:
 
         agent_node.__name__ = f"{agent_name}_node"
         return agent_node
-
-    def _build_enhanced_query(
-        self,
-        current_query: str,
-        context_bundle: Optional[Dict[str, Any]],
-        max_history_turns: int = 10
-    ) -> str:
-        """构建增强的查询（包含上下文）
-
-        将上下文信息附加到当前查询前，帮助意图识别理解历史对话和累积实体。
-
-        Args:
-            current_query: 当前用户查询
-            context_summary: 上下文摘要
-            max_history_turns: 最大显示对话历史轮数，默认10轮
-
-        Returns:
-            增强后的查询（包含上下文）
-        """
-        if not context_bundle:
-            return current_query
-
-        # 构建上下文字符串
-        context_parts = []
-
-        # 添加对话历史摘要（最近N轮）
-        short_term = context_bundle.get("short_term_context", {})
-        history = short_term.get("conversation_history", [])
-        if history:
-            context_parts.append("【最近对话】")
-            # 显示最近N轮（由参数控制）
-            for idx, turn in enumerate(history[-max_history_turns:], 1):
-                if turn.get("human"):
-                    human_msg = turn['human']
-                    # 限制长度，避免token消耗过大
-                    if len(human_msg) > 100:
-                        human_msg = human_msg[:100] + "..."
-                    context_parts.append(f"  用户: {human_msg}")
-                if turn.get("ai"):
-                    ai_msg = turn['ai']
-                    if len(ai_msg) > 100:
-                        ai_msg = ai_msg[:100] + "..."
-                    context_parts.append(f"  AI: {ai_msg}")
-
-        # 添加关键实体
-        key_entities = short_term.get("key_entities", {})
-        if key_entities:
-            context_parts.append("\n【当前状态】")
-            if key_entities.get("product_id"):
-                context_parts.append(f"  已选定产品ID: {key_entities['product_id']}")
-            if key_entities.get("product_ids"):
-                context_parts.append(f"  已选定产品IDs: {key_entities['product_ids']}")
-            if key_entities.get("order_id"):
-                context_parts.append(f"  订单ID: {key_entities['order_id']}")
-
-        # 组合上下文和当前查询
-        if context_parts:
-            context_str = "\n".join(context_parts)
-            return f"{context_str}\n\n当前问题: {current_query}"
-
-        return current_query
-

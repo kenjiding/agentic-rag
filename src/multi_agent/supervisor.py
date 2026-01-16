@@ -208,20 +208,31 @@ class SupervisorAgent:
             return await self._fallback_routing_with_llm(self._extract_user_message(state) or "")
 
     def _build_intent_context(self, query_intent: Optional[Dict[str, Any]]) -> str:
-        """构建意图识别上下文信息"""
+        """构建意图识别上下文信息（简化版：直接读取LLM输出）"""
         if not query_intent:
             return "（无意图识别信息）"
 
         context_parts = []
 
+        # 【核心】直接读取LLM输出的业务意图字段
+        business_intent_type = query_intent.get("business_intent_type", "general_chat")
+        confidence = query_intent.get("confidence", 0.6)
+
+        # 业务意图信息（来自LLM输出）
+        context_parts.append(f"【业务意图类型】: {business_intent_type}")
+        context_parts.append(f"  - 置信度: {confidence:.2f}")
+
+        # 原有信息
         intent_type = query_intent.get("intent_type", "unknown")
         complexity = query_intent.get("complexity", "unknown")
-        context_parts.append(f"意图类型: {intent_type}")
-        context_parts.append(f"复杂度: {complexity}")
+        context_parts.append(f"\n【通用意图类型】: {intent_type}")
+        context_parts.append(f"【复杂度】: {complexity}")
 
         reasoning = query_intent.get("reasoning")
         if reasoning:
-            context_parts.append(f"意图推理: {reasoning}")
+            # 截断过长的reasoning避免占用过多token
+            reasoning_display = reasoning[:300] + "..." if len(reasoning) > 300 else reasoning
+            context_parts.append(f"【LLM推理】: {reasoning_display}")
 
         intent_entities = query_intent.get("entities")
         if intent_entities:
@@ -235,7 +246,7 @@ class SupervisorAgent:
             if entities_dict:
                 compact = {k: v for k, v in entities_dict.items() if v not in (None, [], "")}
                 if compact:
-                    context_parts.append(f"意图实体: {compact}")
+                    context_parts.append(f"【意图实体】: {compact}")
 
         return "\n".join(context_parts)
 
@@ -695,33 +706,33 @@ class SupervisorAgent:
 意图识别（仅供参考）：
 {intent_context}"""),
             ("human", "用户问题: 我想买一台65寸电视，有什么推荐？"),
-            ("assistant", """{
+            ("assistant", """{{
   "next_action": "product_search",
   "selected_agent": "product_agent",
   "routing_reason": "用户明确表达购买需求且未指定产品，需先搜索产品",
   "confidence": 0.75
-}"""),
+}}"""),
             ("human", "用户问题: 帮我取消订单ORD123456"),
-            ("assistant", """{
+            ("assistant", """{{
   "next_action": "order_management",
   "selected_agent": "order_agent",
   "routing_reason": "包含订单号且是取消需求，需订单管理",
   "confidence": 0.8
-}"""),
+}}"""),
             ("human", "用户问题: 这两个型号X1和X2有什么区别？"),
-            ("assistant", """{
+            ("assistant", """{{
   "next_action": "consultation",
   "selected_agent": "consultation_agent",
   "routing_reason": "涉及两个产品对比，需咨询/对比能力",
   "confidence": 0.7
-}"""),
+}}"""),
             ("human", "用户问题: 谢谢你！"),
-            ("assistant", """{
+            ("assistant", """{{
   "next_action": "chat",
   "selected_agent": "chat_agent",
   "routing_reason": "普通致谢/闲聊，走通用对话",
   "confidence": 0.6
-}"""),
+}}"""),
             ("user", "用户问题: {question}")
         ])
 

@@ -181,3 +181,41 @@ class QueryIntent(BaseModel):
     reasoning: str = Field(
         description="意图识别和分解决策的推理过程（使用与查询相同的语言）"
     )
+
+    # ==================== Business Intent Routing ====================
+    # 业务意图路由信息（用于智能路由决策）
+
+    business_intent_type: str = Field(
+        ...,
+        description="""业务意图类型，用于路由决策。
+
+可选值：
+- "social_chat": 社交互动（感谢、问候、闲聊、再见等）
+- "order_management": 订单管理（查询订单、取消订单、修改订单等）
+- "product_comparison": 产品对比（比较多个产品、询问差异等）
+- "product_search": 产品搜索（购买需求、查找产品、产品推荐等）
+- "general_chat": 通用对话（无法明确归类的普通对话）
+
+判断规则：
+1. 如果用户表达感谢、问候、告别等社交用语 → social_chat
+2. 如果用户查询、取消、修改订单 → order_management
+3. 如果用户对比、比较多个产品 → product_comparison
+4. 如果用户明确表达购买需求或搜索产品 → product_search
+5. 其他情况 → general_chat
+
+注意：此字段已足够表达所有意图，无需额外的is_social_interaction等boolean字段。
+"""
+    )
+
+    suggested_next_action: Optional[str] = Field(
+        default=None,
+        description="""建议的下一步行动（供路由参考）。
+
+可选值：
+- "chat": 通用对话
+- "product_search": 产品搜索
+- "order_management": 订单管理
+- "consultation": 产品咨询/对比
+- "rag_search": 知识检索
+"""
+    )

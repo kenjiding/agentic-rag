@@ -324,69 +324,118 @@ class ContextManager:
 
     def _compress_tool_result(self, tool_name: str, result: Any) -> str:
         """
-        压缩tool result，只保留关键信息
+        压缩tool result，只保留关键信息（包括所有ID等重要数据）
 
-        根据不同的工具类型提取关键信息：
-        - search_products_tool: 提取产品数量和名称
-        - query_order_tool: 提取订单号和状态
-        - create_order_tool: 提取订单号
-        - 通用: 提取关键ID和状态字段
+        使用通用的递归提取方法，自动识别和提取所有重要字段：
+        - 所有包含"id"的字段（id, product_id, order_id等）
+        - 关键状态字段（status, state, number等）
+        - 递归处理嵌套结构和列表
+
+        不针对特定工具类型硬编码，适用于所有工具返回的数据结构。
 
         Args:
-            tool_name: 工具名称
-            result: 工具返回结果
+            tool_name: 工具名称（用于日志，不影响提取逻辑）
+            result: 工具返回结果（可以是字符串、字典、列表等）
 
         Returns:
-            压缩后的字符串
+            压缩后的字符串（JSON格式，包含所有重要ID信息）
         """
         try:
-            # 尝试解析JSON
+            # 尝试解析JSON字符串
             if isinstance(result, str):
                 try:
                     result = json.loads(result)
                 except json.JSONDecodeError:
-                    pass
+                    # 如果不是JSON，直接返回截取的文本
+                    return result.strip()[:300]
 
-            if not isinstance(result, dict):
-                return str(result)[:200]
-
-            # 根据工具类型提取关键信息
-            if tool_name == "search_products_tool":
-                products = result.get("products", [])
-                if not products:
-                    return "未找到产品"
-                product_names = [p.get("name", "未知") for p in products[:3]]
-                return f"搜索到{len(products)}个产品: {product_names}"
-
-            elif tool_name == "query_order_tool":
-                order = result.get("order")
-                if order:
-                    order_number = order.get("order_number", "N/A")
-                    status = order.get("status", "N/A")
-                    return f"订单号: {order_number}, 状态: {status}"
-                return "未找到订单信息"
-
-            elif tool_name == "create_order_tool":
-                order = result.get("order")
-                if order:
-                    order_number = order.get("order_number", "N/A")
-                    return f"订单创建成功: {order_number}"
-                return "订单创建失败"
-
-            elif tool_name == "consultation_tool":
-                # 咨询工具的result通常是文本，直接截取
-                return str(result).strip()[:300]
-
-            # 通用压缩：提取关键字段
-            keys_to_keep = ["id", "order_id", "product_id", "status", "name", "number"]
-            filtered = {k: v for k, v in result.items() if k in keys_to_keep}
-
-            if filtered:
-                return json.dumps(filtered, ensure_ascii=False, indent=None)[:300]
+            # 使用通用方法递归提取所有重要字段
+            extracted = self._extract_ids_and_key_fields(result)
+            
+            if extracted:
+                # 将提取的结果转换为JSON字符串
+                result_str = json.dumps(extracted, ensure_ascii=False)
+                # 限制长度，避免上下文过长
+                if len(result_str) > 1000:
+                    return result_str[:1000] + "..."
+                return result_str
             else:
-                # 如果没有关键字段，返回前300个字符
-                return str(result)[:300]
+                # 如果没有提取到关键字段，返回原始数据的简化版本
+                if isinstance(result, (dict, list)):
+                    # 对于复杂结构，返回前500个字符的字符串表示
+                    return str(result)[:500]
+                else:
+                    # 对于简单类型，直接返回
+                    return str(result)[:300]
 
         except Exception as e:
             logger.warning(f"压缩tool result失败（工具: {tool_name}）: {e}")
             return str(result)[:200]
+
+    def _extract_ids_and_key_fields(self, data: Any, max_depth: int = 3) -> Dict[str, Any]:
+        """
+        递归提取所有ID字段和关键字段（通用方法，适用于所有数据结构）
+
+        提取规则：
+        1. 提取所有包含"id"的字段（如id, product_id, order_id, order_item_id等）
+        2. 提取关键状态字段（status, state, number, order_number等）
+        3. 提取关键业务字段（name, title等，用于上下文理解）
+        4. 对于列表，递归处理每个元素，提取其中的ID和关键字段
+        5. 对于嵌套字典，递归提取
+        6. 限制深度避免无限递归
+
+        Args:
+            data: 要提取的数据（可以是dict、list、基本类型）
+            max_depth: 最大递归深度
+
+        Returns:
+            提取的关键字段字典（如果输入是列表，返回列表；如果是字典，返回字典）
+        """
+        if max_depth <= 0:
+            return {}
+
+        if isinstance(data, dict):
+            result = {}
+            for key, value in data.items():
+                key_lower = key.lower()
+                
+                # 1. 提取所有包含"id"的字段
+                if any(id_keyword in key_lower for id_keyword in ["id", "_id"]):
+                    result[key] = value
+                # 2. 提取关键状态和编号字段
+                elif key_lower in ["status", "state", "number", "order_number", "code"]:
+                    result[key] = value
+                # 3. 提取关键业务字段（用于上下文理解）
+                elif key_lower in ["name", "title", "type", "category"]:
+                    result[key] = value
+                # 4. 对于列表，递归提取其中的ID和关键字段
+                elif isinstance(value, list):
+                    extracted_list = self._extract_ids_and_key_fields(value, max_depth - 1)
+                    if extracted_list:
+                        result[key] = extracted_list
+                # 5. 对于嵌套字典，递归提取
+                elif isinstance(value, dict):
+                    extracted = self._extract_ids_and_key_fields(value, max_depth - 1)
+                    if extracted:
+                        result[key] = extracted
+            return result
+
+        elif isinstance(data, list):
+            result = []
+            for item in data:
+                if isinstance(item, (dict, list)):
+                    # 递归提取嵌套结构
+                    extracted = self._extract_ids_and_key_fields(item, max_depth - 1)
+                    if extracted:
+                        result.append(extracted)
+                # 对于基本类型，如果是数字或看起来像ID的字符串，也保留
+                elif isinstance(item, (int, float)) or (isinstance(item, str) and item.strip()):
+                    # 简单类型直接保留（可能是ID值）
+                    result.append(item)
+            
+            # 如果列表为空，返回空字典；否则返回列表
+            return result if result else {}
+
+        # 对于基本类型（字符串、数字等），如果是顶层调用，包装成字典
+        # 但在递归调用中，基本类型通常不会到达这里
+        return {}

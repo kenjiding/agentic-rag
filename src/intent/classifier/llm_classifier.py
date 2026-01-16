@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 import logging
+import re
 
 from src.intent.classifier.base import BaseIntentClassifier
 from src.intent.models.query_intent import QueryIntent, SubQuery, Entities
@@ -50,7 +51,7 @@ class IntentClassifier(BaseIntentClassifier):
             model_name = self.config.llm_model
             if ":" not in model_name:
                 model_name = f"openai:{model_name}"
-            
+
             llm = create_llm_for_intent_classification(
                 model_name=model_name,
                 temperature=self.config.llm_temperature
@@ -75,206 +76,84 @@ class IntentClassifier(BaseIntentClassifier):
         Returns:
             QueryIntent object with complete classification
         """
-        template = """你是一个专业的查询意图分析器和查询分解专家。请分析以下查询，识别其意图类型、复杂度，并**自主判断是否需要将查询分解为多个子查询**以提高检索效果。
+        template = """你是查询意图分析专家，请分析以下查询并输出结构化结果。
 
-# 分析要求
+# 核心任务（按优先级排序）
 
-1. **联合意图检测与槽位填充**：同时识别意图类型和提取关键信息
-2. **自主分解判断**：根据查询复杂度和特点，自动判断是否需要分解
-3. **通用性**：使用通用的方法识别意图，适用于任何领域和场景
+**1. 业务意图分类（最高优先级）**
+根据用户表达的真实意图，选择最合适的business_intent_type：
+- "social_chat": 社交互动（感谢、问候、告别、闲聊等）
+- "order_management": 订单管理（查询/取消/修改订单）
+- "product_comparison": 产品对比（比较多个产品）
+- "product_search": 产品搜索（购买需求、查找产品）
+- "general_chat": 通用对话（无法明确归类的普通对话）
 
-# 意图类型说明
+**判断示例**：
+- "谢谢"、"谢谢你的帮助"、"你好"、"再见" → social_chat
+- "查订单ORD123"、"取消订单"、"查询我的订单" → order_management
+- "iPhone和华为哪个好"、"对比这几个产品" → product_comparison
+- "买iPhone"、"搜索产品"、"华为手机怎么样" → product_search
+- "今天天气如何"、"介绍下量子计算" → general_chat
 
-- factual: 事实性查询（询问具体事实、数据、定义）
-- comparison: 对比查询（比较两个或多个对象/时间点/状态）
-- analytical: 分析性查询（需要推理、分析、总结）
-- procedural: 程序性查询（询问如何做某事）
-- causal: 因果查询（询问原因、结果、影响）
-- temporal: 时间序列查询（询问变化趋势、历史）
-- multi_hop: 多跳查询（需要多个步骤推理）
-- other: 其他类型
+**2. 实体提取**
+提取关键实体（按优先级）：
+- product_id: 明确的产品ID数字（如"产品ID:1"、"1号产品"、"买3号"）
+- order_id: 订单号字符串（如"ORD123456"或"123"），**拒绝通用词汇**（"我的订单"、"这个订单"等不算）
+- quantity: 购买数量（如"买3个"）
+- search_keyword: 核心搜索词（不含"产品"、"商品"等通用词）
+- general_entities: 人名、地名、组织等
+- time_points: 时间点（年份、日期）
 
-# 查询分解机制（核心功能）
+**3. 查询分解判断**
+仅在以下情况分解查询：
+- 包含多个独立信息点（如"X的原理、应用和前景"）
+- 需要对比多个对象/时间点
+- 需要多步推理（multi_hop）
+- 需要多维度分析
 
-## 是否需要分解的判断标准
+分解类型：comparison（对比）、multi_hop（多跳）、information_needs（信息需求）、dimensional（多维）
 
-**需要分解的信号**（满足任一条件）：
-1. 包含多个独立的信息需求点（如"介绍X的原理、应用和前景"）
-2. 需要对比多个对象/时间点（comparison）
-3. 需要多步推理，后续步骤依赖前序结果（multi_hop）
-4. 需要从多个维度分析（analytical）
-5. 时间跨度大，需要按时间段查询（temporal）
-6. 涉及因果链条，有多个层次（causal）
-7. 单次检索难以覆盖所有信息需求
+# 意图类型（intent_type）
 
-**不需要分解的信号**：
-1. 简单的单一事实查询（如"北京的人口是多少？"）
-2. 查询已经足够具体明确
-3. procedural类型查询（步骤是内容本身，不是检索单位）
-4. 分解会导致上下文信息丢失
+factual、comparison、analytical、procedural、causal、temporal、multi_hop、other
 
-## 分解类型
+# 分解示例
 
-- comparison: 对比分解 - 按对比项分解（A vs B → 查A + 查B），可并行执行
-- multi_hop: 多跳分解 - 按推理步骤分解，有顺序依赖（先查X，再根据X查Y）
-- dimensional: 多维分解 - 按分析维度分解（分析原因 → 技术+商业+市场），可并行执行
-- temporal: 时间分解 - 按时间段分解（10年发展 → 多个时间段），可并行执行
-- causal_chain: 因果链分解 - 按因果关系分解（为什么 → 直接+间接+根本原因）
-- information_needs: 信息需求分解 - 按独立信息需求点分解，可并行执行
+**示例1 - 对比分解**：
+查询："2019和2020年苹果营收对比"
+→ sub_queries: [{{"query": "2019年苹果营收", "purpose": "获取2019年数据"}}, {{"query": "2020年苹果营收", "purpose": "获取2020年数据"}}]
 
-## 子查询结构 SubQuery
+**示例2 - 信息需求分解**：
+查询："介绍量子计算的原理、应用和前景"
+→ sub_queries: [{{"query": "量子计算原理"}}, {{"query": "量子计算应用"}}, {{"query": "量子计算前景"}}]
 
-每个子查询包含：
-- query: 子查询文本
-- purpose: 该子查询的目的说明
-- recommended_strategy: 推荐的检索策略 ["semantic"] / ["hybrid"] / ["rerank"] / ["semantic", "rerank"]
-- recommended_k: 推荐的检索数量 (3-10)
-- order: 执行顺序（0=可并行，1/2/3...=按顺序执行）
-- depends_on: 依赖的子查询索引列表（用于multi_hop）
+**示例3 - 多跳分解**：
+查询："马斯克是什么学历？他创业经历如何？"
+→ sub_queries: [{{"query": "马斯克学历", "order": 1}}, {{"query": "马斯克创业经历", "order": 2, "depends_on": [0]}}]
 
-## 检索策略选择指南
+**示例4 - 无需分解**：
+查询："北京人口是多少？"
+→ needs_decomposition: false
 
-- semantic: 简单事实查询，明确单一信息点
-- hybrid: 需要多角度信息，多样化信息片段
-- rerank: 专业术语，需要高精度匹配
-- 组合策略: 复杂专业查询可用 ["semantic", "rerank"]
+# 实体提取示例
 
-## 分解示例
+"产品ID:1" → product_id=1
+"查订单ORD123456" → order_id="ORD123456"
+"买3台华为手机" → quantity=3, search_keyword="华为手机"
+"iPhone 15 Pro Max" → search_keyword="iPhone 15 Pro Max"
+"查询我的订单" → order_id=null（无具体订单号）
 
-### 示例1 - comparison（对比分解，可并行）
-原查询："2019和2020年苹果营收对比"
-分析：对比查询，需要分解为独立的事实查询
-sub_queries: [
-  {{"query": "2019年苹果的营收是多少？", "purpose": "获取2019年数据", "recommended_strategy": ["semantic"], "recommended_k": 3, "order": 0}},
-  {{"query": "2020年苹果的营收是多少？", "purpose": "获取2020年数据", "recommended_strategy": ["semantic"], "recommended_k": 3, "order": 0}}
-]
+# 输出要求
 
-### 示例2 - multi_hop（多跳分解，有顺序依赖）
-原查询："谁是马云的大学同学中最成功的企业家？"
-分析：需要多步推理，先查同学，再查成就
-sub_queries: [
-  {{"query": "马云的大学同学有哪些人？", "purpose": "获取同学名单", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 1, "depends_on": []}},
-  {{"query": "马云大学同学中有哪些人成为了企业家？", "purpose": "筛选企业家", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 2, "depends_on": [0]}},
-  {{"query": "这些企业家同学各自的成就和影响力如何？", "purpose": "比较成就", "recommended_strategy": ["hybrid"], "recommended_k": 8, "order": 3, "depends_on": [1]}}
-]
-
-### 示例3 - dimensional（多维分解，可并行）
-原查询："分析特斯拉成功的原因"
-分析：需要从多个维度分析
-sub_queries: [
-  {{"query": "特斯拉的技术创新有哪些？", "purpose": "技术维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
-  {{"query": "特斯拉的商业模式是什么？", "purpose": "商业维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
-  {{"query": "特斯拉的市场营销策略是什么？", "purpose": "营销维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
-  {{"query": "特斯拉的领导力和企业文化如何？", "purpose": "管理维度", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
-]
-
-### 示例4 - causal_chain（因果链分解）
-原查询："为什么2008年金融危机会发生？"
-分析：涉及因果链条
-sub_queries: [
-  {{"query": "2008年金融危机的直接导火索是什么？", "purpose": "直接原因", "recommended_strategy": ["semantic"], "recommended_k": 5, "order": 0}},
-  {{"query": "次贷危机是如何引发的？", "purpose": "间接原因", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
-  {{"query": "2008年金融危机的深层制度性原因是什么？", "purpose": "根本原因", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
-]
-
-### 示例5 - information_needs（信息需求分解，可并行）
-原查询："介绍量子计算的原理、应用和发展前景"
-分析：包含3个独立信息需求点
-sub_queries: [
-  {{"query": "量子计算的基本原理是什么？", "purpose": "原理介绍", "recommended_strategy": ["semantic"], "recommended_k": 5, "order": 0}},
-  {{"query": "量子计算目前有哪些应用场景？", "purpose": "应用场景", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}},
-  {{"query": "量子计算的发展前景如何？", "purpose": "发展前景", "recommended_strategy": ["hybrid"], "recommended_k": 5, "order": 0}}
-]
-
-### 示例6 - 不需要分解
-原查询："北京的人口是多少？"
-分析：简单事实查询，无需分解
-needs_decomposition: false
-sub_queries: []
+严格按照QueryIntent结构输出，确保：
+1. business_intent_type准确反映用户真实意图
+2. entities按优先级提取，避免错误识别
+3. 合理判断是否需要查询分解
+4. reasoning用查询相同语言，明确说明业务意图
 
 # 查询
 
 {query}
-
-# 输出要求
-
-请严格按照QueryIntent结构输出JSON：
-1. 准确识别意图类型
-2. 正确评估复杂度（simple/moderate/complex）
-3. **自主判断是否需要分解**（needs_decomposition）
-4. 如需分解，指定分解类型（decomposition_type）和原因（decomposition_reason）
-5. 生成子查询列表（sub_queries），每个子查询包含完整信息
-6. **提取所有实体**，统一存放在 entities 字典中：
-   - general_entities: List[str] - 通用实体（人名、地名、组织等）
-   - time_points: List[str] - 时间点（年份、日期等）
-   - quantity: Optional[int] - 购买数量
-   - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
-   - product_id: Optional[int] - 用户明确指定的产品ID
-   - order_id: Optional[str] - 订单ID（字符串，如ORD1242343或'123'）
-
-   **实体提取规则（优先级从高到低）**：
-
-   **优先级1：product_id 提取规则（最高优先级）**
-   - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
-   - **重要**：不要将订单号、手机号、其他业务ID等数字误识别为 product_id
-   - 示例（正确）：
-     - "产品ID: 1" → product_id=1
-     - "购买1号产品" → product_id=1, quantity=1
-     - "ID是5的产品" → product_id=5
-     - "我要买3号" → product_id=3
-     - "就选第一个" → product_id=1
-   - 示例（错误，不应提取）：
-     - "帮我查询13455556500订单" → product_id=None, order_id="13455556500"（这是订单号）
-     - "查询订单13455556500" → product_id=None, order_id="13455556500"（订单号）
-   - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
-
-   **优先级2：order_id 提取规则（字符串类型）**
-   - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
-   - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
-   - **严格禁止**：order_id必须是具体的订单号（包含数字），**绝对不能**是以下通用词汇：
-     - ❌ "订单"、"这个订单"、"我的订单"、"那个订单"、"该订单"、"此订单"
-     - ❌ "订单信息"、"订单详情"、"订单状态"、"订单号"、"订单ID"
-     - 如果用户只说"查询订单"、"帮我查一下这个订单"而没有提供具体订单号，order_id必须为null
-   - 示例（正确）：
-     - "查询ORD1242343订单信息" → order_id="ORD1242343"
-     - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
-     - "订单号是ORD123456" → order_id="ORD123456"
-     - "帮我查一下订单ORD789" → order_id="ORD789"
-     - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
-     - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
-     - "订单编号是456" → order_id="456"
-   - 示例（错误，order_id必须为null）：
-     - "帮我查一下这个订单" → order_id=null（没有具体订单号）
-     - "查询我的订单" → order_id=null（没有具体订单号）
-     - "订单信息" → order_id=null（这是通用词汇，不是订单号）
-     - "订单" → order_id=null（这是通用词汇，不是订单号）
-   - **重要**：order_id统一为字符串类型
-     - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
-     - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
-     - **验证规则**：order_id必须包含至少一个数字，不能是纯中文词
-
-   **优先级3：search_keyword 提取规则**
-   - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
-   - 示例：
-     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
-     - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
-     - "查一下苹果手机" → search_keyword="苹果手机"
-     - "有没有冰箱" → search_keyword="冰箱"
-     - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
-
-**订单业务意图识别规则**（重要）：
-当查询涉及订单相关操作时，必须在 reasoning 中明确标识业务意图：
-- **订单查询意图**：包含"查询"、"查看"、"查"、"帮我查"、"查一下"、"我想查"、"订单状态"、"订单信息"、"订单详情"、"我的订单"等表达，且提到订单或订单号
-  - 示例："谢谢，帮我查一下ORD465577订单" → order_id="ORD465577", reasoning中应明确标识为"订单查询意图"
-  - 示例："查询我的订单" → reasoning中应明确标识为"订单查询意图"
-  - 示例："帮我看看订单ORD123" → order_id="ORD123", reasoning中应明确标识为"订单查询意图"
-- **订单取消意图**：包含"取消"、"删除"、"退订"、"撤销"、"不要了"、"删除订单"等表达，且提到订单或订单号
-  - 示例："取消订单ORD123456" → order_id="ORD123456", reasoning中应明确标识为"订单取消意图"
-- 如果提取到 order_id 但意图不明确，默认为"订单查询意图"
-
-7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
-   - reasoning 必须包含对业务意图的明确描述（如订单查询意图、订单取消意图等）
-   - 对于订单相关查询，reasoning 应明确说明识别到的业务意图类型
 
 输出JSON："""
 
@@ -291,13 +170,13 @@ sub_queries: []
             else:
                 # 容错：使用 model_validate
                 intent = QueryIntent.model_validate(result)
-            
+
             # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
             # 如果order_id是无效的（如"订单"），validator会将其设置为None
             if intent.entities and intent.entities.order_id:
                 # validator已经验证过，这里只是记录日志
                 logger.debug(f"提取到order_id: {intent.entities.order_id}")
-            
+
             return intent
         except Exception as e:
             logger.error(f"[意图识别] 错误: {e}", exc_info=True)
@@ -315,7 +194,6 @@ sub_queries: []
         Returns:
             Default intent structure
         """
-        import re
 
         # Complexity detection based on query length
         words = len(query.split())
@@ -564,13 +442,15 @@ sub_queries: []
             recommended_k=10 if needs_decomposition else (5 if complexity == "simple" else 7),
             needs_multi_round_retrieval=complexity == "complex",
             confidence=0.5,
-            reasoning=f"回退模式：使用通用启发式规则。{decomposition_reason if needs_decomposition else '简单查询，无需分解。'}"
+            reasoning=f"回退模式：使用通用启发式规则。{decomposition_reason if needs_decomposition else '简单查询，无需分解。'}",
+            business_intent_type="general_chat",  # Fallback模式默认为通用对话
+            suggested_next_action="chat"
         )
-    
+
     async def aclassify(self, query: str) -> QueryIntent:
         """
         Asynchronously classify query intent using LLM.
-        
+
         2025-2026 最佳实践：
         1. 使用异步LLM调用提高并发性能
         2. 保持与同步方法相同的功能
@@ -581,154 +461,84 @@ sub_queries: []
         Returns:
             QueryIntent object with complete classification
         """
-        # 构建prompt chain（与同步版本相同）
-        template = """你是一个专业的查询意图分析器和查询分解专家。请分析以下查询，识别其意图类型、复杂度，并**自主判断是否需要将查询分解为多个子查询**以提高检索效果。
+        template = """你是查询意图分析专家，请分析以下查询并输出结构化结果。
 
-# 分析要求
+# 核心任务（按优先级排序）
 
-1. **联合意图检测与槽位填充**：同时识别意图类型和提取关键信息
-2. **自主分解判断**：根据查询复杂度和特点，自动判断是否需要分解
-3. **通用性**：使用通用的方法识别意图，适用于任何领域和场景
+**1. 业务意图分类（最高优先级）**
+根据用户表达的真实意图，选择最合适的business_intent_type：
+- "social_chat": 社交互动（感谢、问候、告别、闲聊等）
+- "order_management": 订单管理（查询/取消/修改订单）
+- "product_comparison": 产品对比（比较多个产品）
+- "product_search": 产品搜索（购买需求、查找产品）
+- "general_chat": 通用对话（无法明确归类的普通对话）
 
-# 意图类型说明
+**判断示例**：
+- "谢谢"、"谢谢你的帮助"、"你好"、"再见" → social_chat
+- "查订单ORD123"、"取消订单"、"查询我的订单" → order_management
+- "iPhone和华为哪个好"、"对比这几个产品" → product_comparison
+- "买iPhone"、"搜索产品"、"华为手机怎么样" → product_search
+- "今天天气如何"、"介绍下量子计算" → general_chat
 
-- factual: 事实性查询（询问具体事实、数据、定义）
-- comparison: 对比查询（比较两个或多个对象/时间点/状态）
-- analytical: 分析性查询（需要推理、分析、总结）
-- procedural: 程序性查询（询问如何做某事）
-- causal: 因果查询（询问原因、结果、影响）
-- temporal: 时间序列查询（询问变化趋势、历史）
-- multi_hop: 多跳查询（需要多个步骤推理）
-- other: 其他类型
+**2. 实体提取**
+提取关键实体（按优先级）：
+- product_id: 明确的产品ID数字（如"产品ID:1"、"1号产品"、"买3号"）
+- order_id: 订单号字符串（如"ORD123456"或"123"），**拒绝通用词汇**（"我的订单"、"这个订单"等不算）
+- quantity: 购买数量（如"买3个"）
+- search_keyword: 核心搜索词（不含"产品"、"商品"等通用词）
+- general_entities: 人名、地名、组织等
+- time_points: 时间点（年份、日期）
 
-# 查询分解机制（核心功能）
+**3. 查询分解判断**
+仅在以下情况分解查询：
+- 包含多个独立信息点（如"X的原理、应用和前景"）
+- 需要对比多个对象/时间点
+- 需要多步推理（multi_hop）
+- 需要多维度分析
 
-## 是否需要分解的判断标准
+分解类型：comparison（对比）、multi_hop（多跳）、information_needs（信息需求）、dimensional（多维）
 
-**需要分解的信号**（满足任一条件）：
-1. 包含多个独立的信息需求点（如"介绍X的原理、应用和前景"）
-2. 需要对比多个对象/时间点（comparison）
-3. 需要多步推理，后续步骤依赖前序结果（multi_hop）
-4. 需要从多个维度分析（analytical）
-5. 时间跨度大，需要按时间段查询（temporal）
-6. 涉及因果链条，有多个层次（causal）
-7. 单次检索难以覆盖所有信息需求
+# 意图类型（intent_type）
 
-**不需要分解的信号**：
-1. 简单的单一事实查询（如"北京的人口是多少？"）
-2. 查询已经足够具体明确
-3. procedural类型查询（步骤是内容本身，不是检索单位）
-4. 分解会导致上下文信息丢失
+factual、comparison、analytical、procedural、causal、temporal、multi_hop、other
 
-## 分解类型
+# 分解示例
 
-- comparison: 对比分解 - 按对比项分解（A vs B → 查A + 查B），可并行执行
-- multi_hop: 多跳分解 - 按推理步骤分解，有顺序依赖（先查X，再根据X查Y）
-- dimensional: 多维分解 - 按分析维度分解（分析原因 → 技术+商业+市场），可并行执行
-- temporal: 时间分解 - 按时间段分解（10年发展 → 多个时间段），可并行执行
-- causal_chain: 因果链分解 - 按因果关系分解（为什么 → 直接+间接+根本原因）
-- information_needs: 信息需求分解 - 按独立信息需求点分解，可并行执行
+**示例1 - 对比分解**：
+查询："2019和2020年苹果营收对比"
+→ sub_queries: [{{"query": "2019年苹果营收", "purpose": "获取2019年数据"}}, {{"query": "2020年苹果营收", "purpose": "获取2020年数据"}}]
 
-## 子查询结构 SubQuery
+**示例2 - 信息需求分解**：
+查询："介绍量子计算的原理、应用和前景"
+→ sub_queries: [{{"query": "量子计算原理"}}, {{"query": "量子计算应用"}}, {{"query": "量子计算前景"}}]
 
-每个子查询包含：
-- query: 子查询文本
-- purpose: 该子查询的目的说明
-- recommended_strategy: 推荐的检索策略 ["semantic"] / ["hybrid"] / ["rerank"] / ["semantic", "rerank"]
-- recommended_k: 推荐的检索数量 (3-10)
-- order: 执行顺序（0=可并行，1/2/3...=按顺序执行）
-- depends_on: 依赖的子查询索引列表（用于multi_hop）
+**示例3 - 多跳分解**：
+查询："马斯克是什么学历？他创业经历如何？"
+→ sub_queries: [{{"query": "马斯克学历", "order": 1}}, {{"query": "马斯克创业经历", "order": 2, "depends_on": [0]}}]
 
-## 检索策略选择指南
+**示例4 - 无需分解**：
+查询："北京人口是多少？"
+→ needs_decomposition: false
 
-- semantic: 简单事实查询，明确单一信息点
-- hybrid: 需要多角度信息，多样化信息片段
-- rerank: 专业术语，需要高精度匹配
-- 组合策略: 复杂专业查询可用 ["semantic", "rerank"]
+# 实体提取示例
+
+"产品ID:1" → product_id=1
+"查订单ORD123456" → order_id="ORD123456"
+"买3台华为手机" → quantity=3, search_keyword="华为手机"
+"iPhone 15 Pro Max" → search_keyword="iPhone 15 Pro Max"
+"查询我的订单" → order_id=null（无具体订单号）
+
+# 输出要求
+
+严格按照QueryIntent结构输出，确保：
+1. business_intent_type准确反映用户真实意图
+2. entities按优先级提取，避免错误识别
+3. 合理判断是否需要查询分解
+4. reasoning用查询相同语言，明确说明业务意图
 
 # 查询
 
 {query}
-
-# 输出要求
-
-请严格按照QueryIntent结构输出JSON：
-1. 准确识别意图类型
-2. 正确评估复杂度（simple/moderate/complex）
-3. **自主判断是否需要分解**（needs_decomposition）
-4. 如需分解，指定分解类型（decomposition_type）和原因（decomposition_reason）
-5. 生成子查询列表（sub_queries），每个子查询包含完整信息
-6. **提取所有实体**，统一存放在 entities 字典中：
-   - general_entities: List[str] - 通用实体（人名、地名、组织等）
-   - time_points: List[str] - 时间点（年份、日期等）
-   - quantity: Optional[int] - 购买数量
-   - search_keyword: Optional[str] - 搜索关键词（品牌名、产品名或型号）
-   - product_id: Optional[int] - 用户明确指定的产品ID
-   - order_id: Optional[str] - 订单ID（字符串，如ORD1242343或'123'）
-
-   **实体提取规则（优先级从高到低）**：
-
-   **优先级1：product_id 提取规则（最高优先级）**
-   - 用户明确提到"产品ID"、"产品编号"、"ID"、"号产品"等数字时，提取为 product_id
-   - **重要**：不要将订单号、手机号、其他业务ID等数字误识别为 product_id
-   - 示例（正确）：
-     - "产品ID: 1" → product_id=1
-     - "购买1号产品" → product_id=1, quantity=1
-     - "ID是5的产品" → product_id=5
-     - "我要买3号" → product_id=3
-     - "就选第一个" → product_id=1
-   - 示例（错误，不应提取）：
-     - "帮我查询13455556500订单" → product_id=None, order_id="13455556500"（这是订单号）
-     - "查询订单13455556500" → product_id=None, order_id="13455556500"（订单号）
-   - **注意**：如果提取到 product_id，就不要提取 search_keyword（避免冲突）
-
-   **优先级2：order_id 提取规则（字符串类型）**
-   - 提取订单ID或订单号（字符串格式），支持字母+数字组合（如ORD123456）或纯数字（如"123"）
-   - 匹配模式：包含"订单号"、"订单ID"、"订单"+"字母数字组合"、"ORD"+"数字"、"订单编号"等
-   - **严格禁止**：order_id必须是具体的订单号（包含数字），**绝对不能**是以下通用词汇：
-     - ❌ "订单"、"这个订单"、"我的订单"、"那个订单"、"该订单"、"此订单"
-     - ❌ "订单信息"、"订单详情"、"订单状态"、"订单号"、"订单ID"
-     - 如果用户只说"查询订单"、"帮我查一下这个订单"而没有提供具体订单号，order_id必须为null
-   - 示例（正确）：
-     - "查询ORD1242343订单信息" → order_id="ORD1242343"
-     - "我现在想查询ORD1242343订单信息" → order_id="ORD1242343"
-     - "订单号是ORD123456" → order_id="ORD123456"
-     - "帮我查一下订单ORD789" → order_id="ORD789"
-     - "查询订单13455556500" → order_id="13455556500"（纯数字订单号）
-     - "查询订单ID:123" → order_id="123"（纯数字，提取为字符串）
-     - "订单编号是456" → order_id="456"
-   - 示例（错误，order_id必须为null）：
-     - "帮我查一下这个订单" → order_id=null（没有具体订单号）
-     - "查询我的订单" → order_id=null（没有具体订单号）
-     - "订单信息" → order_id=null（这是通用词汇，不是订单号）
-     - "订单" → order_id=null（这是通用词汇，不是订单号）
-   - **重要**：order_id统一为字符串类型
-     - 无论是字母+数字组合（如"ORD1242343"）还是纯数字（如"123"），都提取为字符串
-     - 示例："ORD1242343" → order_id="ORD1242343"，"123" → order_id="123"
-     - **验证规则**：order_id必须包含至少一个数字，不能是纯中文词
-
-   **优先级3：search_keyword 提取规则**
-   - 只提取核心关键词，不要包含"产品"、"商品"、"东西"等通用词汇
-   - 示例：
-     - "我想购买3个西门子产品" → quantity=3, search_keyword="西门子"（不是"��门子产品"）
-     - "买2台华为Mate60" → quantity=2, search_keyword="华为Mate60"
-     - "查一下苹果手机" → search_keyword="苹果手机"
-     - "有没有冰箱" → search_keyword="冰箱"
-     - "我要买点东西" → search_keyword=null（"东西"太泛，不提取）
-
-**订单业务意图识别规则**（重要）：
-当查询涉及订单相关操作时，必须在 reasoning 中明确标识业务意图：
-- **订单查询意图**：包含"查询"、"查看"、"查"、"帮我查"、"查一下"、"我想查"、"订单状态"、"订单信息"、"订单详情"、"我的订单"等表达，且提到订单或订单号
-  - 示例："谢谢，帮我查一下ORD465577订单" → order_id="ORD465577", reasoning中应明确标识为"订单查询意图"
-  - 示例："查询我的订单" → reasoning中应明确标识为"订单查询意图"
-  - 示例："帮我看看订单ORD123" → order_id="ORD123", reasoning中应明确标识为"订单查询意图"
-- **订单取消意图**：包含"取消"、"删除"、"退订"、"撤销"、"不要了"、"删除订单"等表达，且提到订单或订单号
-  - 示例："取消订单ORD123456" → order_id="ORD123456", reasoning中应明确标识为"订单取消意图"
-- 如果提取到 order_id 但意图不明确，默认为"订单查询意图"
-
-7. 给出置信度和推理过程（reasoning使用与查询相同的语言）
-   - reasoning 必须包含对业务意图的明确描述（如订单查询意图、订单取消意图等）
-   - 对于订单相关查询，reasoning 应明确说明识别到的业务意图类型
 
 输出JSON："""
 
@@ -746,13 +556,7 @@ sub_queries: []
             else:
                 # 容错：使用 model_validate
                 intent = QueryIntent.model_validate(result)
-            
-            # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
-            # 如果order_id是无效的（如"订单"），validator会将其设置为None
-            if intent.entities and intent.entities.order_id:
-                # validator已经验证过，这里只是记录日志
-                logger.debug(f"提取到order_id: {intent.entities.order_id}")
-            
+
             return intent
         except Exception as e:
             logger.error(f"[意图识别] 异步调用错误: {e}", exc_info=True)

@@ -86,6 +86,7 @@ def run_async(coro):
 class ProductSpecifications(BaseModel):
     """产品参数结构化输出"""
     specifications: Dict[str, Any] = Field(
+        default_factory=dict,
         description="结构化产品参数，根据产品类别智能提取关键参数"
     )
     category: Optional[str] = Field(
@@ -287,27 +288,42 @@ async def _extract_product_specifications_async(
                     product_info=product_info
                 )
             )
+            # 确保specifications字段存在，如果为空则设置默认值
+            if not result.specifications:
+                result.specifications = {"说明": "参数信息待补充"}
         except Exception as e:
             # 处理ValidationError或其他错误
             logger.error(f"提取产品参数失败: {e}", exc_info=True)
-            # 回退方案：使用新的LLM实例重试，确保使用结构化输出
-            try:
-                fallback_llm = create_llm_for_agent()
-                fallback_structured_llm = fallback_llm.with_structured_output(
-                    ProductSpecifications,
-                    method="function_calling"
-                )
-                result = await fallback_structured_llm.ainvoke(
-                    prompt_template.format_messages(
-                        aspect_prompt=aspect_prompt_text,
-                        product_info=product_info
-                    )
-                )
-            except Exception as fallback_error:
-                logger.error(f"回退方案也失败: {fallback_error}", exc_info=True)
-                # 最后的后备方案：创建默认的ProductSpecifications对象
+            
+            # 尝试从错误中提取部分数据并补全specifications
+            result = None
+            error_str = str(e)
+            if 'input_value' in error_str:
+                import re
+                # 尝试从错误信息中提取部分数据
+                match = re.search(r"input_value=({[^}]+})", error_str)
+                if match:
+                    try:
+                        # 安全地解析部分数据
+                        partial_data_str = match.group(1)
+                        # 提取category和key_features（如果存在）
+                        category_match = re.search(r"'category':\s*'([^']+)'", partial_data_str)
+                        category = category_match.group(1) if category_match else main_cat_name
+                        
+                        # 尝试构造一个基本的ProductSpecifications对象
+                        result = ProductSpecifications(
+                            specifications={"说明": "参数提取失败，请查看产品描述"},
+                            category=category,
+                            key_features=[]
+                        )
+                        logger.info(f"从错误信息中恢复部分数据: category={category}")
+                    except Exception:
+                        pass
+            
+            # 如果无法从错误中恢复，使用默认值
+            if result is None:
                 result = ProductSpecifications(
-                    specifications={"错误": "无法提取产品参数"},
+                    specifications={"说明": "无法提取产品参数"},
                     category=main_cat_name,
                     key_features=[]
                 )
