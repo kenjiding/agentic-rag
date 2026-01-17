@@ -76,8 +76,15 @@ class BaseResponseModel(BaseModel):
         response_data = {}
         for field in response_data_fields:
             value = getattr(self, field, None)
-            if value is not None and value != [] and value != "":
-                response_data[field] = value
+            # 对于列表类型（如orders、products），即使为空数组也要包含，以便前端正确渲染
+            # 对于其他类型，排除None、空字符串
+            if value is not None:
+                if isinstance(value, list):
+                    # 列表类型：即使为空也包含（前端需要知道是空列表）
+                    response_data[field] = value
+                elif value != "":
+                    # 非列表类型：排除空字符串
+                    response_data[field] = value
 
         # 构建完整响应（排除已经放入response_data的字段）
         # 注意：只使用 exclude_none=True，不使用 exclude_unset=True

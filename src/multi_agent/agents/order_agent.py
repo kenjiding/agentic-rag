@@ -430,6 +430,12 @@ class OrderAgent:
                 total=len(orders),
                 content=order_text
             )
+            full_response = response_model.to_full_response()
+            logger.info(
+                f"📦 [ORDER_AGENT] 返回响应: response_type={full_response.get('response_type')}, "
+                f"response_data.keys()={list(full_response.get('response_data', {}).keys())}, "
+                f"orders数量={len(full_response.get('response_data', {}).get('orders', []))}"
+            )
             return {
                 "messages": [ai_message_with_tool] + [tool_message] + [final_ai_message],
                 "current_agent": self.name,
@@ -438,7 +444,7 @@ class OrderAgent:
                     "tool": "query_order",
                     "args": {"user_id": session_id, "order_id": order_id}
                 }],
-                **response_model.to_full_response()
+                **full_response
             }
         except Exception as e:
             logger.error(f"查询订单失败: {e}", exc_info=True)

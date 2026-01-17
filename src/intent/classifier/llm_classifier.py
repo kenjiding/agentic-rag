@@ -61,38 +61,31 @@ class IntentClassifier(BaseIntentClassifier):
         # 使用 with_structured_output 规范 schema 输出
         self._structured_llm = llm.with_structured_output(QueryIntent)
 
-    def classify(self, query: str) -> QueryIntent:
-        """
-        Classify query intent using LLM.
-
-        Based on 2025-2026 best practices:
-        1. Joint intent detection and slot filling
-        2. Unified structure generation with structured output
-        3. Domain-independent approach
-
-        Args:
-            query: User query
-
-        Returns:
-            QueryIntent object with complete classification
-        """
-        template = """你是查询意图分析专家，请分析以下查询并输出结构化结果。
+    @staticmethod
+    def _get_classification_prompt_template() -> str:
+        """获取意图分类的 prompt template（公共模板，避免重复）"""
+        return """你是查询意图分析专家，请分析以下查询并输出结构化结果。
 
 # 核心任务（按优先级排序）
 
 **1. 业务意图分类（最高优先级）**
 根据用户表达的真实意图，选择最合适的business_intent_type：
 - "social_chat": 社交互动（感谢、问候、告别、闲聊等）
-- "order_management": 订单管理（查询/取消/修改订单）
+- "order_management": 订单管理（查询/取消/修改订单、**创建订单/购买**）
 - "product_comparison": 产品对比（比较多个产品）
-- "product_search": 产品搜索（购买需求、查找产品）
+- "product_search": 产品搜索（查找产品、了解产品信息、产品推荐）
 - "general_chat": 通用对话（无法明确归类的普通对话）
+
+**关键判断规则**：
+- **order_management**：用户已经选定产品（有明确product_id）且表达购买/下单意图 → 这是创建订单操作
+- **product_search**：用户还在查找/搜索产品（没有明确product_id，或只是询问产品信息）
 
 **判断示例**：
 - "谢谢"、"谢谢你的帮助"、"你好"、"再见" → social_chat
 - "查订单ORD123"、"取消订单"、"查询我的订单" → order_management
+- **"购买产品ID:6"、"我要买6号产品"、"下单产品ID:1"、"购买1号"** → **order_management**（有明确product_id且表达购买意图）
 - "iPhone和华为哪个好"、"对比这几个产品" → product_comparison
-- "买iPhone"、"搜索产品"、"华为手机怎么样" → product_search
+- "买iPhone"、"搜索产品"、"华为手机怎么样"、"我想了解iPhone 15 Pro" → product_search（没有明确product_id，只是搜索/了解）
 - "今天天气如何"、"介绍下量子计算" → general_chat
 
 **2. 实体提取**
@@ -139,8 +132,9 @@ factual、comparison、analytical、procedural、causal、temporal、multi_hop�
 
 "产品ID:1" → product_id=1
 "查订单ORD123456" → order_id="ORD123456"
-"买3台华为手机" → quantity=3, search_keyword="华为手机"
-"iPhone 15 Pro Max" → search_keyword="iPhone 15 Pro Max"
+"买3台华为手机" → quantity=3, search_keyword="华为手机"（无明确product_id，属于搜索）
+"购买产品ID:6" → product_id=6（有明确product_id，属于订单管理）
+"iPhone 15 Pro Max" → search_keyword="iPhone 15 Pro Max"（无明确product_id，属于搜索）
 "查询我的订单" → order_id=null（无具体订单号）
 
 # 输出要求
@@ -157,27 +151,46 @@ factual、comparison、analytical、procedural、causal、temporal、multi_hop�
 
 输出JSON："""
 
+    def _process_classification_result(self, result: Any) -> QueryIntent:
+        """处理分类结果（公共逻辑，避免重复）"""
+        if isinstance(result, QueryIntent):
+            intent = result
+        elif isinstance(result, dict):
+            intent = QueryIntent(**result)
+        else:
+            # 容错：使用 model_validate
+            intent = QueryIntent.model_validate(result)
+
+        # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
+        # 如果order_id是无效的（如"订单"），validator会将其设置为None
+        if intent.entities and intent.entities.order_id:
+            # validator已经验证过，这里只是记录日志
+            logger.debug(f"提取到order_id: {intent.entities.order_id}")
+
+        return intent
+
+    def classify(self, query: str) -> QueryIntent:
+        """
+        Classify query intent using LLM.
+
+        Based on 2025-2026 best practices:
+        1. Joint intent detection and slot filling
+        2. Unified structure generation with structured output
+        3. Domain-independent approach
+
+        Args:
+            query: User query
+
+        Returns:
+            QueryIntent object with complete classification
+        """
+        template = self._get_classification_prompt_template()
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | self._structured_llm
 
         try:
             result = chain.invoke({"query": query})
-            # with_structured_output 直接返回 QueryIntent 对象
-            if isinstance(result, QueryIntent):
-                intent = result
-            elif isinstance(result, dict):
-                intent = QueryIntent(**result)
-            else:
-                # 容错：使用 model_validate
-                intent = QueryIntent.model_validate(result)
-
-            # 后处理验证：确保order_id格式正确（Entities模型的validator会自动处理）
-            # 如果order_id是无效的（如"订单"），validator会将其设置为None
-            if intent.entities and intent.entities.order_id:
-                # validator已经验证过，这里只是记录日志
-                logger.debug(f"提取到order_id: {intent.entities.order_id}")
-
-            return intent
+            return self._process_classification_result(result)
         except Exception as e:
             logger.error(f"[意图识别] 错误: {e}", exc_info=True)
             return self._fallback_intent(query)
@@ -461,103 +474,14 @@ factual、comparison、analytical、procedural、causal、temporal、multi_hop�
         Returns:
             QueryIntent object with complete classification
         """
-        template = """你是查询意图分析专家，请分析以下查询并输出结构化结果。
-
-# 核心任务（按优先级排序）
-
-**1. 业务意图分类（最高优先级）**
-根据用户表达的真实意图，选择最合适的business_intent_type：
-- "social_chat": 社交互动（感谢、问候、告别、闲聊等）
-- "order_management": 订单管理（查询/取消/修改订单）
-- "product_comparison": 产品对比（比较多个产品）
-- "product_search": 产品搜索（购买需求、查找产品）
-- "general_chat": 通用对话（无法明确归类的普通对话）
-
-**判断示例**：
-- "谢谢"、"谢谢你的帮助"、"你好"、"再见" → social_chat
-- "查订单ORD123"、"取消订单"、"查询我的订单" → order_management
-- "iPhone和华为哪个好"、"对比这几个产品" → product_comparison
-- "买iPhone"、"搜索产品"、"华为手机怎么样" → product_search
-- "今天天气如何"、"介绍下量子计算" → general_chat
-
-**2. 实体提取**
-提取关键实体（按优先级）：
-- product_id: 明确的产品ID数字（如"产品ID:1"、"1号产品"、"买3号"）
-- order_id: 订单号字符串（如"ORD123456"或"123"），**拒绝通用词汇**（"我的订单"、"这个订单"等不算）
-- quantity: 购买数量（如"买3个"）
-- search_keyword: 核心搜索词（不含"产品"、"商品"等通用词）
-- general_entities: 人名、地名、组织等
-- time_points: 时间点（年份、日期）
-
-**3. 查询分解判断**
-仅在以下情况分解查询：
-- 包含多个独立信息点（如"X的原理、应用和前景"）
-- 需要对比多个对象/时间点
-- 需要多步推理（multi_hop）
-- 需要多维度分析
-
-分解类型：comparison（对比）、multi_hop（多跳）、information_needs（信息需求）、dimensional（多维）
-
-# 意图类型（intent_type）
-
-factual、comparison、analytical、procedural、causal、temporal、multi_hop、other
-
-# 分解示例
-
-**示例1 - 对比分解**：
-查询："2019和2020年苹果营收对比"
-→ sub_queries: [{{"query": "2019年苹果营收", "purpose": "获取2019年数据"}}, {{"query": "2020年苹果营收", "purpose": "获取2020年数据"}}]
-
-**示例2 - 信息需求分解**：
-查询："介绍量子计算的原理、应用和前景"
-→ sub_queries: [{{"query": "量子计算原理"}}, {{"query": "量子计算应用"}}, {{"query": "量子计算前景"}}]
-
-**示例3 - 多跳分解**：
-查询："马斯克是什么学历？他创业经历如何？"
-→ sub_queries: [{{"query": "马斯克学历", "order": 1}}, {{"query": "马斯克创业经历", "order": 2, "depends_on": [0]}}]
-
-**示例4 - 无需分解**：
-查询："北京人口是多少？"
-→ needs_decomposition: false
-
-# 实体提取示例
-
-"产品ID:1" → product_id=1
-"查订单ORD123456" → order_id="ORD123456"
-"买3台华为手机" → quantity=3, search_keyword="华为手机"
-"iPhone 15 Pro Max" → search_keyword="iPhone 15 Pro Max"
-"查询我的订单" → order_id=null（无具体订单号）
-
-# 输出要求
-
-严格按照QueryIntent结构输出，确保：
-1. business_intent_type准确反映用户真实意图
-2. entities按优先级提取，避免错误识别
-3. 合理判断是否需要查询分解
-4. reasoning用查询相同语言，明确说明业务意图
-
-# 查询
-
-{query}
-
-输出JSON："""
-
+        template = self._get_classification_prompt_template()
         prompt = ChatPromptTemplate.from_template(template)
         chain = prompt | self._structured_llm
 
         try:
             # 使用异步调用
             result = await chain.ainvoke({"query": query})
-            # with_structured_output 直接返回 QueryIntent 对象
-            if isinstance(result, QueryIntent):
-                intent = result
-            elif isinstance(result, dict):
-                intent = QueryIntent(**result)
-            else:
-                # 容错：使用 model_validate
-                intent = QueryIntent.model_validate(result)
-
-            return intent
+            return self._process_classification_result(result)
         except Exception as e:
             logger.error(f"[意图识别] 异步调用错误: {e}", exc_info=True)
             # 降级到同步方法
