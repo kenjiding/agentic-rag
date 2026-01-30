@@ -97,7 +97,7 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
 def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
     """格式化执行步骤名称（一步一步智能模式）"""
     step_map = {
-        "intent_recognition": "🎯 意图识别",
+        # intent recognition merged into planner (single-shot)
         "supervisor": "🧠 路由决策",
         "rag_agent": "📚 知识检索",
         "chat_agent": "💬 对话处理",
@@ -118,7 +118,7 @@ def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
 def format_step_detail(node_name: str, node_update: Any) -> str:
     """格式化执行步骤的详细描述（一步一步智能模式）"""
     detail_map = {
-        "intent_recognition": "正在分析您的问题意图...",
+        # intent recognition merged into planner (single-shot)
         "supervisor": "智能路由正在选择最合适的助手...",
         "rag_agent": "正在从知识库中检索相关信息...",
         "chat_agent": "正在生成回答...",

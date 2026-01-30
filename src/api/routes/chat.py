@@ -88,9 +88,10 @@ async def stream_chat_response(question: str, session_id: str):
                         # 添加步骤信息
                         frontend_data["execution_steps"] = execution_steps
                         frontend_data["step_details"] = step_details
-                        # 确保 response_type 设置为 confirmation
+                        # 确保 response_type 合理：confirmation 走确认UI，其它走通用 interrupt UI
                         if "response_type" not in frontend_data:
-                            frontend_data["response_type"] = "confirmation"
+                            it = frontend_data.get("interrupt_type")
+                            frontend_data["response_type"] = "confirmation" if it == "confirmation" else "interrupt"
                         
                         yield f"data: {json.dumps({'type': 'state_update', 'data': frontend_data}, ensure_ascii=False)}\n\n"
                         continue  # 跳过后续处理

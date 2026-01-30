@@ -81,7 +81,7 @@ class ContextManager:
 
     def __init__(
         self,
-        max_history_rounds: int = 5,
+        max_history_rounds: int = 10,
         max_tool_calls: int = 10
     ):
         """

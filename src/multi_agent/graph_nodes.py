@@ -15,7 +15,24 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 
 from src.multi_agent.state import MultiAgentState
-from src.multi_agent.constants import ActionName, MetadataKeys
+from src.multi_agent.constants import ActionName, MetadataKeys, AgentName
+from src.multi_agent.constants import SystemNodeName
+from src.multi_agent.planning.models import (
+    Plan,
+    PlanStep,
+    PlanStatus,
+    PlanStepStatus,
+    PlanStepType,
+    RiskLevel,
+    PolicyMethod,
+    PlanningOutput,
+)
+from src.multi_agent.planning.planner import Planner
+from src.multi_agent.response_models import TextResponse, ErrorResponse
+from langchain_core.messages import AIMessage
+from langchain_core.messages import HumanMessage
+from langgraph.types import interrupt
+from src.multi_agent.interrupt_framework import create_input_interrupt
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +51,12 @@ class GraphNodeHandler:
             graph_instance: MultiAgentGraph实例，用于访问agents和注册表
         """
         self.graph = graph_instance
+        self._planner: Planner | None = None
+
+    def _get_planner(self) -> Planner:
+        if self._planner is None:
+            self._planner = Planner(llm=self.graph.llm)
+        return self._planner
 
     def _get_agent(self, agent_name: str):
         """根据名称获取Agent实例
@@ -113,52 +136,486 @@ class GraphNodeHandler:
                 "original_question": state.original_question,
             }
 
-    async def intent_recognition_node(self, state: MultiAgentState) -> MultiAgentState:
-        """意图识别节点 - 分析用户查询意图并提取实体"""
+    # intent_recognition_node removed:
+    # Intent/entities extraction is merged into the planner for single-shot consistency.
+
+    async def policy_gate_node(self, state: MultiAgentState) -> MultiAgentState:
+        """Policy gate node - risk assessment & governance decision.
+
+        This node must be deterministic and side-effect-free. It only writes
+        risk metadata into LangGraph state, so downstream nodes can enforce
+        confirmation/approval paths.
+        """
         try:
-            # 从messages中获取最后一条HumanMessage
-            question = None
+            # Root-cause fix:
+            # Never infer risk from raw keywords (negation/contrast breaks it).
+            # Risk is derived from the structured plan produced by the planner node.
+            plan = state.plan
+            if plan is None or not plan.steps:
+                risk = RiskLevel.MEDIUM
+                method = PolicyMethod.NO_PLAN_FALLBACK
+            else:
+                # Deterministic aggregation: overall risk = max(step risk)
+                order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+                max_risk = RiskLevel.LOW
+                for s in plan.steps:
+                    if order.get(s.risk_level, 0) > order[max_risk]:
+                        max_risk = s.risk_level
+                risk = max_risk
+                method = PolicyMethod.MAX_STEP_RISK
+
+            audit_event = {
+                "node": SystemNodeName.POLICY_GATE.value,
+                "event": "risk_assessed",
+                "risk_level": risk,
+                "method": method,
+            }
+
+            return {
+                "risk_level": risk,
+                "action_audit": state.action_audit + [audit_event],
+            }
+        except Exception as e:
+            logger.error(f"policy_gate_node error: {e}", exc_info=True)
+            return {
+                "risk_level": RiskLevel.HIGH,
+                "action_audit": state.action_audit + [{
+                    "node": SystemNodeName.POLICY_GATE.value,
+                    "event": "risk_assess_failed",
+                    "error": str(e),
+                }],
+            }
+
+    async def planner_node(self, state: MultiAgentState) -> MultiAgentState:
+        """Planner node - produce PlanningOutput (query_intent + plan) stored in state."""
+        try:
+            # Extract latest user query.
+            #
+            # Root-cause fix:
+            # In interrupt/resume flows, `original_question` can be stale because the resume
+            # does not pass through GraphStateManager.restore_state_from_checkpointer(question=...).
+            # Always prefer the latest HumanMessage as the "current turn" user query.
+            user_query = ""
             for msg in reversed(state.messages):
-                if hasattr(msg, 'content') and msg.content:
-                    from langchain_core.messages import HumanMessage
-                    if isinstance(msg, HumanMessage):
-                        question = msg.content
-                        break
+                if hasattr(msg, "content") and msg.content and isinstance(msg, HumanMessage):
+                    user_query = msg.content
+                    break
+            if not user_query:
+                user_query = state.original_question or ""
 
-            if not question or not isinstance(question, str):
-                question = state.original_question
+            if not user_query:
+                response_model = TextResponse(content="未找到用户输入，无法进行规划。")
+                return {
+                    "plan": None,
+                    **response_model.to_full_response(),
+                }
 
-            if not question:
-                logger.warning("未找到用户问题，跳过意图识别")
-                return {"query_intent": None, "original_question": question}
+            planner = self._get_planner()
+            output: PlanningOutput = await planner.plan(
+                user_query=user_query,
+                context_bundle=state.context_bundle,
+            )
 
-            logger.info(f"🎯【意图识别+实体提取】分析查询: {question}")
-            # 使用异步方法提高性能
-            intent = await self.graph.intent_classifier.aclassify(question)
+            # Structural repair (no text heuristics):
+            # The planner must not output a plan that immediately FINISHes without any
+            # actionable step (agent_call / ask_user). If it happens, repair it
+            # deterministically using the structured business intent (routing signal).
+            plan = output.plan
+            has_actionable_step = any(
+                s.step_type in (PlanStepType.AGENT_CALL, PlanStepType.ASK_USER)
+                for s in (plan.steps or [])
+            )
+            finish_first = bool(plan.steps) and plan.steps[0].step_type == PlanStepType.FINISH
 
-            # 提取实体 - 合并新提取的实体到现有实体中
-            entities = {**state.entities}
+            if not has_actionable_step or finish_first:
+                # Do NOT rely on LLM-provided action strings.
+                # Action binding is a deterministic system concern.
+                bit = getattr(output.query_intent, "business_intent_type", None)
+                action = {
+                    "order_management": ActionName.ORDER_MANAGEMENT,
+                    "product_search": ActionName.PRODUCT_SEARCH,
+                    "product_comparison": ActionName.CONSULTATION,
+                    "social_chat": ActionName.CHAT,
+                    "general_chat": ActionName.CHAT,
+                }.get(str(bit), ActionName.CHAT)
 
-            if intent.entities:
-                entities_dict = intent.entities.model_dump(exclude_none=True)
-                for key, value in entities_dict.items():
-                    if value is not None:
-                        entities[key] = value
+                # Reuse the single source of truth for execution binding:
+                # ActionName -> agent node mapping lives in GraphRouter, not here.
+                tmp_state = MultiAgentState(next_action=action)
+                node_name = self.graph.router.route_after_supervisor(tmp_state)
+                try:
+                    agent = AgentName(node_name)
+                except Exception:
+                    agent = AgentName.CHAT_AGENT
+                    action = ActionName.CHAT
 
-            logger.info(f"📦【实体提取】实体: {entities}")
+                instruction = f"处理用户请求（repair: action={action.value}）"
 
-            intent_dict = intent.model_dump()
-            logger.info(f"🎯【意图识别】类型: {intent.intent_type}, 复杂度: {intent.complexity}")
+                output.plan = Plan(
+                    goal=plan.goal or "处理用户请求",
+                    steps=[
+                        PlanStep(
+                            step_id="auto_step_1",
+                            step_type=PlanStepType.AGENT_CALL,
+                            risk_level=RiskLevel.LOW,
+                            selected_agent=agent,
+                            next_action=action,
+                            instruction=instruction,
+                            inputs={},
+                        ),
+                        PlanStep(
+                            step_id="finish",
+                            step_type=PlanStepType.FINISH,
+                            risk_level=RiskLevel.LOW,
+                            instruction="结束对话。",
+                            inputs={},
+                        ),
+                    ],
+                )
+
+            # Persist intent & entities into state (single source of truth)
+            intent_dict = output.query_intent.model_dump()
+            entities_update = {}
+            if output.query_intent.entities:
+                entities_update = output.query_intent.entities.model_dump(exclude_none=True)
+            merged_entities = {**(state.entities or {}), **(entities_update or {})}
+
+            audit_event = {
+                "node": SystemNodeName.PLANNER.value,
+                "event": "plan_created",
+                "goal": output.plan.goal,
+                "steps": [s.step_id for s in output.plan.steps],
+                "status": output.plan.status,
+            }
+
 
             return {
                 "query_intent": intent_dict,
-                "original_question": question,
-                "entities": entities
+                "entities": merged_entities,
+                "plan": output.plan,
+                "action_audit": state.action_audit + [audit_event],
+                # Keep state consistent for downstream nodes/observability
+                "original_question": user_query,
             }
 
         except Exception as e:
-            logger.error(f"意图识别节点执行错误: {str(e)}", exc_info=True)
-            return {"query_intent": None, "error_message": f"意图识别错误: {str(e)}"}
+            logger.error(f"planner_node error: {e}", exc_info=True)
+            response_model = ErrorResponse(
+                content="规划失败，系统将降级处理。",
+                error_message=str(e),
+                error_code="PLANNER_ERROR",
+            )
+            return {
+                "plan": None,
+                "action_audit": state.action_audit + [{
+                    "node": SystemNodeName.PLANNER.value,
+                    "event": "plan_failed",
+                    "error": str(e),
+                }],
+                **response_model.to_full_response(),
+            }
+
+    async def plan_executor_node(self, state: MultiAgentState) -> MultiAgentState:
+        """Plan executor node - advance plan progress and choose next_action/current_agent.
+
+        Execution loop:
+        planner -> plan_executor -> agent -> plan_executor -> ... -> finish
+        """
+        plan = state.plan
+        if plan is None:
+            # Fallback: no plan, route to supervisor (existing behavior)
+            return {
+                "next_action": None,
+                "current_agent": None,
+                "routing_reason": "无可用计划，交由supervisor进行路由。",
+            }
+
+        # End conditions
+        if plan.current_step_index >= len(plan.steps):
+            plan.status = PlanStatus.COMPLETED
+            audit_event = {
+                "node": SystemNodeName.PLAN_EXECUTOR.value,
+                "event": "plan_completed",
+                "goal": plan.goal,
+            }
+            return {
+                "plan": plan,
+                "next_action": ActionName.FINISH,
+                "current_agent": None,
+                "routing_reason": "计划已完成。",
+                "action_audit": state.action_audit + [audit_event],
+            }
+
+        step = plan.current_step()
+        if step is None:
+            plan.status = PlanStatus.FAILED
+            plan.failure_reason = "Plan step index out of range"
+            return {
+                "plan": plan,
+                "next_action": ActionName.FINISH,
+                "current_agent": None,
+                "routing_reason": "计划执行失败：step越界。",
+            }
+
+        # Dispatch per step type
+        if step.step_type == PlanStepType.ASK_USER:
+            # Use LangGraph interrupt/resume (root-cause fix):
+            # - avoids losing plan progress due to re-planning on the next user turn
+            # - makes “ask user” an explicit, resumable state transition
+            plan.status = PlanStatus.NEEDS_USER_INPUT
+            step.status = PlanStepStatus.IN_PROGRESS
+            plan.steps[plan.current_step_index] = step
+
+            prompt_text = step.ask_user_message or "请补充必要信息。"
+            interrupt_data = create_input_interrupt(
+                action_type="plan_input",
+                action_data={"plan_goal": plan.goal, "step_id": step.step_id},
+                display_message=prompt_text,
+                input_id=f"plan_input::{step.step_id}",
+                label="请补充必要信息",
+                placeholder="请输入补充信息...",
+                multiline=True,
+                required=True,
+                submit_label="提交并继续",
+                node=SystemNodeName.PLAN_EXECUTOR.value,
+                expected=plan.missing_information,
+            )
+
+            audit_event = {
+                "node": SystemNodeName.PLAN_EXECUTOR.value,
+                "event": "interrupt_ask_user",
+                "step_id": step.step_id,
+            }
+
+            resume_value = interrupt(interrupt_data)
+            # If we got here, we are resuming execution and have resume_value.
+            # We treat the resume as an additional user message and inject it into context.
+            user_input = None
+            if isinstance(resume_value, dict):
+                user_input = resume_value.get("input_value") or resume_value.get("text")
+            if isinstance(resume_value, str):
+                user_input = resume_value
+
+            if user_input:
+                plan.status = PlanStatus.ACTIVE
+                step.status = PlanStepStatus.COMPLETED
+                plan.steps[plan.current_step_index] = step
+                plan.current_step_index += 1
+
+                context_bundle = dict(state.context_bundle or {})
+                task_input = dict((context_bundle.get("task_input") or {}))
+                task_input["clarification"] = {"input": user_input, "step_id": step.step_id}
+                context_bundle["task_input"] = task_input
+
+                # 【关键修复】检查是否还有下一个step需要执行
+                # 如果plan只有一个ASK_USER step，current_step_index会超出范围
+                # 此时应该重新规划，因为用户提供了新的输入信息
+                if plan.current_step_index >= len(plan.steps):
+                    # 没有下一个step了，应该重新规划以处理用户的输入
+                    # 清除plan，让系统重新规划（基于新的用户输入）
+                    logger.info(
+                        f"Plan已完成所有steps，但用户提供了新的输入。"
+                        f"将清除plan以触发重新规划（goal={plan.goal}）"
+                    )
+                    return {
+                        "plan": None,  # 清除plan，触发重新规划
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "original_question": user_input,
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}, {
+                            "node": SystemNodeName.PLAN_EXECUTOR.value,
+                            "event": "plan_cleared_for_replanning",
+                            "reason": "user_input_after_all_steps_completed"
+                        }],
+                        "next_action": None,  # 让路由系统回到planner
+                        "current_agent": None,
+                    }
+
+                # 还有下一个step，继续执行计划
+                next_step = plan.current_step()
+                if next_step is None:
+                    # 这种情况理论上不应该发生，因为我们已经检查了index范围
+                    plan.status = PlanStatus.FAILED
+                    plan.failure_reason = "Next step not found after ASK_USER resume"
+                    logger.error(f"Plan执行错误：ASK_USER恢复后找不到下一个step (current_index={plan.current_step_index}, steps_len={len(plan.steps)})")
+                    return {
+                        "plan": plan,
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "next_action": ActionName.FINISH,
+                        "current_agent": None,
+                        "routing_reason": "计划执行失败：找不到下一个step",
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}, {
+                            "node": SystemNodeName.PLAN_EXECUTOR.value,
+                            "event": "error_after_resume",
+                            "error": plan.failure_reason
+                        }],
+                    }
+                
+                if next_step.step_type == PlanStepType.AGENT_CALL:
+                    # 下一个step是AGENT_CALL，设置next_action让它执行
+                    return {
+                        "plan": plan,
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "original_question": user_input,
+                        "next_action": next_step.next_action,
+                        "current_agent": next_step.selected_agent,
+                        "routing_reason": f"继续执行计划步骤: {next_step.step_id} (用户输入后)",
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                    }
+                elif next_step.step_type == PlanStepType.FINISH:
+                    # 下一个step是FINISH，标记plan完成
+                    plan.status = PlanStatus.COMPLETED
+                    return {
+                        "plan": plan,
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "original_question": user_input,
+                        "next_action": ActionName.FINISH,
+                        "current_agent": None,
+                        "routing_reason": "计划完成（用户输入后）",
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                    }
+                elif next_step.step_type == PlanStepType.ASK_USER:
+                    logger.info(f"下一个step也是ASK_USER ({next_step.step_id})，需要继续在plan_executor中处理")
+                    return {
+                        "plan": plan,
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "original_question": user_input,
+                        # 不设置next_action，让路由系统知道需要继续执行plan
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                    }
+                else:
+                    # 未知的step类型
+                    logger.warning(f"未知的step类型: {next_step.step_type}")
+                    return {
+                        "plan": plan,
+                        "context_bundle": context_bundle,
+                        "messages": state.messages + [HumanMessage(content=user_input)],
+                        "original_question": user_input,
+                        "action_audit": state.action_audit
+                        + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                    }
+
+            # No resume input provided; keep plan waiting (should be rare)
+            return {
+                "plan": plan,
+                "action_audit": state.action_audit + [audit_event],
+            }
+
+        if step.step_type == PlanStepType.FINISH:
+            plan.status = PlanStatus.COMPLETED
+            audit_event = {
+                "node": SystemNodeName.PLAN_EXECUTOR.value,
+                "event": "finish_step",
+                "step_id": step.step_id,
+            }
+            return {
+                "plan": plan,
+                "next_action": ActionName.FINISH,
+                "current_agent": None,
+                "routing_reason": "计划结束。",
+                "action_audit": state.action_audit + [audit_event],
+            }
+
+        # AGENT_CALL
+        step.status = PlanStepStatus.IN_PROGRESS
+        plan.steps[plan.current_step_index] = step
+
+        # Inject current step into context_bundle so downstream agent prompts can use it.
+        # This is the root-cause fix for multi-step execution: agents must know "what to do now"
+        # beyond the original user message.
+        context_bundle = dict(state.context_bundle or {})
+        task_input = dict((context_bundle.get("task_input") or {}))
+        task_input["plan_step"] = {
+            "step_id": step.step_id,
+            "step_type": step.step_type,
+            "instruction": step.instruction,
+            "inputs": step.inputs,
+            "risk_level": step.risk_level,
+        }
+        context_bundle["task_input"] = task_input
+
+        audit_event = {
+            "node": SystemNodeName.PLAN_EXECUTOR.value,
+            "event": "dispatch_agent",
+            "step_id": step.step_id,
+            "agent": step.selected_agent,
+            "action": step.next_action,
+            "risk_level": step.risk_level,
+        }
+        return {
+            "plan": plan,
+            "next_action": step.next_action,
+            "current_agent": step.selected_agent,
+            "routing_reason": f"执行计划步骤: {step.step_id} ({step.instruction})",
+            "action_audit": state.action_audit + [audit_event],
+            "context_bundle": context_bundle,
+        }
+
+    async def post_action_verifier_node(self, state: MultiAgentState) -> MultiAgentState:
+        """Post-action verifier node.
+
+        Goal:
+        - Make step completion explicit and based on observable outputs (no silent success).
+        - Record verification outcome in action_audit.
+        """
+        plan = state.plan
+        if plan is None or plan.is_done():
+            return {}
+
+        step = plan.current_step()
+        if step is None:
+            plan.status = PlanStatus.FAILED
+            plan.failure_reason = "No current step to verify"
+            return {
+                "plan": plan,
+                "action_audit": state.action_audit + [{
+                    "node": SystemNodeName.POST_ACTION_VERIFIER.value,
+                    "event": "verify_failed",
+                    "reason": plan.failure_reason,
+                }],
+                "next_action": ActionName.FINISH,
+                "routing_reason": "计划执行失败：无可验证步骤。",
+            }
+
+        # Basic verification: treat any state.error_message as failure.
+        # (We will expand to per-action verifiers later: order/refund/compensation, etc.)
+        ok = state.error_message is None
+        step.status = PlanStepStatus.COMPLETED if ok else PlanStepStatus.FAILED
+        plan.steps[plan.current_step_index] = step
+
+        audit_event = {
+            "node": SystemNodeName.POST_ACTION_VERIFIER.value,
+            "event": "verified",
+            "step_id": step.step_id,
+            "ok": ok,
+            "error_message": state.error_message,
+        }
+
+        if not ok:
+            plan.status = PlanStatus.FAILED
+            plan.failure_reason = state.error_message or "unknown_error"
+            return {
+                "plan": plan,
+                "action_audit": state.action_audit + [audit_event],
+                "next_action": ActionName.FINISH,
+                "routing_reason": f"步骤验证失败：{plan.failure_reason}",
+            }
+
+        # Verified OK: advance index and continue plan
+        plan.current_step_index += 1
+        return {
+            "plan": plan,
+            "action_audit": state.action_audit + [audit_event],
+        }
 
     async def supervisor_node(
         self, state: MultiAgentState, config: Optional[RunnableConfig] = None

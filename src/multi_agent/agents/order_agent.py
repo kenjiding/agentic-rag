@@ -344,27 +344,24 @@ class OrderAgent:
         """
         query_intent = state.query_intent or {}
         entities = state.entities or {}
-        
-        # 从 entities 中获取 order_id
+
+        business_intent_type = query_intent.get("business_intent_type")
+        # Planner 会在 business_intent_type=order_management 时输出结构化 order_intent
+        order_intent = query_intent.get("order_intent")
+
+        # 从 entities 中获取 order_id（用于确定性兜底：有订单号但子意图缺失时，倾向查询）
         order_id = entities.get("order_id")
-        
-        # 从 query_intent 中获取 reasoning（包含业务意图标识）
-        reasoning = query_intent.get("reasoning", "").lower() if query_intent else ""
-        
-        # 基于 reasoning 中的业务意图标识判断（意图识别节点已在 prompt 中要求明确标识）
-        is_query = "订单查询意图" in reasoning
-        is_cancel = "订单取消意图" in reasoning
-        
-        # 如果 reasoning 中没有明确标识但有 order_id，则基于实体和意图类型进行推断
-        # 如果提取到 order_id，通常默认是查询意图（除非明确标识为取消意图）
-        if order_id and not is_query and not is_cancel:
-            # 有订单号但意图不明确，默认视为查询意图
-            is_query = True
-        
-        return {
-            "is_query": is_query,
-            "is_cancel": is_cancel,
-        }
+
+        is_order_mgmt = business_intent_type == "order_management"
+        is_query = bool(is_order_mgmt and order_intent == "query")
+        is_cancel = bool(is_order_mgmt and order_intent == "cancel")
+
+        # 结构化子意图缺失时的稳定回退（不做关键词/推理文本匹配）
+        if is_order_mgmt and not is_query and not is_cancel and order_intent in (None, "", "other"):
+            if order_id:
+                is_query = True
+
+        return {"is_query": is_query, "is_cancel": is_cancel}
 
     async def _handle_query_intent(
         self, state: MultiAgentState, messages: list, content: str, session_id: str
@@ -628,11 +625,12 @@ class OrderAgent:
         context_block = render_context_bundle(state.context_bundle)
 
         # 合并系统提示和上下文到一个 SystemMessage
-        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        # 使用 XML 标签确保指令和上下文清晰分离（符合业界最佳实践）
         unified_system_content = "\n\n".join([
             system_prompt,
-            "---",
-            context_block
+            "<context>",
+            context_block,
+            "</context>"
         ]).strip()
 
         agent_messages = [

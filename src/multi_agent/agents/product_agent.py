@@ -57,94 +57,7 @@ class ProductAgent:
 
     def get_description(self) -> str:
         """获取 Agent 描述"""
-        return "商品搜索专家 - 处理商品查询、搜索、比价等请求"
-
-    def _is_comparison_scenario(self, state: MultiAgentState) -> bool:
-        """检测是否为产品对比场景
-
-        企业级最佳实践：直接使用意图识别阶段（LLM已判断）的结果，
-        而不是硬编码关键词，这样可以更好地适配自然语言的多样性。
-
-        Args:
-            state: 当前多Agent状态
-
-        Returns:
-            是否为对比场景
-        """
-        # 直接使用意图识别结果（意图识别阶段已通过LLM判断）
-        query_intent = state.query_intent
-        if query_intent:
-            intent_type = query_intent.get("intent_type")
-            if intent_type == "comparison":
-                return True
-
-        return False
-
-    def _extract_product_ids_from_search_results(self, structured_result: Dict[str, Any]) -> list[int]:
-        """从搜索结果中提取产品ID列表
-
-        Args:
-            structured_result: 搜索结果的结构化数据
-
-        Returns:
-            产品ID列表
-        """
-        product_ids = []
-        if structured_result and "products" in structured_result:
-            products = structured_result["products"]
-            for product in products:
-                product_id = product.get("id") or product.get("product_id")
-                if product_id and isinstance(product_id, int):
-                    product_ids.append(product_id)
-        return product_ids
-
-    def _merge_search_results_and_extract_ids(
-        self, 
-        all_search_results: list[Dict[str, Any]]
-    ) -> tuple[Dict[str, Any], list[int]]:
-        """合并多个搜索结果并提取产品ID（企业级优化：一次循环完成两个任务）
-
-        企业级最佳实践：
-        - 在单次循环中同时完成合并和提取，避免重复遍历
-        - 使用 dict.fromkeys() 进行去重并保持顺序（Python 3.7+）
-
-        Args:
-            all_search_results: 所有搜索结果列表
-
-        Returns:
-            (merged_result, product_ids): 合并后的结果和提取的产品ID列表
-        """
-        merged_products = []
-        merged_text_parts = []
-        all_product_ids = []
-        
-        for idx, search_result in enumerate(all_search_results, 1):
-            # 合并产品列表
-            products = search_result.get("products", [])
-            merged_products.extend(products)
-            
-            # 合并文本内容
-            if search_result.get("text"):
-                merged_text_parts.append(f"搜索结果{idx}：\n{search_result['text']}")
-            
-            # 同时提取产品ID（避免后续再次循环）
-            product_ids = self._extract_product_ids_from_search_results(search_result)
-            all_product_ids.extend(product_ids)
-        
-        # 去重并保持顺序（Python 3.7+ dict.fromkeys 保持插入顺序）
-        unique_product_ids = list(dict.fromkeys(all_product_ids))
-        
-        # 构建合并后的结果
-        structured_result = {
-            "products": merged_products,
-            "total": len(merged_products),
-            "text": "\n\n".join(merged_text_parts) if merged_text_parts else f"找到{len(merged_products)}个产品",
-            "query_summary": f"对比场景：搜索了{len(all_search_results)}个产品"
-        }
-        
-        logger.info(f"合并{len(all_search_results)}个搜索结果，共{len(merged_products)}个产品，提取{len(unique_product_ids)}个唯一产品ID")
-        
-        return structured_result, unique_product_ids
+        return "商品搜索专家 - 处理商品查询、搜索等请求"
 
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:
         """执行商品查询（异步接口，符合LangGraph 1.x规范）
@@ -180,11 +93,12 @@ class ProductAgent:
         context_block = render_context_bundle(state.context_bundle)
 
         # 合并系统提示和上下文到一个 SystemMessage
-        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        # 使用 XML 标签确保指令和上下文清晰分离（符合业界最佳实践）
         unified_system_content = "\n\n".join([
             system_prompt,
-            "---",
-            context_block
+            "<context>",
+            context_block,
+            "</context>"
         ]).strip()
 
         # 构建 Agent 消息
@@ -249,14 +163,6 @@ class ProductAgent:
                             )
                         )
 
-            # 合并多个搜索结果并提取产品ID（对比场景）
-            is_comparison = self._is_comparison_scenario(state)
-            extracted_product_ids = None  # 存储提取的产品ID（用于后续entities更新）
-            
-            if is_comparison and all_search_results and len(all_search_results) > 1:
-                # 使用优化方法：一次循环完成合并和提取
-                structured_result, extracted_product_ids = self._merge_search_results_and_extract_ids(all_search_results)
-
             # 如果有结构化数据，直接使用工具的 text，不再调用 LLM
             if structured_result and "text" in structured_result:
                 # 使用工具返回的简短文本，避免 LLM 重新生成长文本
@@ -279,30 +185,12 @@ class ProductAgent:
                     query_summary=structured_result.get("query_summary", ""),
                     content=content_text  # 使用工具返回的原始 text
                 )
-                
-                # 更新entities（使用已提取的产品ID，避免重复循环）
-                entities_update = {}
-                
-                if is_comparison:
-                    # 对比场景：使用已提取的产品ID
-                    if extracted_product_ids:
-                        # 多个搜索结果的情况，已在合并时提取
-                        entities_update["product_ids"] = extracted_product_ids
-                        logger.info(f"检测到对比场景，使用已提取的产品ID: {extracted_product_ids}")
-                    elif all_search_results and len(all_search_results) == 1:
-                        # 对比场景但只有一个搜索结果，需要单独提取
-                        product_ids = self._extract_product_ids_from_search_results(structured_result)
-                        if product_ids:
-                            entities_update["product_ids"] = product_ids
-                            logger.info(f"检测到对比场景（单结果），提取产品ID: {product_ids}")
-                
+
                 result = {
                     "result": structured_result,  # 必需：权威数据源
                     "messages": [response] + tool_messages + [final_response],  # 只返回新增消息
                     "current_agent": AgentName.PRODUCT_AGENT,
                     "tools_used": state.tools_used + tool_used_info,
-                    "conversation_phase": "product_selecting",  # 设置对话阶段
-                    "entities": entities_update,  # 更新entities
                     **response_model.to_full_response()
                 }
             else:

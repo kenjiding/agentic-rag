@@ -12,6 +12,64 @@ export type ResponseType =
   | "product_comparison"
   | "error";
 
+/** Interrupt 类型（后端 interrupt payload 的 interrupt_type） */
+export type InterruptType = "input" | "selection" | "confirmation";
+
+export type SelectionMode = "single" | "multi";
+
+export interface InterruptInputSpec {
+  input_id: string;
+  label: string;
+  placeholder: string;
+  multiline: boolean;
+  required: boolean;
+  min_length?: number;
+  max_length?: number;
+  pattern?: string;
+}
+
+export interface InterruptSelectionOption {
+  option_id: string;
+  label: string;
+  description?: string;
+  payload?: any;
+}
+
+export interface InterruptSelectionSpec {
+  selection_id: string;
+  mode: SelectionMode;
+  options: InterruptSelectionOption[];
+  min_selected?: number;
+  max_selected?: number;
+}
+
+export type InterruptDisplayData =
+  | {
+      input: InterruptInputSpec;
+      submit_label?: string;
+      [key: string]: any;
+    }
+  | {
+      selection: InterruptSelectionSpec;
+      submit_label?: string;
+      [key: string]: any;
+    }
+  | Record<string, any>;
+
+/** 通用 interrupt payload（response_type === "interrupt" 时使用） */
+export interface InterruptPayload {
+  response_type: "interrupt";
+  role: "assistant" | string;
+  content: string;
+  interrupt_type: Exclude<InterruptType, "confirmation">; // input | selection
+  action_type: string;
+  action_data: Record<string, any>;
+  display_message: string;
+  display_data?: InterruptDisplayData;
+  metadata?: Record<string, any>;
+  response_data?: ResponseData;
+}
+
 /** 产品信息 */
 export interface Product {
   id: number;
@@ -101,6 +159,7 @@ export interface ChatMessage {
   responseType: ResponseType;  // 响应类型
   responseData?: ResponseData;  // 结构化数据
   confirmationPending?: ConfirmationPending;  // 待确认操作
+  interrupt?: InterruptPayload; // 通用 interrupt 交互（input/selection）
   metadata?: {
     current_agent?: string;
     tools_used?: Array<{
@@ -125,7 +184,7 @@ export interface ExecutionStepDetail {
 
 /** 流式响应事件 */
 export interface StreamEvent {
-  type: "state_update" | "done" | "error" | "confirmation_resolved";
+  type: "state_update" | "done" | "error" | "confirmation_resolved" | "interrupt_resumed";
   data?: {
     content?: string;
     role?: string;
@@ -136,6 +195,13 @@ export interface StreamEvent {
     execution_steps?: string[];
     step_details?: ExecutionStepDetail[];
     confirmation_pending?: ConfirmationPending;  // 待确认操作
+    // interrupt fields（response_type === "interrupt"）
+    interrupt_type?: InterruptType;
+    action_type?: string;
+    action_data?: Record<string, any>;
+    display_message?: string;
+    display_data?: InterruptDisplayData;
+    metadata?: Record<string, any>;
   };
   message?: string;  // 用于 confirmation_resolved 等事件
   error?: string;

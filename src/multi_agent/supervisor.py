@@ -692,19 +692,27 @@ class SupervisorAgent:
             ("system", """你是路由决策助手。系统已通过规则引擎处理确定性路由。
 你的任务：仅在规则无法匹配时，基于上下文选择最合适的Agent。
 
-可用Agent：
-{agents}
-
+<instructions>
 要求：
 1. 输出必须符合RoutingDecision结构。
 2. 若无法判断，优先选择chat_agent而非finish。
 3. 仅使用上下文中的事实，不要自行假设。
+</instructions>
 
+<available_agents>
+可用Agent：
+{agents}
+</available_agents>
+
+<context>
 上下文：
 {entity_context}
+</context>
 
+<intent_context>
 意图识别（仅供参考）：
-{intent_context}"""),
+{intent_context}
+</intent_context>"""),
             ("human", "用户问题: 我想买一台65寸电视，有什么推荐？"),
             ("assistant", """{{
   "next_action": "product_search",
@@ -773,18 +781,24 @@ class SupervisorAgent:
             simple_prompt = ChatPromptTemplate.from_messages([
                 ("system", """你是一个路由系统。快速分析用户问题，决定调用哪个Agent。
 
+<available_agents>
 可用Agent：
 {agents}
+</available_agents>
 
+<routing_rules>
 规则：
 - 商品搜索 → product_agent (next_action: "product_search", selected_agent: "product_agent")
 - 订单管理 → order_agent (next_action: "order_management", selected_agent: "order_agent")
 - 知识检索 → rag_agent (next_action: "rag_search", selected_agent: "rag_agent")
-- **普通交流/闲聊（谢谢、你好、再见等）** → chat_agent (next_action: "chat", selected_agent: "chat_agent")
+- 普通交流/闲聊（谢谢、你好、再见等） → chat_agent (next_action: "chat", selected_agent: "chat_agent")
 - 其他无法处理的 → 优先选择chat_agent，极少数情况才用finish
+</routing_rules>
 
+<constraints>
 CRITICAL: 当next_action为"finish"时，selected_agent必须为null（None），不能指定任何Agent。
 IMPORTANT: 普通交流（如"谢谢"）必须路由到chat_agent，不要用finish！
+</constraints>
 
 快速决策。"""),
                 ("user", "问题: {question}")

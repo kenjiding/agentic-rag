@@ -10,6 +10,7 @@
 import logging
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.constants import ActionName, AgentName
+from src.multi_agent.constants import SystemNodeName
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,39 @@ class GraphRouter:
         else:
             return ActionName.FINISH.value
 
+    def route_after_plan_executor(self, state: MultiAgentState) -> str:
+        """Plan executor后的路由决策
+
+        - 如果没有plan（或planner失败），路由到planner重新规划
+        - 如果有plan但没有next_action且plan未完成，继续执行plan（可能是下一个ASK_USER step）
+        - 如果有plan且有next_action，路由到对应的agent
+        """
+        if state.plan is None:
+            # Plan被清除，需要重新规划（例如：用户回复了ASK_USER后，plan只有一个step）
+            # 路由到planner以基于新的用户输入重新规划
+            logger.info("Plan为None，路由到planner进行重新规划")
+            return SystemNodeName.PLANNER.value
+        
+        # 如果有plan但没有next_action，检查是否需要继续执行plan
+        if state.next_action is None:
+            # Plan存在但没有next_action
+            if state.plan.is_done():
+                # Plan已完成
+                return ActionName.FINISH.value
+            
+            # Plan未完成但没有next_action，这通常发生在：
+            # 1. 从ASK_USER恢复后，下一个step也是ASK_USER（需要再次在plan_executor中处理）
+            # 2. plan_executor处理完ASK_USER后，需要继续处理plan中的下一个step
+            # 这种情况下，应该再次执行plan_executor
+            logger.info(
+                f"Plan未完成但没有next_action，继续执行plan_executor "
+                f"(current_index={state.plan.current_step_index}, status={state.plan.status})"
+            )
+            return SystemNodeName.PLAN_EXECUTOR.value
+        
+        # 如果有plan且有next_action，路由到对应的agent
+        return self.route_after_supervisor(state)
+
     def route_after_agent(self, state: MultiAgentState) -> str:
         """Agent执行后的路由决策（一步一步智能模式）
         
@@ -51,6 +85,10 @@ class GraphRouter:
         """
         if state.error_message or state.iteration_count >= self.graph.max_iterations:
             return "finish"
+
+        # Plan-driven mode: if plan exists and not done, continue executing plan steps
+        if state.plan is not None and not state.plan.is_done():
+            return SystemNodeName.POST_ACTION_VERIFIER.value
 
         current_agent = state.current_agent
         
@@ -64,22 +102,5 @@ class GraphRouter:
                     agent_names = [r.get("agent") for r in state.agent_history]
                     if AgentName.CHAT_AGENT.value not in agent_names:
                         return AgentName.CHAT_AGENT.value
-        
-        # Product Agent：对比场景需要继续路由到consultation_agent
-        if current_agent == AgentName.PRODUCT_AGENT:
-            # 检查是否为对比场景
-            # 方法1：从query_intent判断（意图识别阶段已通过LLM判断）
-            query_intent = state.query_intent
-            entities = state.entities
-            product_ids = entities.get("product_ids")
-            has_product_ids = bool(product_ids) and isinstance(product_ids, list) and len(product_ids) >= 2
-            
-            # 如果是对比场景且已提取到product_ids，路由回supervisor进行下一次决策
-            if query_intent:
-                intent_type = query_intent.get("intent_type")
-                if intent_type == "comparison" and has_product_ids:
-                    # 对比场景且已提取到product_ids，路由回supervisor
-                    logger.info(f"检测到product_agent对比场景，已提取product_ids={product_ids}，路由回supervisor进行下一次决策")
-                    return "supervisor"
-        
+
         return ActionName.FINISH.value

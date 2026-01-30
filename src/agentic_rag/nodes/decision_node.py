@@ -143,25 +143,7 @@ def create_decision_node(
             print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision】 已达最后一轮，结束{Style.RESET_ALL}")
             return {"next_action": "finish"}
 
-        # 检查失败分析是否建议重新进行意图识别
-        failure_analysis = state.get("failure_analysis")
-        intent_reclassification_count = state.get("intent_reclassification_count", 0)
-        adaptive_config = threshold_config.adaptive_retrieval
-        
-        # 如果失败分析建议重新进行意图识别，且未超过最大重识别次数
-        if (failure_analysis and 
-            failure_analysis.get("needs_intent_reclassification") and
-            adaptive_config and
-            adaptive_config.enable_intent_reclassification and
-            intent_reclassification_count < adaptive_config.max_reclassification_count and
-            threshold_config.intent_classification.enable_intent_classification):
-            
-            print(f"{Style.BRIGHT}{Fore.YELLOW}💭【decision】 失败分析建议重新进行意图识别{Style.RESET_ALL}")
-            return {
-                "next_action": "reclassify_intent",
-                "answer": "",
-                "intent_reclassification_count": intent_reclassification_count + 1
-            }
+        # Intent reclassification removed: multi-agent planner already provides intent/entities.
 
         # 使用 detector 判断是否需要更多信息
         question = state.get("question", "")

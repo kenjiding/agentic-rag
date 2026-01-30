@@ -68,7 +68,6 @@ class ContextPipeline:
             task_input={
                 "query": current_query,
                 "entities": state.entities,
-                "intent": state.query_intent,
                 "conversation_phase": state.conversation_phase,
             },
             metadata={

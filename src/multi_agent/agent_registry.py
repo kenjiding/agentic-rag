@@ -16,6 +16,8 @@ from typing import Dict, List, Callable, Any, Optional, Set
 from pathlib import Path
 from langgraph.graph import END
 
+from src.multi_agent.constants import SystemNodeName
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,12 @@ class RouteConfig:
         
         # 支持"supervisor"作为路由目标（一步一步智能模式）
         mapping["supervisor"] = "supervisor"
+
+        # 支持plan_executor作为路由目标（plan-driven智能模式）
+        mapping[SystemNodeName.PLAN_EXECUTOR.value] = SystemNodeName.PLAN_EXECUTOR.value
+
+        # 支持post_action_verifier作为路由目标（plan-driven智能模式）
+        mapping[SystemNodeName.POST_ACTION_VERIFIER.value] = SystemNodeName.POST_ACTION_VERIFIER.value
         
         if self.on_complete == "finish":
             mapping["finish"] = END

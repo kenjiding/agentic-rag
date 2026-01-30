@@ -3,10 +3,40 @@
 提供统一的状态累积和格式化逻辑，避免代码重复
 """
 import logging
-from typing import Dict, Any, AsyncIterator
+from typing import Dict, Any, AsyncIterator, Optional
 from src.api.formatters import format_state_update
 
 logger = logging.getLogger(__name__)
+
+LANGGRAPH_INTERRUPT_KEY = "__interrupt__"
+
+
+def _normalize_interrupt_node_update(node_update: Any) -> Optional[Dict[str, Any]]:
+    """Normalize LangGraph __interrupt__ update to a dict payload.
+
+    LangGraph may emit __interrupt__ as a tuple containing an Interrupt object.
+    We normalize it into a plain dict so the SSE formatter can emit it.
+    """
+    interrupt_value: Any = None
+
+    if isinstance(node_update, tuple) and len(node_update) > 0:
+        interrupt_obj = node_update[0]
+        if hasattr(interrupt_obj, "value"):
+            interrupt_value = interrupt_obj.value
+        else:
+            interrupt_value = interrupt_obj
+    else:
+        interrupt_value = node_update
+
+    # Some wrappers can be nested tuples
+    if isinstance(interrupt_value, tuple) and len(interrupt_value) > 0:
+        first = interrupt_value[0]
+        if hasattr(first, "value"):
+            interrupt_value = first.value
+        else:
+            interrupt_value = first
+
+    return interrupt_value if isinstance(interrupt_value, dict) else None
 
 
 async def accumulate_and_format_state_updates(
@@ -33,7 +63,13 @@ async def accumulate_and_format_state_updates(
             if node_name in ("__start__", "__end__"):
                 continue
                 
-            if not isinstance(node_data, dict):
+            # __interrupt__ is not a dict (often tuple/Interrupt); normalize it.
+            if node_name == LANGGRAPH_INTERRUPT_KEY:
+                normalized = _normalize_interrupt_node_update(node_data)
+                if normalized is None:
+                    continue
+                node_data = normalized
+            elif not isinstance(node_data, dict):
                 continue
                 
             try:
@@ -77,8 +113,10 @@ async def accumulate_and_format_state_updates(
                         has_special_state = bool(
                             data.get("confirmation_pending")
                         )
+                        is_interrupt = data.get("response_type") == "interrupt"
 
-                        if has_content or has_response_data or has_special_state:
+                        # Never drop interrupts; they are UI-driving events.
+                        if has_content or has_response_data or has_special_state or is_interrupt:
                             yield formatted
                         else:
                             logger.debug(f"跳过空的 state_update (node={node_name})")

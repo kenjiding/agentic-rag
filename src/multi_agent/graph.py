@@ -23,7 +23,6 @@ from langchain_core.language_models import BaseChatModel
 from src.multi_agent.state import MultiAgentState
 from src.utils.llm_factory import create_llm_for_agent
 from src.multi_agent.supervisor import SupervisorAgent
-from src.intent import IntentClassifier
 from src.multi_agent.agents.base_agent import BaseAgent
 from src.multi_agent.agents.rag_agent import RAGAgent
 from src.multi_agent.agents.chat_agent import ChatAgent
@@ -41,6 +40,7 @@ from src.multi_agent.graph_nodes import GraphNodeHandler
 from src.multi_agent.graph_routers import GraphRouter
 from src.multi_agent.graph_state_manager import GraphStateManager
 from src.multi_agent.graph_tool_initializer import GraphToolInitializer
+from src.multi_agent.constants import SystemNodeName
 import logging
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,6 @@ class MultiAgentGraph:
         rag_persist_directory: str = "./tmp/chroma_db/agentic_rag",
         max_iterations: int = 10,
         init_web_search: bool = True,
-        enable_intent_classification: bool = True,
         enable_business_agents: bool = True,
         agents_config_path: Optional[str] = None
     ):
@@ -100,14 +99,12 @@ class MultiAgentGraph:
             rag_persist_directory: RAG向量数据库持久化目录
             max_iterations: 最大迭代次数
             init_web_search: 是否在初始化时加载web search tools（默认True）
-            enable_intent_classification: 是否启用意图识别（默认True）
             enable_business_agents: 是否启用业务Agent（商品、订单），默认True
             agents_config_path: Agent配置文件路径，默认为config/agents.yaml
         """
         self.llm = llm or create_llm_for_agent()
         self.tool_registry = tool_registry or ToolRegistry()
         self.max_iterations = max_iterations
-        self.enable_intent_classification = enable_intent_classification
         self.enable_business_agents = enable_business_agents
         self.agents_config_path = agents_config_path or DEFAULT_AGENTS_CONFIG_PATH
 
@@ -124,14 +121,13 @@ class MultiAgentGraph:
         # 初始化Supervisor
         self.supervisor = SupervisorAgent(llm=self.llm)
 
-        # 初始化意图分类器
-        self.intent_classifier = IntentClassifier(llm=self.llm) if self.enable_intent_classification else None
+        # 意图识别已合并入 planner（single-shot），避免重复LLM推理与不一致
 
         # 初始化上下文管理器
         from src.multi_agent.context_manager import ContextManager
         from src.multi_agent.context_pipeline import ContextPipeline
         self.context_manager = ContextManager(
-            max_history_rounds=5,
+            max_history_rounds=15,
             max_tool_calls=10
         )
         self.context_pipeline = ContextPipeline(self.context_manager)
@@ -325,12 +321,26 @@ class MultiAgentGraph:
         Args:
             graph: LangGraph StateGraph实例
         """
-        # Supervisor后的条件路由
+        # Plan executor后的条件路由（优先走plan；planner失败可回退到supervisor）
+        plan_executor_routes = {
+            **self.agent_registry.build_supervisor_routes(),
+            SystemNodeName.SUPERVISOR.value: SystemNodeName.SUPERVISOR.value,
+            SystemNodeName.PLANNER.value: SystemNodeName.PLANNER.value,  # 支持重新规划
+            SystemNodeName.PLAN_EXECUTOR.value: SystemNodeName.PLAN_EXECUTOR.value,  # 支持递归执行（处理连续的ASK_USER steps）
+        }
+        graph.add_conditional_edges(
+            SystemNodeName.PLAN_EXECUTOR.value,
+            self.router.route_after_plan_executor,
+            plan_executor_routes,
+        )
+        logger.info(f"配置PlanExecutor路由: {list(plan_executor_routes.keys())}")
+
+        # Supervisor后的条件路由（fallback路径）
         supervisor_routes = self.agent_registry.build_supervisor_routes()
         graph.add_conditional_edges(
-            "supervisor",
+            SystemNodeName.SUPERVISOR.value,
             self.router.route_after_supervisor,
-            supervisor_routes
+            supervisor_routes,
         )
         logger.info(f"配置Supervisor路由: {list(supervisor_routes.keys())}")
 
@@ -352,9 +362,12 @@ class MultiAgentGraph:
         graph = StateGraph(MultiAgentState)
 
         # 添加系统节点
-        graph.add_node("context_manager", self.node_handler.context_manager_node)  # 新增：上下文管理节点
-        graph.add_node("intent_recognition", self.node_handler.intent_recognition_node)
-        graph.add_node("supervisor", self.node_handler.supervisor_node)
+        graph.add_node(SystemNodeName.CONTEXT_MANAGER.value, self.node_handler.context_manager_node)
+        graph.add_node(SystemNodeName.POLICY_GATE.value, self.node_handler.policy_gate_node)
+        graph.add_node(SystemNodeName.PLANNER.value, self.node_handler.planner_node)
+        graph.add_node(SystemNodeName.PLAN_EXECUTOR.value, self.node_handler.plan_executor_node)
+        graph.add_node(SystemNodeName.POST_ACTION_VERIFIER.value, self.node_handler.post_action_verifier_node)
+        graph.add_node(SystemNodeName.SUPERVISOR.value, self.node_handler.supervisor_node)  # fallback
 
         # 自动添加所有Agent节点
         for descriptor in self.agent_registry.get_enabled_agents():
@@ -362,9 +375,12 @@ class MultiAgentGraph:
             logger.info(f"添加Agent节点: {descriptor.name}")
 
         # 设置入口点（修改：从context_manager开始）
-        graph.set_entry_point("context_manager")
-        graph.add_edge("context_manager", "intent_recognition")
-        graph.add_edge("intent_recognition", "supervisor")
+        graph.set_entry_point(SystemNodeName.CONTEXT_MANAGER.value)
+        # Plan-first: intent/entities extraction is merged into planner (single-shot)
+        graph.add_edge(SystemNodeName.CONTEXT_MANAGER.value, SystemNodeName.PLANNER.value)
+        graph.add_edge(SystemNodeName.PLANNER.value, SystemNodeName.POLICY_GATE.value)
+        graph.add_edge(SystemNodeName.POLICY_GATE.value, SystemNodeName.PLAN_EXECUTOR.value)
+        graph.add_edge(SystemNodeName.POST_ACTION_VERIFIER.value, SystemNodeName.PLAN_EXECUTOR.value)
 
         # 自动配置所有路由
         self._setup_graph_routes(graph)

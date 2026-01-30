@@ -36,11 +36,9 @@ class AgenticRAG:
         persist_directory: str = "./chroma_db",
         threshold_config: Optional[ThresholdConfig] = None,
         config: Optional[AgenticRAGConfig] = None,
-        skip_intent_classification: bool = False  # 当通过multi_agent进入时设为True
     ):
         self.max_iterations = max_iterations
         self.embedding_model = embedding_model
-        self.skip_intent_classification = skip_intent_classification  # 保存到实例变量
         # 修改点 2: 显式保存持久化路径到实例变量
         self.persist_directory = persist_directory
         
@@ -86,8 +84,7 @@ class AgenticRAG:
             vectorstore=self.vectorstore,
             llm=self.llm,
             max_iterations=max_iterations,
-            threshold_config=self.threshold_config,
-            skip_intent_classification=skip_intent_classification
+            threshold_config=self.threshold_config
         )
 
     def init_splitter(self) -> None:
@@ -204,8 +201,7 @@ class AgenticRAG:
             vectorstore=self.vectorstore,
             llm=self.llm,
             max_iterations=self.max_iterations,
-            threshold_config=self.threshold_config,
-            skip_intent_classification=self.skip_intent_classification
+            threshold_config=self.threshold_config
         )
 
         final_count = self.vectorstore._collection.count()

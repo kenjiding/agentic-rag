@@ -5,6 +5,7 @@ import { OrderList } from "@/components/business/OrderTracker"
 import { ProductComparison } from "@/components/business/ProductComparison"
 import { ExecutionSteps } from "./ExecutionSteps"
 import { ConfirmationDialog } from "./ConfirmationDialog"
+import { InterruptCard } from "./InterruptCard"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { motion } from "framer-motion"
@@ -18,6 +19,8 @@ interface MessageListProps {
   onCancel?: (confirmationId: string) => void
   isProcessingConfirmation?: boolean
   onBuyProduct?: (productId: number) => void
+  onInterruptSubmit?: (resumeData: Record<string, any>) => void
+  isProcessingInterrupt?: boolean
 }
 
 export function MessageList({
@@ -26,6 +29,8 @@ export function MessageList({
   onCancel,
   isProcessingConfirmation = false,
   onBuyProduct,
+  onInterruptSubmit,
+  isProcessingInterrupt = false,
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastMessageRef = useRef<ChatMessage | null>(null)
@@ -130,6 +135,8 @@ export function MessageList({
               onCancel={onCancel}
               isProcessingConfirmation={isProcessingConfirmation}
               onBuyProduct={onBuyProduct}
+              onInterruptSubmit={onInterruptSubmit}
+              isProcessingInterrupt={isProcessingInterrupt}
             />
           ))}
         </div>
@@ -145,6 +152,8 @@ interface MessageItemProps {
   onCancel?: (confirmationId: string) => void
   isProcessingConfirmation?: boolean
   onBuyProduct?: (productId: number) => void
+  onInterruptSubmit?: (resumeData: Record<string, any>) => void
+  isProcessingInterrupt?: boolean
 }
 
 function MessageItem({
@@ -154,6 +163,8 @@ function MessageItem({
   onCancel,
   isProcessingConfirmation = false,
   onBuyProduct,
+  onInterruptSubmit,
+  isProcessingInterrupt = false,
 }: MessageItemProps) {
   const isUser = message.role === "user"
 
@@ -331,6 +342,15 @@ function MessageItem({
             onConfirm={onConfirm}
             onCancel={onCancel}
             isProcessing={isProcessingConfirmation}
+          />
+        )}
+
+        {/* interrupt 交互卡片（input/selection） */}
+        {message.responseType === "interrupt" && message.interrupt && onInterruptSubmit && (
+          <InterruptCard
+            interrupt={message.interrupt}
+            onSubmit={onInterruptSubmit}
+            isProcessing={isProcessingInterrupt}
           />
         )}
 

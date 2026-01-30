@@ -22,12 +22,10 @@ from src.agentic_rag.state import AgenticRAGState
 from src.agentic_rag.retriever import IntelligentRetriever
 from src.agentic_rag.generator import IntelligentGenerator
 from src.agentic_rag.nodes import (
-    create_intent_classification_node,
     create_retrieve_node,
     create_generate_node,
     create_decision_node,
 )
-from src.intent import IntentClassifier
 from src.agentic_rag.threshold_config import ThresholdConfig
 
 
@@ -36,7 +34,6 @@ def create_agentic_rag_graph(
     llm: BaseChatModel = None,
     max_iterations: int = 3,
     threshold_config: Optional[ThresholdConfig] = None,
-    skip_intent_classification: bool = False
 ):
     """
     创建完整的 Agentic RAG 图 - 2025 企业级最佳实践版
@@ -51,8 +48,6 @@ def create_agentic_rag_graph(
         llm: LLM 实例
         max_iterations: 最大迭代次数
         threshold_config: 阈值配置（如果为None，使用默认配置）
-        skip_intent_classification: 是否跳过意图识别（当通过multi_agent进入时设为True，因为已经做过意图识别）
-
     Returns:
         编译后的图
     """
@@ -88,19 +83,6 @@ def create_agentic_rag_graph(
         threshold_config=threshold_config
     )
 
-    # 创建意图分类器（如果启用且未跳过）
-    intent_classifier = None
-    if not skip_intent_classification and threshold_config.intent_classification.enable_intent_classification:
-        intent_classifier = IntentClassifier(
-            llm=llm,
-            config=threshold_config.intent_classification.to_intent_config()
-        )
-
-    # 创建节点（传递 threshold_config）
-    intent_node = None
-    if intent_classifier and not skip_intent_classification:
-        intent_node = create_intent_classification_node(intent_classifier, threshold_config=threshold_config)
-
     retrieve_node = create_retrieve_node(retriever, threshold_config=threshold_config)
     generate_node = create_generate_node(generator, threshold_config=threshold_config)
 
@@ -114,56 +96,24 @@ def create_agentic_rag_graph(
     graph = StateGraph(AgenticRAGState)
 
     # 添加节点
-    if intent_node:
-        graph.add_node("intent", intent_node)
     graph.add_node("decision", decision_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("generate", generate_node)
 
     # 设置入口点
-    if intent_node:
-        graph.set_entry_point("intent")
-        # 意图识别后进入决策节点
-        graph.add_edge("intent", "decision")
-    else:
-        graph.set_entry_point("decision")
+    graph.set_entry_point("decision")
 
     # 构建条件边的路由映射
-    def get_next_node(state: AgenticRAGState) -> str:
-        """决定下一个节点"""
-        next_action = state.get("next_action", "finish")
-
-        # 动态意图重识别：如果需要重识别且有意图节点，转到意图节点
-        if next_action == "reclassify_intent" and intent_node:
-            return "intent"
-
-        # 其他情况按照 next_action 路由
-        return next_action
-
-    # 添加条件边
-    if intent_node:
-        # 包含动态意图重识别
-        graph.add_conditional_edges(
-            "decision",
-            get_next_node,
-            {
-                "retrieve": "retrieve",
-                "generate": "generate",
-                "reclassify_intent": "intent",  # 动态意图重识别
-                "finish": END
-            }
-        )
-    else:
-        # 基础版
-        graph.add_conditional_edges(
-            "decision",
-            lambda state: state.get("next_action", "finish"),
-            {
-                "retrieve": "retrieve",
-                "generate": "generate",
-                "finish": END
-            }
-        )
+    # 添加条件边（无 intent 节点）
+    graph.add_conditional_edges(
+        "decision",
+        lambda state: state.get("next_action", "finish"),
+        {
+            "retrieve": "retrieve",
+            "generate": "generate",
+            "finish": END
+        }
+    )
 
     # 检索后回到决策节点
     graph.add_edge("retrieve", "decision")

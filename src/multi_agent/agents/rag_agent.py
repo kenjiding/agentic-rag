@@ -69,8 +69,7 @@ class RAGAgent(BaseAgent):
             self.rag_system = AgenticRAG(
                 model_name=model_name,
                 max_iterations=max_iterations,
-                persist_directory=persist_directory,
-                skip_intent_classification=True  # 从multi_agent进入，已做过意图识别
+                persist_directory=persist_directory
             )
     
     async def execute(self, state: MultiAgentState, session_id: str = "default") -> Dict[str, Any]:

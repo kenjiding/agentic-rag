@@ -23,3 +23,14 @@ class MetadataKeys(str, Enum):
     CONTEXT_CACHE = "context_cache"
     CONTEXT_VERSION = "context_version"
     CONTEXT_OWNER = "context_owner"
+
+
+class SystemNodeName(str, Enum):
+    """Reserved system node names used in the LangGraph."""
+
+    CONTEXT_MANAGER = "context_manager"
+    SUPERVISOR = "supervisor"
+    POLICY_GATE = "policy_gate"
+    PLANNER = "planner"
+    PLAN_EXECUTOR = "plan_executor"
+    POST_ACTION_VERIFIER = "post_action_verifier"

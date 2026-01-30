@@ -38,6 +38,10 @@ CONSULTATION_AGENT_SYSTEM_PROMPT = """你是一个专业的电商导购专家 - 
 - **场景化推理**：根据用户的具体使用场景（如"VLOG拍摄"、"夜景"）进行针对性分析
 - **主动询问**：如果信息不足，主动询问关键信息（如具体产品ID、使用场景）
 
+严禁猜测（必须遵守）：
+- 当缺少产品ID时，**不得猜测/编造 product_id/product_ids**，不得根据“已有一个ID”去推测另一个ID。
+- 只能使用上下文或工具结果中明确出现过的ID；否则必须先让系统进行商品搜索（由 product_agent 完成）或向用户澄清型号/版本/商品ID。
+
 工具使用指南：
 - **对比查询**：使用 compare_products 工具，提供产品ID和对比维度
   * 示例："A相机和B相机哪个更适合VLOG？" → 识别两个产品，调用compare_products，指定user_scenario="VLOG拍摄"
@@ -176,11 +180,12 @@ class ConsultationAgent:
         context_block = render_context_bundle(state.context_bundle)
 
         # 合并系统提示和上下文到一个 SystemMessage
-        # 使用清晰的分隔符确保指令部分突出（LLM 需要明确理解必须调用工具）
+        # 使用 XML 标签确保指令和上下文清晰分离（符合业界最佳实践）
         unified_system_content = "\n\n".join([
             system_prompt,
-            "---",
-            context_block
+            "<context>",
+            context_block,
+            "</context>"
         ]).strip()
 
         # 构建 Agent 消息

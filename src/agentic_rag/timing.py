@@ -59,7 +59,7 @@ class TimingStats:
 
 class Stage:
     """预定义的阶段常量，避免魔法字符串"""
-    INTENT = "intent_classification"  # 意图识别
+    # INTENT stage removed: AgenticRAG no longer performs intent classification as a standalone step.
     RETRIEVE = "retrieval"  # 检索
     RETRIEVE_QUALITY = "retrieval_quality_eval"  # 检索质量评估
     GENERATE = "generation"  # 生成

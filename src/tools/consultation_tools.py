@@ -243,25 +243,31 @@ async def _extract_product_specifications_async(
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", """你是一个专业的产品参数提取专家。请从产品描述中提取结构化参数。
 
-**核心原则**：
-1. **通用性**：不硬编码特定产品类别的参数，根据产品类别智能识别关键参数
-2. **智能性**：适应不同格式的产品描述，自动识别关键信息
-3. **结构化**：返回标准化的参数结构，方便后续对比和分析
+<core_principles>
+核心原则：
+1. 通用性：不硬编码特定产品类别的参数，根据产品类别智能识别关键参数
+2. 智能性：适应不同格式的产品描述，自动识别关键信息
+3. 结构化：返回标准化的参数结构，方便后续对比和分析
+</core_principles>
 
-**提取规则**：
+<extraction_rules>
+提取规则：
 - 根据产品类别（如相机、手机、冰箱等）自主判断提取哪些参数
 - 对于相机类产品，可能关注：传感器尺寸、像素、ISO范围、防抖、镜头等
 - 对于手机类产品，可能关注：处理器、内存、存储、拍照能力、续航等
 - 对于家电类产品，可能关注：容量、功率、能效、功能特性等
 - 其他类别产品，根据描述智能判断关键参数
+</extraction_rules>
 
-**输出要求**：
+<output_format>
+输出要求：
 - specifications字段：包含所有提取的参数，使用中文字段名
 - category字段：识别产品类别
 - key_features字段：列出3-5个关键特性
+</output_format>
 
-**示例**：
-相机产品示例（JSON格式）：
+<example>
+示例（相机产品，JSON格式）：
 {{
   "specifications": {{
     "传感器": "1英寸",
@@ -274,10 +280,15 @@ async def _extract_product_specifications_async(
   }},
   "category": "相机",
   "key_features": ["1英寸大传感器", "5轴防抖", "4K视频"]
-}}"""),
-                ("user", """请从以下产品信息中提取结构化参数：{aspect_prompt}
+}}
+</example>"""),
+                ("user", """<instructions>
+请从以下产品信息中提取结构化参数：{aspect_prompt}
+</instructions>
 
-{product_info}""")
+<product_info>
+{product_info}
+</product_info>""")
         ])
 
         # 调用LLM提取参数
@@ -343,21 +354,29 @@ async def _extract_product_specifications_async(
             analysis_prompt = ChatPromptTemplate.from_messages([
                 ("system", """你是一个产品分析专家。请分析产品在特定维度上的表现。
 
-**分析要求**：
+<analysis_requirements>
+分析要求：
 1. 深入分析产品在指定维度上的相关参数和指标
 2. 识别并列出产品在该维度上的优势点
 3. 客观指出产品在该维度上可能存在的不足或限制
+</analysis_requirements>
 
-**分析原则**：
+<analysis_principles>
+分析原则：
 - 基于产品参数进行客观分析，避免主观臆断
 - 优势点应该具体、可量化，避免空泛描述
 - 不足点应该客观、有依据，帮助用户做出明智决策
-- 适用于任何产品类别和维度，不硬编码特定场景"""),
-                ("user", """产品：{product_name}
+- 适用于任何产品类别和维度，不硬编码特定场景
+</analysis_principles>"""),
+                ("user", """<product_info>
+产品：{product_name}
 关注维度：{aspect}
 产品参数：{specifications_json}
+</product_info>
 
-请分析该产品在'{aspect}'这一维度上的表现。""")
+<instructions>
+请分析该产品在'{aspect}'这一维度上的表现。
+</instructions>""")
             ])
             
             try:
@@ -646,13 +665,16 @@ async def _compare_products_async(
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", """你是产品对比分析专家。对多个产品进行多维度对比分析。
 
-**分析步骤**：
+<analysis_steps>
+分析步骤：
 1. 识别对比维度（至少2个）：根据产品类别、参数和用户场景自动识别
 2. 逐维度对比：分析各产品在每个维度上的表现
 3. 场景化评估：根据用户场景评估适用性
 4. 综合推荐：给出明确的推荐建议
+</analysis_steps>
 
-**输出格式（必须严格遵循）**：
+<output_format>
+输出格式（必须严格遵循）：
 
 1. comparison_aspects: 对比维度列表，如 ["价格", "传感器", "夜景拍摄"]
 2. comparison_details: 嵌套字典，必需字段，格式为 {{"维度名": {{"产品名": "描述"}}}}
@@ -662,14 +684,23 @@ async def _compare_products_async(
    - 示例：{{"价格": {{"产品A": "¥8000", "产品B": "¥12000"}}, "夜景拍摄": {{"产品A": "ISO 12800", "产品B": "ISO 25600"}}}}
 3. scenario_analysis: 可选，场景化分析对象，包含scenario（场景名）、scores（各产品评分字典）、recommendation_reason（推荐理由）
 4. recommendation: 推荐建议
+</output_format>
 
+<product_names>
 对比的产品名称（必须使用这些实际名称）：
-{product_names_list}"""),
-            ("user", """请对比以下产品：{aspects_prompt}{scenario_prompt}
+{product_names_list}
+</product_names>"""),
+            ("user", """<instructions>
+请对比以下产品：{aspects_prompt}{scenario_prompt}
+</instructions>
 
+<products_info>
 {products_info}
+</products_info>
 
-**重要**：必须提供 comparison_details 字段，为每个维度提供所有产品的对比信息。""")
+<important_notes>
+重要：必须提供 comparison_details 字段，为每个维度提供所有产品的对比信息。
+</important_notes>""")
         ])
 
         # 调用LLM进行对比分析

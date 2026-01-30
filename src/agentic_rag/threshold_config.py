@@ -102,30 +102,7 @@ class GeneratorThresholds:
     default_temperature: float = 0.1  # 生成器默认温度
 
 
-@dataclass
-class IntentClassificationThresholds:
-    """意图识别阈值配置"""
-    # LLM温度
-    llm_temperature: float = 0.0  # 意图识别使用的LLM温度（低温度保证稳定性）
-
-    # 意图识别开关
-    enable_intent_classification: bool = True  # 是否启用意图识别
-
-    # 置信度阈值
-    min_confidence: float = 0.7  # 最小置信度（低于此值使用回退策略）
-
-    def to_intent_config(self):
-        """转换为通用IntentConfig
-
-        用于集成通用的intent模块。
-        """
-        from src.intent.config import IntentConfig
-
-        return IntentConfig(
-            llm_temperature=self.llm_temperature,
-            enable_intent_classification=self.enable_intent_classification,
-            min_confidence=self.min_confidence,
-        )
+## NOTE: Intent classification thresholds removed.
 
 
 @dataclass
@@ -168,7 +145,6 @@ class ThresholdConfig:
     decision: DecisionThresholds = None
     retriever: RetrieverThresholds = None
     generator: GeneratorThresholds = None
-    intent_classification: IntentClassificationThresholds = None
     adaptive_retrieval: AdaptiveRetrievalThresholds = None  # 自适应检索配置
 
     def __post_init__(self):
@@ -187,8 +163,6 @@ class ThresholdConfig:
             self.retriever = RetrieverThresholds()
         if self.generator is None:
             self.generator = GeneratorThresholds()
-        if self.intent_classification is None:
-            self.intent_classification = IntentClassificationThresholds()
         if self.adaptive_retrieval is None:
             self.adaptive_retrieval = AdaptiveRetrievalThresholds()
     
@@ -294,11 +268,6 @@ class ThresholdConfig:
             },
             "generator": {
                 "default_temperature": self.generator.default_temperature,
-            },
-            "intent_classification": {
-                "llm_temperature": self.intent_classification.llm_temperature,
-                "enable_intent_classification": self.intent_classification.enable_intent_classification,
-                "min_confidence": self.intent_classification.min_confidence,
             },
             "adaptive_retrieval": {
                 "enable_failure_analysis": self.adaptive_retrieval.enable_failure_analysis,

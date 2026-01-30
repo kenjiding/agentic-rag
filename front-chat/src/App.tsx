@@ -54,6 +54,8 @@ function App() {
     confirmAction,
     cancelConfirmation,
     isProcessingConfirmation,
+    submitInterrupt,
+    isProcessingInterrupt,
   } = useStreamingChat()
 
   // 包装 sendMessage，自动传入 sessionId
@@ -74,6 +76,15 @@ function App() {
       }
     },
     [sendMessage, sessionId]
+  )
+
+  const handleInterruptSubmit = useCallback(
+    (resumeData: Record<string, any>) => {
+      if (sessionId) {
+        submitInterrupt(resumeData, sessionId)
+      }
+    },
+    [submitInterrupt, sessionId]
   )
 
   if (!ready) {
@@ -99,6 +110,8 @@ function App() {
       onCancel={cancelConfirmation}
       isProcessingConfirmation={isProcessingConfirmation}
       onBuyProduct={handleBuyProduct}
+      onInterruptSubmit={handleInterruptSubmit}
+      isProcessingInterrupt={isProcessingInterrupt}
     />
   )
 }

@@ -16,7 +16,6 @@ class AgenticRAGState(TypedDict):
 
     # 意图识别相关
     query_intent: Optional[Dict[str, Any]]  # 查询意图信息（QueryIntent的字典形式）
-    intent_reclassification_count: int  # 意图重识别次数（用于动态重识别）
 
     # 检索相关
     retrieved_docs: List[Document]  # 当前检索到的文档
@@ -38,7 +37,7 @@ class AgenticRAGState(TypedDict):
     # 控制流
     iteration_count: int  # 迭代次数
     max_iterations: int  # 最大迭代次数
-    next_action: Optional[Literal["retrieve", "generate", "reclassify_intent", "finish"]]  # 下一步行动
+    next_action: Optional[Literal["retrieve", "generate", "finish"]]  # 下一步行动
 
     # 元数据
     error_message: str  # 错误信息

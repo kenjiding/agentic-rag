@@ -1,11 +1,18 @@
 import { useState, useCallback, useRef } from "react"
-import { ChatMessage, StreamEvent, ConfirmationResolveResponse } from "@/types"
+import {
+  ChatMessage,
+  StreamEvent,
+  ConfirmationResolveResponse,
+  InterruptPayload,
+} from "@/types"
 
 export function useStreamingChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isProcessingConfirmation, setIsProcessingConfirmation] = useState(false)
+  const [pendingInterrupt, setPendingInterrupt] = useState<InterruptPayload | null>(null)
+  const [isProcessingInterrupt, setIsProcessingInterrupt] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const currentMessageIdRef = useRef<string | null>(null)
 
@@ -33,6 +40,22 @@ export function useStreamingChat() {
       // content 直接替换，不追加
       const newContent = stateUpdateData?.content ?? existing.content
 
+      const shouldAttachInterrupt = stateUpdateData?.response_type === "interrupt"
+      const newInterrupt: InterruptPayload | undefined = shouldAttachInterrupt
+        ? {
+            response_type: "interrupt",
+            role: (stateUpdateData?.role as any) ?? "assistant",
+            content: (stateUpdateData?.content as any) ?? newContent ?? "",
+            interrupt_type: (stateUpdateData?.interrupt_type as any),
+            action_type: (stateUpdateData?.action_type as any) ?? "",
+            action_data: (stateUpdateData?.action_data as any) ?? {},
+            display_message: (stateUpdateData?.display_message as any) ?? (stateUpdateData?.content as any) ?? "",
+            display_data: (stateUpdateData?.display_data as any),
+            metadata: (stateUpdateData?.metadata as any),
+            response_data: stateUpdateData?.response_data,
+          }
+        : existing.interrupt
+
       // 合并 metadata
       const newMetadata = {
         current_agent: stateUpdateData?.current_agent ?? existingMetadata.current_agent,
@@ -47,6 +70,7 @@ export function useStreamingChat() {
         responseType: stateUpdateData?.response_type ?? existing.responseType ?? "text",
         responseData: stateUpdateData?.response_data ?? existing.responseData,
         confirmationPending: stateUpdateData?.confirmation_pending ?? existing.confirmationPending,
+        interrupt: newInterrupt,
         metadata: newMetadata,
         isStreaming: true,
       }
@@ -55,7 +79,181 @@ export function useStreamingChat() {
     })
   }, [])
 
+  const clearInterrupts = useCallback(() => {
+    setMessages((prev) =>
+      prev.map((m) => ({
+        ...m,
+        interrupt: undefined,
+        // keep responseType/content as-is; history remains visible
+      }))
+    )
+  }, [])
+
+  const resumeInterrupt = useCallback(async (
+    resumeData: Record<string, any>,
+    sessionId: string = "default"
+  ) => {
+    setIsProcessingInterrupt(true)
+    setError(null)
+
+    // 新建助手消息占位符接收后续流式响应
+    const assistantMessageId = `assistant-${Date.now()}`
+    currentMessageIdRef.current = assistantMessageId
+    const assistantMessage: ChatMessage = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      responseType: "text",
+      timestamp: new Date(),
+      isStreaming: true,
+    }
+    setMessages((prev) => [...prev, assistantMessage])
+
+    try {
+      const response = await fetch("/api/interrupt/resume", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, resume_data: resumeData }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`)
+      }
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      if (!reader) throw new Error("No response body")
+
+      let buffer = ""
+      let isReading = true
+
+      while (isReading) {
+        const { done, value } = await reader.read()
+        if (done) {
+          isReading = false
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split("\n\n")
+        buffer = lines.pop() || ""
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue
+          try {
+            const evt = JSON.parse(line.slice(6)) as StreamEvent
+
+            if (evt.type === "error") {
+              setError(evt.error || "未知错误")
+              break
+            }
+
+            if (evt.type === "interrupt_resumed") {
+              setMessages((prev) => {
+                const updated = [...prev]
+                const index = updated.findIndex((msg) => msg.id === assistantMessageId)
+                if (index !== -1) {
+                  updated[index] = {
+                    ...updated[index],
+                    content: evt.message || "已收到输入，继续处理...",
+                  }
+                }
+                return updated
+              })
+              continue
+            }
+
+            if (evt.type === "state_update" && evt.data) {
+              if (evt.data.response_type === "interrupt") {
+                // 同一轮恢复过程中再次触发 interrupt，前端需要进入新的 pending 状态
+                const payload: InterruptPayload = {
+                  response_type: "interrupt",
+                  role: (evt.data.role as any) ?? "assistant",
+                  content: (evt.data.content as any) ?? "",
+                  interrupt_type: (evt.data.interrupt_type as any),
+                  action_type: (evt.data.action_type as any) ?? "",
+                  action_data: (evt.data.action_data as any) ?? {},
+                  display_message: (evt.data.display_message as any) ?? (evt.data.content as any) ?? "",
+                  display_data: (evt.data.display_data as any),
+                  metadata: (evt.data.metadata as any),
+                  response_data: evt.data.response_data,
+                }
+                setPendingInterrupt(payload)
+              }
+              updateMessageWithStateUpdate(assistantMessageId, evt.data)
+            }
+
+            if (evt.type === "done") {
+              setMessages((prev) => {
+                const updated = [...prev]
+                const index = updated.findIndex((msg) => msg.id === assistantMessageId)
+                if (index !== -1) {
+                  updated[index] = {
+                    ...updated[index],
+                    isStreaming: false,
+                  }
+                }
+                return updated
+              })
+              break
+            }
+          } catch (e) {
+            console.error("Failed to parse SSE data:", e)
+          }
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || "恢复失败")
+      setMessages((prev) => {
+        const updated = [...prev]
+        const index = updated.findIndex((msg) => msg.id === assistantMessageId)
+        if (index !== -1) {
+          updated[index] = {
+            ...updated[index],
+            content: `错误: ${err.message || "恢复失败"}`,
+            isStreaming: false,
+          }
+        }
+        return updated
+      })
+    } finally {
+      setIsProcessingInterrupt(false)
+      currentMessageIdRef.current = null
+    }
+  }, [updateMessageWithStateUpdate])
+
   const sendMessage = useCallback(async (content: string, sessionId: string = "default") => {
+    // 若当前有待处理 interrupt：input 类型允许用底部输入框直接 resume
+    if (pendingInterrupt) {
+      if (pendingInterrupt.interrupt_type === "input") {
+        const userMessage: ChatMessage = {
+          id: `user-${Date.now()}`,
+          role: "user",
+          content,
+          responseType: "text",
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, userMessage])
+
+        const resumeData = {
+          input_value: content,
+          action_type: pendingInterrupt.action_type,
+          action_data: pendingInterrupt.action_data,
+          metadata: pendingInterrupt.metadata ?? {},
+        }
+
+        setPendingInterrupt(null)
+        clearInterrupts()
+        await resumeInterrupt(resumeData, sessionId)
+        return
+      }
+
+      // selection 类型必须通过卡片交互，避免 resume_data 不合法
+      setError("当前需要选择，请在卡片中完成选择后提交。")
+      return
+    }
+
     // 添加用户消息
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -138,6 +336,24 @@ export function useStreamingChat() {
                   console.log("🔔 收到确认请求:", data.data.confirmation_pending)
                 }
 
+                // 如果收到 interrupt，需要设置 pendingInterrupt 状态
+                // 这样用户在对话框输入时才能正确触发 resume
+                if (data.data.response_type === "interrupt") {
+                  const payload: InterruptPayload = {
+                    response_type: "interrupt",
+                    role: (data.data.role as any) ?? "assistant",
+                    content: (data.data.content as any) ?? "",
+                    interrupt_type: (data.data.interrupt_type as any),
+                    action_type: (data.data.action_type as any) ?? "",
+                    action_data: (data.data.action_data as any) ?? {},
+                    display_message: (data.data.display_message as any) ?? (data.data.content as any) ?? "",
+                    display_data: (data.data.display_data as any),
+                    metadata: (data.data.metadata as any),
+                    response_data: data.data.response_data,
+                  }
+                  setPendingInterrupt(payload)
+                }
+
                 updateMessageWithStateUpdate(assistantMessageId, data.data)
               }
 
@@ -188,7 +404,7 @@ export function useStreamingChat() {
       abortControllerRef.current = null
       currentMessageIdRef.current = null
     }
-  }, [])
+  }, [pendingInterrupt, clearInterrupts, resumeInterrupt, updateMessageWithStateUpdate])
 
   const stop = useCallback(() => {
     if (abortControllerRef.current) {
@@ -213,6 +429,7 @@ export function useStreamingChat() {
   const clearMessages = useCallback(() => {
     setMessages([])
     setError(null)
+    setPendingInterrupt(null)
   }, [])
 
   // 确认操作
@@ -369,7 +586,7 @@ export function useStreamingChat() {
       setIsProcessingConfirmation(false)
       currentMessageIdRef.current = null
     }
-  }, [])
+  }, [updateMessageWithStateUpdate])
 
   // 取消确认
   const cancelConfirmation = useCallback(async (confirmationId: string) => {
@@ -410,6 +627,15 @@ export function useStreamingChat() {
     }
   }, [])
 
+  const submitInterrupt = useCallback(async (
+    resumeData: Record<string, any>,
+    sessionId: string = "default"
+  ) => {
+    setPendingInterrupt(null)
+    clearInterrupts()
+    await resumeInterrupt(resumeData, sessionId)
+  }, [clearInterrupts, resumeInterrupt])
+
   // 购买产品
   const buyProduct = useCallback(async (productId: number) => {
     // 发送购买消息，让后端处理购买流程
@@ -426,6 +652,9 @@ export function useStreamingChat() {
     confirmAction,
     cancelConfirmation,
     isProcessingConfirmation,
+    pendingInterrupt,
+    submitInterrupt,
+    isProcessingInterrupt,
     buyProduct,
   }
 }

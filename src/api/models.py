@@ -1,6 +1,6 @@
 """API 请求和响应模型"""
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any
 
 
 class ChatRequest(BaseModel):
@@ -25,4 +25,11 @@ class SelectionResolveRequest(BaseModel):
 class SelectionCancelRequest(BaseModel):
     """取消选择请求"""
     selection_id: str
+
+
+class InterruptResumeRequest(BaseModel):
+    """通用 interrupt 恢复请求（INPUT/SELECTION 等非确认类）"""
+
+    session_id: str = "default"
+    resume_data: Dict[str, Any]
 

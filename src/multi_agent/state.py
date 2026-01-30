@@ -13,6 +13,7 @@ from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from src.multi_agent.constants import ActionName, AgentName
 from langchain_core.messages import BaseMessage
+from src.multi_agent.planning.models import Plan, RiskLevel
 
 
 # 对话阶段类型定义
@@ -128,6 +129,22 @@ class MultiAgentState(BaseModel):
     conversation_phase: ConversationPhase = Field(
         default="idle",
         description="当前对话阶段：idle=空闲, product_selecting=选择产品中, order_creating=创建订单中, order_completed=订单已完成"
+    )
+
+    # =========================
+    # Plan-driven execution (enterprise-grade)
+    # =========================
+    plan: Optional[Plan] = Field(
+        default=None,
+        description="结构化执行计划（由planner节点生成，由plan_executor节点执行）",
+    )
+    risk_level: RiskLevel = Field(
+        default=RiskLevel.LOW,
+        description="当前请求的风险等级（由policy_gate计算）",
+    )
+    action_audit: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="动作审计轨迹（计划/执行/验证的关键事件摘要）",
     )
 
     def to_dict(self) -> Dict[str, Any]:

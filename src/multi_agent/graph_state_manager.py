@@ -14,6 +14,7 @@ from langgraph.types import Command
 
 from src.multi_agent.state import MultiAgentState
 from src.multi_agent.utils import get_state_value, state_to_dict
+from src.multi_agent.planning.models import RiskLevel
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,10 @@ class GraphStateManager:
             "confirmation_pending": None,
             "entities": {},
             "conversation_phase": "idle",
-            "context_bundle": None
+            "context_bundle": None,
+            "plan": None,
+            "risk_level": RiskLevel.LOW,
+            "action_audit": [],
         }
 
     def prepare_config(
@@ -80,7 +84,24 @@ class GraphStateManager:
                     existing_dict["messages"] = []
 
                 if question is not None:
-                    existing_dict["messages"].append(HumanMessage(content=question))
+                    # New user turn (not interrupt resume):
+                    # Reset per-turn state using create_initial_state() as the single source of truth,
+                    # and preserve only a minimal set of long-lived fields to avoid stale leakage.
+                    fresh = self.create_initial_state(question)
+                    preserved_keys = {
+                        "entities",
+                        "conversation_phase",
+                        "metadata",
+                        "tools_used",
+                        "agent_history",
+                        "agent_results",
+                        "confirmation_pending",
+                        "max_iterations",
+                    }
+                    preserved = {k: existing_dict.get(k) for k in preserved_keys if k in existing_dict}
+                    preserved["messages"] = list(existing_dict.get("messages") or []) + [HumanMessage(content=question)]
+                    preserved["original_question"] = question
+                    return {**fresh, **preserved}
 
                 return existing_dict
         except Exception as e:
