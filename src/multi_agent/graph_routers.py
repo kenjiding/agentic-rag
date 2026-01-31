@@ -41,6 +41,8 @@ class GraphRouter:
             return AgentName.ORDER_AGENT.value
         elif next_action == ActionName.CONSULTATION and self.graph.enable_business_agents:
             return AgentName.CONSULTATION_AGENT.value
+        elif next_action == ActionName.BROWSER_SEARCH and self.graph.enable_business_agents:
+            return AgentName.BROWSER_AGENT.value
         else:
             return ActionName.FINISH.value
 

@@ -51,6 +51,57 @@ class PlanStepStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    SKIPPED = "skipped"  # 用于 fallback 场景：上一步已成功，跳过当前步骤
+
+
+# =============================================================================
+# 声明式条件执行机制 (Declarative Conditional Execution)
+# =============================================================================
+class StepConditionType(str, Enum):
+    """步骤执行条件类型
+
+    设计原则：
+    - 条件是数据，不是代码
+    - 新增条件类型只需扩展此枚举，不需修改 executor
+    - 条件评估逻辑集中在一处，便于测试和审计
+    """
+
+    ALWAYS = "always"  # 无条件执行（默认）
+    IF_PREVIOUS_EMPTY = "if_previous_empty"  # 仅当引用 agent 返回空结果时执行
+
+
+class StepCondition(BaseModel):
+    """声明式步骤执行条件
+
+    用于在 Plan 中声明条件逻辑，避免在 executor 中硬编码业务规则。
+
+    示例：
+    - 无条件执行：condition = None 或 condition.type = "always"
+    - Fallback 执行：condition.type = "if_previous_empty", reference_agent = "product_agent", result_key = "products"
+      → 仅当 product_agent 的 products 为空时才执行此步骤
+    """
+
+    type: StepConditionType = Field(
+        default=StepConditionType.ALWAYS, description="条件类型"
+    )
+    reference_agent: Optional[AgentName] = Field(
+        default=None,
+        description="引用的 agent（用于检查其结果）",
+    )
+    result_key: Optional[str] = Field(
+        default=None,
+        description="要检查的结果字段（如 'products'）",
+    )
+
+    @model_validator(mode="after")
+    def validate_condition(self) -> "StepCondition":
+        """验证条件配置的完整性"""
+        if self.type == StepConditionType.IF_PREVIOUS_EMPTY:
+            if self.reference_agent is None or self.result_key is None:
+                raise ValueError(
+                    "IF_PREVIOUS_EMPTY condition requires reference_agent and result_key"
+                )
+        return self
 
 
 class PlanStep(BaseModel):
@@ -80,8 +131,17 @@ class PlanStep(BaseModel):
     inputs: Dict[str, Any] = Field(
         default_factory=dict, description="Structured inputs for the step"
     )
+    outputs: Dict[str, Any] = Field(
+        default_factory=dict, description="Execution outputs (results, skip reason, etc.)"
+    )
 
     status: PlanStepStatus = Field(default=PlanStepStatus.PENDING)
+
+    # 声明式条件执行（替代 executor 中的硬编码逻辑）
+    execution_condition: Optional[StepCondition] = Field(
+        default=None,
+        description="步骤执行条件（None 或 type=always 表示无条件执行）",
+    )
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "PlanStep":

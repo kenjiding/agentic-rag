@@ -3,7 +3,7 @@ name = "agentic-agent"
 version = "0.1.0"
 description = "Agentic RAG 从零到精通 - 完整教程"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "langchain>=1.0.0",
     "langchain-openai>=1.0.0",
@@ -34,6 +34,7 @@ dependencies = [
     "psycopg2-binary>=2.9.11",
     "fastapi>=0.127.0",
     "langchain-anthropic>=1.2.0",
+    "browser-use>=0.11.5",
 ]
 
 [project.optional-dependencies]

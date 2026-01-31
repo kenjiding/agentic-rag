@@ -95,59 +95,50 @@ def format_state_update(state_update: Dict[str, Any], node_update: Any = None, m
 
 
 def format_step_name(node_name: str, node_update: Any) -> Optional[str]:
-    """格式化执行步骤名称（一步一步智能模式）"""
-    step_map = {
-        # intent recognition merged into planner (single-shot)
-        "supervisor": "🧠 路由决策",
-        "rag_agent": "📚 知识检索",
-        "chat_agent": "💬 对话处理",
-        "product_agent": "🛍️ 商品搜索",
-        "order_agent": "📦 订单管理",
-    }
-
-    # 检查是否有路由决策信息
-    if node_name == "supervisor" and isinstance(node_update, dict):
-        selected_agent = node_update.get("current_agent")
-        if selected_agent:
-            agent_name = step_map.get(selected_agent, selected_agent)
-            return f"🧠 路由到: {agent_name}"
-
-    return step_map.get(node_name)
+    """格式化执行步骤名称
+    
+    展示策略（简化版）：
+    - 只展示：planner → policy_gate → plan_executor（Agent执行）
+    - 其他节点（Agent节点、post_action_verifier等）不展示
+    - 通过 step_display 透传（节点负责自己的展示逻辑）
+    """
+    # === 从 step_display 透传（节点设置的展示信息）===
+    if isinstance(node_update, dict):
+        step_display = node_update.get("step_display")
+        if step_display is not None:
+            # step_display 可能是 StepDisplay 对象或 dict
+            if hasattr(step_display, "show"):
+                # StepDisplay 对象
+                if not step_display.show:
+                    return None
+                return step_display.name
+            elif isinstance(step_display, dict):
+                # dict 形式
+                if not step_display.get("show", True):
+                    return None
+                return step_display.get("name")
+    
+    # 没有 step_display 的节点不展示
+    return None
 
 
 def format_step_detail(node_name: str, node_update: Any) -> str:
-    """格式化执行步骤的详细描述（一步一步智能模式）"""
-    detail_map = {
-        # intent recognition merged into planner (single-shot)
-        "supervisor": "智能路由正在选择最合适的助手...",
-        "rag_agent": "正在从知识库中检索相关信息...",
-        "chat_agent": "正在生成回答...",
-        "product_agent": "正在搜索商品信息...",
-        "order_agent": "正在查询订单信息...",
-    }
-
-    # 特殊处理：supervisor 路由决策
-    if node_name == "supervisor" and isinstance(node_update, dict):
-        selected_agent = node_update.get("current_agent")
-        routing_reason = node_update.get("routing_reason", "")
-        if selected_agent:
-            agent_descriptions = {
-                "rag_agent": "知识库检索助手",
-                "chat_agent": "智能对话助手",
-                "product_agent": "商品搜索助手",
-                "order_agent": "订单管理助手",
-            }
-            desc = agent_descriptions.get(selected_agent, selected_agent)
-            if routing_reason:
-                return f"已选择 {desc}，原因：{routing_reason[:50]}..."
-            return f"已选择 {desc}"
-
-    # 检查是否有工具调用信息
+    """格式化执行步骤的详细描述
+    
+    展示策略（简化版）：
+    - 只展示：planner → policy_gate → plan_executor（Agent执行）
+    - 通过 step_display 透传（节点负责自己的展示逻辑）
+    """
+    # === 从 step_display 透传（节点设置的展示信息）===
     if isinstance(node_update, dict):
-        tools_used = node_update.get("tools_used", [])
-        if tools_used:
-            tool_names = [t.get("tool", "").split("_")[-1] for t in tools_used if t.get("tool")]
-            if tool_names:
-                return f"正在使用工具：{', '.join(tool_names)}"
-
-    return detail_map.get(node_name, "正在处理...")
+        step_display = node_update.get("step_display")
+        if step_display is not None:
+            # step_display 可能是 StepDisplay 对象或 dict
+            if hasattr(step_display, "detail"):
+                # StepDisplay 对象
+                return step_display.detail or "正在处理..."
+            elif isinstance(step_display, dict):
+                # dict 形式
+                return step_display.get("detail") or "正在处理..."
+    
+    return "正在处理..."

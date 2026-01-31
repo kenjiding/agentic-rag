@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, Callable
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 
-from src.multi_agent.state import MultiAgentState
+from src.multi_agent.state import MultiAgentState, StepDisplay
 from src.multi_agent.constants import ActionName, MetadataKeys, AgentName
 from src.multi_agent.constants import SystemNodeName
 from src.multi_agent.planning.models import (
@@ -26,6 +26,8 @@ from src.multi_agent.planning.models import (
     RiskLevel,
     PolicyMethod,
     PlanningOutput,
+    StepCondition,
+    StepConditionType,
 )
 from src.multi_agent.planning.planner import Planner
 from src.multi_agent.response_models import TextResponse, ErrorResponse
@@ -57,6 +59,122 @@ class GraphNodeHandler:
         if self._planner is None:
             self._planner = Planner(llm=self.graph.llm)
         return self._planner
+
+    # =========================
+    # 展示信息辅助方法
+    # =========================
+    # Agent 展示名称映射（用于 plan_executor 展示当前执行的 Agent）
+    _AGENT_DISPLAY_NAMES = {
+        AgentName.RAG_AGENT: ("📚 知识检索", "知识库检索助手"),
+        AgentName.CHAT_AGENT: ("💬 对话处理", "智能对话助手"),
+        AgentName.PRODUCT_AGENT: ("🛍️ 商品搜索", "商品搜索助手"),
+        AgentName.ORDER_AGENT: ("📦 订单管理", "订单管理助手"),
+        AgentName.CONSULTATION_AGENT: ("💡 咨询服务", "咨询服务助手"),
+        AgentName.BROWSER_AGENT: ("🌐 网页搜索", "网页搜索助手"),
+    }
+
+    def _build_agent_step_display(
+        self,
+        agent: AgentName,
+        instruction: str = ""
+    ) -> StepDisplay:
+        """构建 Agent 执行步骤的展示信息"""
+        short_name, full_name = self._AGENT_DISPLAY_NAMES.get(
+            agent,
+            (f"🤖 {agent.value}", agent.value)
+        )
+        detail = f"正在执行 {full_name}"
+        if instruction:
+            # 截取指令前60字符
+            instr_display = instruction[:60] + "..." if len(instruction) > 60 else instruction
+            detail = f"正在执行 {full_name}: {instr_display}"
+        return StepDisplay.create(name=f"⚡ 执行: {short_name}", detail=detail)
+
+    # =========================
+    # 声明式条件评估器（替代硬编码的 fallback 逻辑）
+    # =========================
+    def _evaluate_step_condition(
+        self,
+        step: PlanStep,
+        state: MultiAgentState,
+    ) -> tuple[bool, str]:
+        """评估步骤的执行条件
+
+        设计原则（企业级最佳实践）：
+        - 条件评估与业务逻辑解耦：executor 不知道具体的 agent 实现细节
+        - 声明式：条件定义在 Plan 中，不在代码中硬编码
+        - 可扩展：新增条件类型只需扩展此方法，不需修改其他代码
+        - 可审计：返回 skip_reason 便于追踪和调试
+
+        Args:
+            step: 当前要执行的步骤
+            state: 当前状态
+
+        Returns:
+            (should_execute, skip_reason):
+            - should_execute=True: 应该执行此步骤
+            - should_execute=False, skip_reason: 应该跳过，返回跳过原因
+        """
+        condition = step.execution_condition
+
+        # 无条件或 ALWAYS → 执行
+        if condition is None or condition.type == StepConditionType.ALWAYS:
+            return True, ""
+
+        # IF_PREVIOUS_EMPTY：仅当引用 agent 返回空结果时执行
+        if condition.type == StepConditionType.IF_PREVIOUS_EMPTY:
+            reference_agent = condition.reference_agent
+            result_key = condition.result_key
+
+            if reference_agent is None or result_key is None:
+                # 配置错误，默认执行（防御性编程）
+                logger.warning(
+                    f"[条件评估] IF_PREVIOUS_EMPTY 缺少 reference_agent 或 result_key，默认执行"
+                )
+                return True, ""
+
+            # 获取引用 agent 的结果
+            agent_result = state.agent_results.get(reference_agent.value)
+            logger.info(
+                f"[条件评估] step={step.step_id}, condition=IF_PREVIOUS_EMPTY, "
+                f"reference_agent={reference_agent.value}, result_key={result_key}"
+            )
+
+            if agent_result is None:
+                # 引用 agent 没有结果（可能未执行），执行当前步骤
+                logger.info(f"[条件评估] {reference_agent.value} 无结果，执行 {step.step_id}")
+                return True, ""
+
+            # 检查 result_key 对应的值是否为空
+            result_value = (
+                agent_result.get(result_key, [])
+                if isinstance(agent_result, dict)
+                else []
+            )
+            is_empty = not result_value or (
+                isinstance(result_value, list) and len(result_value) == 0
+            )
+
+            if is_empty:
+                # 结果为空 → 执行当前步骤（fallback 场景）
+                logger.info(
+                    f"[条件评估] {reference_agent.value}.{result_key} 为空，执行 {step.step_id}"
+                )
+                return True, ""
+            else:
+                # 结果非空 → 跳过当前步骤
+                skip_reason = (
+                    f"{reference_agent.value}_has_{result_key}"
+                    f"(count={len(result_value) if isinstance(result_value, list) else 1})"
+                )
+                logger.info(
+                    f"[条件评估] {reference_agent.value}.{result_key} 非空，跳过 {step.step_id}"
+                )
+                return False, skip_reason
+
+        # 未知条件类型 → 默认执行
+        logger.warning(f"[条件评估] 未知条件类型 {condition.type}，默认执行")
+        return True, ""
 
     def _get_agent(self, agent_name: str):
         """根据名称获取Agent实例
@@ -126,6 +244,8 @@ class GraphNodeHandler:
                     MetadataKeys.CONTEXT_VERSION.value: context_version,
                     MetadataKeys.CONTEXT_OWNER.value: "context_manager",
                 },
+                # 上下文管理是内部节点，不展示给前端
+                "step_display": StepDisplay.hidden(),
             }
 
         except Exception as e:
@@ -134,6 +254,7 @@ class GraphNodeHandler:
             return {
                 "context_bundle": None,
                 "original_question": state.original_question,
+                "step_display": StepDisplay.hidden(),
             }
 
     # intent_recognition_node removed:
@@ -171,9 +292,21 @@ class GraphNodeHandler:
                 "method": method,
             }
 
+            # 总是展示安全检查步骤
+            risk_display_map = {
+                RiskLevel.LOW: "低风险",
+                RiskLevel.MEDIUM: "中风险",
+                RiskLevel.HIGH: "高风险",
+            }
+            step_display = StepDisplay.create(
+                name="🔒 安全检查",
+                detail=f"风险评估: {risk_display_map.get(risk, str(risk))}"
+            )
+
             return {
                 "risk_level": risk,
                 "action_audit": state.action_audit + [audit_event],
+                "step_display": step_display,
             }
         except Exception as e:
             logger.error(f"policy_gate_node error: {e}", exc_info=True)
@@ -184,6 +317,10 @@ class GraphNodeHandler:
                     "event": "risk_assess_failed",
                     "error": str(e),
                 }],
+                "step_display": StepDisplay.create(
+                    name="🔒 安全检查",
+                    detail="风险评估失败，默认高风险处理"
+                ),
             }
 
     async def planner_node(self, state: MultiAgentState) -> MultiAgentState:
@@ -288,6 +425,10 @@ class GraphNodeHandler:
                 "status": output.plan.status,
             }
 
+            # 构建展示信息
+            goal_display = output.plan.goal
+            if len(goal_display) > 50:
+                goal_display = goal_display[:50] + "..."
 
             return {
                 "query_intent": intent_dict,
@@ -296,6 +437,10 @@ class GraphNodeHandler:
                 "action_audit": state.action_audit + [audit_event],
                 # Keep state consistent for downstream nodes/observability
                 "original_question": user_query,
+                "step_display": StepDisplay.create(
+                    name="📋 制定计划",
+                    detail=f"已制定执行计划: {goal_display}"
+                ),
             }
 
         except Exception as e:
@@ -313,6 +458,10 @@ class GraphNodeHandler:
                     "error": str(e),
                 }],
                 **response_model.to_full_response(),
+                "step_display": StepDisplay.create(
+                    name="📋 分析问题",
+                    detail="规划失败，系统将降级处理"
+                ),
             }
 
     async def plan_executor_node(self, state: MultiAgentState) -> MultiAgentState:
@@ -328,6 +477,10 @@ class GraphNodeHandler:
                 "next_action": None,
                 "current_agent": None,
                 "routing_reason": "无可用计划，交由supervisor进行路由。",
+                "step_display": StepDisplay.create(
+                    name="⚡ 执行计划",
+                    detail="无可用计划，交由智能路由处理"
+                ),
             }
 
         # End conditions
@@ -344,6 +497,10 @@ class GraphNodeHandler:
                 "current_agent": None,
                 "routing_reason": "计划已完成。",
                 "action_audit": state.action_audit + [audit_event],
+                "step_display": StepDisplay.create(
+                    name="✅ 完成处理",
+                    detail="所有步骤已完成"
+                ),
             }
 
         step = plan.current_step()
@@ -355,6 +512,10 @@ class GraphNodeHandler:
                 "next_action": ActionName.FINISH,
                 "current_agent": None,
                 "routing_reason": "计划执行失败：step越界。",
+                "step_display": StepDisplay.create(
+                    name="⚠️ 执行失败",
+                    detail="计划执行失败：步骤索引越界"
+                ),
             }
 
         # Dispatch per step type
@@ -466,6 +627,10 @@ class GraphNodeHandler:
                         "routing_reason": f"继续执行计划步骤: {next_step.step_id} (用户输入后)",
                         "action_audit": state.action_audit
                         + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                        "step_display": self._build_agent_step_display(
+                            agent=next_step.selected_agent,
+                            instruction=next_step.instruction
+                        ),
                     }
                 elif next_step.step_type == PlanStepType.FINISH:
                     # 下一个step是FINISH，标记plan完成
@@ -480,6 +645,10 @@ class GraphNodeHandler:
                         "routing_reason": "计划完成（用户输入后）",
                         "action_audit": state.action_audit
                         + [audit_event, {"node": SystemNodeName.PLAN_EXECUTOR.value, "event": "resumed_input"}],
+                        "step_display": StepDisplay.create(
+                            name="✅ 完成处理",
+                            detail="用户补充信息后计划完成"
+                        ),
                     }
                 elif next_step.step_type == PlanStepType.ASK_USER:
                     logger.info(f"下一个step也是ASK_USER ({next_step.step_id})，需要继续在plan_executor中处理")
@@ -523,9 +692,54 @@ class GraphNodeHandler:
                 "current_agent": None,
                 "routing_reason": "计划结束。",
                 "action_audit": state.action_audit + [audit_event],
+                "step_display": StepDisplay.create(
+                    name="✅ 完成处理",
+                    detail="计划执行完成"
+                ),
             }
 
-        # AGENT_CALL
+        # AGENT_CALL: 使用声明式条件评估器判断是否执行
+        # 设计原则：条件定义在 Plan 中（由 Planner 生成），executor 只做通用评估
+        should_execute, skip_reason = self._evaluate_step_condition(step, state)
+
+        if not should_execute:
+            # 条件不满足，跳过此步骤
+            step.status = PlanStepStatus.SKIPPED
+            step.outputs = {"skipped_reason": skip_reason}
+            plan.steps[plan.current_step_index] = step
+            plan.current_step_index += 1
+
+            audit_event = {
+                "node": SystemNodeName.PLAN_EXECUTOR.value,
+                "event": "skip_conditional_step",
+                "step_id": step.step_id,
+                "reason": skip_reason,
+                "condition": step.execution_condition.model_dump() if step.execution_condition else None,
+            }
+
+            # 继续执行下一步（如果有）
+            if plan.current_step_index >= len(plan.steps):
+                # 已经是最后一步，完成计划
+                plan.status = PlanStatus.COMPLETED
+                return {
+                    "plan": plan,
+                    "next_action": ActionName.FINISH,
+                    "current_agent": None,
+                    "routing_reason": "计划完成（跳过条件步骤后）",
+                    "action_audit": state.action_audit + [audit_event],
+                    "step_display": StepDisplay.create(
+                        name="✅ 完成处理",
+                        detail="计划执行完成"
+                    ),
+                }
+            else:
+                # 还有下一步，继续执行（不展示跳过信息，减少噪音）
+                return {
+                    "plan": plan,
+                    "action_audit": state.action_audit + [audit_event],
+                    "step_display": StepDisplay.hidden(),
+                }
+
         step.status = PlanStepStatus.IN_PROGRESS
         plan.steps[plan.current_step_index] = step
 
@@ -558,6 +772,11 @@ class GraphNodeHandler:
             "routing_reason": f"执行计划步骤: {step.step_id} ({step.instruction})",
             "action_audit": state.action_audit + [audit_event],
             "context_bundle": context_bundle,
+            # 展示当前正在执行的 Agent（用户明确要求必须展示）
+            "step_display": self._build_agent_step_display(
+                agent=step.selected_agent,
+                instruction=step.instruction
+            ),
         }
 
     async def post_action_verifier_node(self, state: MultiAgentState) -> MultiAgentState:
@@ -569,7 +788,7 @@ class GraphNodeHandler:
         """
         plan = state.plan
         if plan is None or plan.is_done():
-            return {}
+            return {"step_display": StepDisplay.hidden()}
 
         step = plan.current_step()
         if step is None:
@@ -584,6 +803,10 @@ class GraphNodeHandler:
                 }],
                 "next_action": ActionName.FINISH,
                 "routing_reason": "计划执行失败：无可验证步骤。",
+                "step_display": StepDisplay.create(
+                    name="⚠️ 验证失败",
+                    detail="计划执行失败：无可验证步骤"
+                ),
             }
 
         # Basic verification: treat any state.error_message as failure.
@@ -603,18 +826,26 @@ class GraphNodeHandler:
         if not ok:
             plan.status = PlanStatus.FAILED
             plan.failure_reason = state.error_message or "unknown_error"
+            # 截取错误信息前40字符
+            error_display = plan.failure_reason[:40] + "..." if len(plan.failure_reason) > 40 else plan.failure_reason
             return {
                 "plan": plan,
                 "action_audit": state.action_audit + [audit_event],
                 "next_action": ActionName.FINISH,
                 "routing_reason": f"步骤验证失败：{plan.failure_reason}",
+                "step_display": StepDisplay.create(
+                    name="⚠️ 验证失败",
+                    detail=f"步骤验证失败: {error_display}"
+                ),
             }
 
         # Verified OK: advance index and continue plan
+        # 验证成功时不展示（减少噪音）
         plan.current_step_index += 1
         return {
             "plan": plan,
             "action_audit": state.action_audit + [audit_event],
+            "step_display": StepDisplay.hidden(),
         }
 
     async def supervisor_node(

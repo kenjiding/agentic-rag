@@ -16,6 +16,45 @@ from langchain_core.messages import BaseMessage
 from src.multi_agent.planning.models import Plan, RiskLevel
 
 
+# =========================
+# 步骤展示模型（用于前端流式展示）
+# =========================
+class StepDisplay(BaseModel):
+    """节点步骤展示信息
+    
+    设计原则：
+    - 每个节点负责自己的展示逻辑（单一职责）
+    - formatter 只做透传，不解析节点内部数据（低耦合）
+    - 新增节点无需修改 formatter（开闭原则）
+    
+    使用方式：
+    节点在返回状态时设置 step_display 字段，前端自动展示。
+    如果 show=False 或 step_display 为 None，前端不展示该节点。
+    """
+    name: Optional[str] = Field(
+        default=None,
+        description="步骤名称，如 '📋 分析问题'、'⚡ 执行: 商品搜索'"
+    )
+    detail: Optional[str] = Field(
+        default=None,
+        description="步骤详细描述，如 '已制定执行计划: 查询订单信息'"
+    )
+    show: bool = Field(
+        default=True,
+        description="是否展示该步骤（False 则前端忽略）"
+    )
+    
+    @classmethod
+    def hidden(cls) -> "StepDisplay":
+        """创建一个不展示的步骤（用于内部节点）"""
+        return cls(show=False)
+    
+    @classmethod
+    def create(cls, name: str, detail: str = "") -> "StepDisplay":
+        """创建展示步骤的便捷方法"""
+        return cls(name=name, detail=detail, show=True)
+
+
 # 对话阶段类型定义
 ConversationPhase = Literal[
     "idle",              # 空闲状态，没有正在进行的任务
@@ -145,6 +184,14 @@ class MultiAgentState(BaseModel):
     action_audit: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="动作审计轨迹（计划/执行/验证的关键事件摘要）",
+    )
+
+    # =========================
+    # 步骤展示（用于前端流式展示）
+    # =========================
+    step_display: Optional[StepDisplay] = Field(
+        default=None,
+        description="当前节点的展示信息（由节点自身设置，formatter 透传）",
     )
 
     def to_dict(self) -> Dict[str, Any]:

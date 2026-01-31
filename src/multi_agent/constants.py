@@ -8,6 +8,7 @@ class ActionName(str, Enum):
     PRODUCT_SEARCH = "product_search"
     ORDER_MANAGEMENT = "order_management"
     CONSULTATION = "consultation"
+    BROWSER_SEARCH = "browser_search"
     FINISH = "finish"
 
 
@@ -17,6 +18,7 @@ class AgentName(str, Enum):
     PRODUCT_AGENT = "product_agent"
     ORDER_AGENT = "order_agent"
     CONSULTATION_AGENT = "consultation_agent"
+    BROWSER_AGENT = "browser_agent"
 
 
 class MetadataKeys(str, Enum):

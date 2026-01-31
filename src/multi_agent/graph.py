@@ -29,6 +29,7 @@ from src.multi_agent.agents.chat_agent import ChatAgent
 from src.multi_agent.agents.product_agent import ProductAgent
 from src.multi_agent.agents.order_agent import OrderAgent
 from src.multi_agent.agents.consultation_agent import ConsultationAgent
+from src.multi_agent.agents.browser_agent import BrowserAgent
 from src.multi_agent.tools.tool_registry import ToolRegistry
 from src.multi_agent.agent_registry import (
     AgentRegistry,
@@ -180,6 +181,9 @@ class MultiAgentGraph:
             agents.append(ProductAgent(llm=self.llm))
             agents.append(OrderAgent(llm=self.llm))
             agents.append(ConsultationAgent(llm=self.llm))
+            
+            # 添加 Browser Agent（Agentic Web）
+            agents.append(BrowserAgent(llm=self.llm))
 
         return agents
 

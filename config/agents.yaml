@@ -77,6 +77,19 @@ agents:
       category: "consultation"
       capabilities: ["product_comparison", "specification_extraction", "compatibility_check", "recommendation"]
 
+  # Browser Agent - Agentic Web 浏览器自动化专家
+  - name: browser_agent
+    description: "浏览器自动化专家 - 在真实电商网站（京东、淘宝、天猫）搜索商品、跨平台比价、提取实时价格和库存，处理JavaScript渲染的动态内容"
+    enabled: true
+    priority: 30  # 高于product_agent和consultation_agent，优先处理真实网站搜索需求
+    route_config:
+      can_handoff_to: ["product_agent", "chat_agent"]
+      on_complete: "finish"
+      allow_escalation: false
+    metadata:
+      category: "agentic_web"
+      capabilities: ["real_time_search", "cross_platform_comparison", "dynamic_content_extraction", "price_tracking"]
+
 # 全局路由配置
 routing:
   # Supervisor路由策略
