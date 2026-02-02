@@ -187,13 +187,12 @@ class Plan(BaseModel):
 
 
 class PlanningOutput(BaseModel):
-    """Single-shot output for the planner node.
-
-    Combines:
-    - query_intent/entities extraction (previously done by intent_recognition node)
-    - an executable multi-step plan
+    """Output for the planner node.
+    
+    After Intent-Planner separation refactoring:
+    - QueryIntent is now handled by IntentRouter (upstream node)
+    - Planner only outputs the executable plan
     """
 
-    query_intent: QueryIntent = Field(description="意图识别+实体提取的结构化结果")
     plan: Plan = Field(description="可执行的多步骤计划")
 

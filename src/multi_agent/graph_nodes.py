@@ -30,6 +30,8 @@ from src.multi_agent.planning.models import (
     StepConditionType,
 )
 from src.multi_agent.planning.planner import Planner
+from src.multi_agent.planning.intent_router import IntentRouter
+from src.multi_agent.planning.query_intent import QueryIntent
 from src.multi_agent.response_models import TextResponse, ErrorResponse
 from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
@@ -54,11 +56,17 @@ class GraphNodeHandler:
         """
         self.graph = graph_instance
         self._planner: Planner | None = None
+        self._intent_router: IntentRouter | None = None
 
     def _get_planner(self) -> Planner:
         if self._planner is None:
             self._planner = Planner(llm=self.graph.llm)
         return self._planner
+
+    def _get_intent_router(self) -> IntentRouter:
+        if self._intent_router is None:
+            self._intent_router = IntentRouter(llm=self.graph.llm)
+        return self._intent_router
 
     # =========================
     # 展示信息辅助方法
@@ -257,8 +265,107 @@ class GraphNodeHandler:
                 "step_display": StepDisplay.hidden(),
             }
 
-    # intent_recognition_node removed:
-    # Intent/entities extraction is merged into the planner for single-shot consistency.
+    async def intent_router_node(self, state: MultiAgentState) -> MultiAgentState:
+        """Intent Router node - 意图分类和实体提取
+        
+        职责：
+        1. 识别业务意图 (business_intent_type)
+        2. 提取业务实体 (entities)
+        3. 检测外部平台指定 (external_platform, requires_external_search)
+        4. 识别订单子意图 (order_intent)
+        
+        设计原则（单一职责）：
+        - 只负责意图识别和实体提取
+        - 不负责计划生成（由 Planner 处理）
+        - 输出结构化的 QueryIntent，供下游节点使用
+        """
+        try:
+            # Extract latest user query
+            user_query = ""
+            for msg in reversed(state.messages):
+                if hasattr(msg, "content") and msg.content and isinstance(msg, HumanMessage):
+                    user_query = msg.content
+                    break
+            if not user_query:
+                user_query = state.original_question or ""
+            
+            if not user_query:
+                response_model = TextResponse(content="未找到用户输入，无法进行意图识别。")
+                return {
+                    "query_intent": None,
+                    **response_model.to_full_response(),
+                    "step_display": StepDisplay.create(
+                        name="🔍 分析意图",
+                        detail="未找到用户输入"
+                    ),
+                }
+            
+            intent_router = self._get_intent_router()
+            query_intent: QueryIntent = await intent_router.classify(
+                user_query=user_query,
+                context_bundle=state.context_bundle,
+            )
+            
+            # Persist intent & entities into state
+            intent_dict = query_intent.model_dump()
+            entities_update = {}
+            if query_intent.entities:
+                entities_update = query_intent.entities.model_dump(exclude_none=True)
+            merged_entities = {**(state.entities or {}), **(entities_update or {})}
+            
+            audit_event = {
+                "node": SystemNodeName.INTENT_ROUTER.value,
+                "event": "intent_classified",
+                "business_intent_type": query_intent.business_intent_type,
+                "external_platform": query_intent.external_platform,
+                "requires_external_search": query_intent.requires_external_search,
+                "confidence": query_intent.confidence,
+            }
+            
+            # Build display info
+            intent_display = {
+                "product_search": "商品搜索",
+                "product_comparison": "商品对比",
+                "order_management": "订单管理",
+                "social_chat": "社交对话",
+                "general_chat": "闲聊对话",
+            }.get(query_intent.business_intent_type, query_intent.business_intent_type)
+            
+            detail = f"识别为: {intent_display}"
+            if query_intent.external_platform:
+                detail += f" (指定平台: {query_intent.external_platform})"
+            
+            return {
+                "query_intent": intent_dict,
+                "entities": merged_entities,
+                "original_question": user_query,
+                "action_audit": state.action_audit + [audit_event],
+                "step_display": StepDisplay.create(
+                    name="🔍 分析意图",
+                    detail=detail
+                ),
+            }
+            
+        except Exception as e:
+            logger.error(f"intent_router_node error: {e}", exc_info=True)
+            response_model = ErrorResponse(
+                content="意图识别失败，系统将降级处理。",
+                error_message=str(e),
+                error_code="INTENT_ROUTER_ERROR",
+            )
+            return {
+                "query_intent": None,
+                "action_audit": state.action_audit + [{
+                    "node": SystemNodeName.INTENT_ROUTER.value,
+                    "event": "intent_classification_failed",
+                    "error": str(e),
+                }],
+                **response_model.to_full_response(),
+                "step_display": StepDisplay.create(
+                    name="🔍 分析意图",
+                    detail="意图识别失败，系统将降级处理"
+                ),
+            }
 
     async def policy_gate_node(self, state: MultiAgentState) -> MultiAgentState:
         """Policy gate node - risk assessment & governance decision.
@@ -324,14 +431,14 @@ class GraphNodeHandler:
             }
 
     async def planner_node(self, state: MultiAgentState) -> MultiAgentState:
-        """Planner node - produce PlanningOutput (query_intent + plan) stored in state."""
+        """Planner node - produce Plan based on QueryIntent from intent_router.
+        
+        After Intent-Planner separation:
+        - QueryIntent is already in state (set by intent_router_node)
+        - Planner only generates the execution plan
+        """
         try:
-            # Extract latest user query.
-            #
-            # Root-cause fix:
-            # In interrupt/resume flows, `original_question` can be stale because the resume
-            # does not pass through GraphStateManager.restore_state_from_checkpointer(question=...).
-            # Always prefer the latest HumanMessage as the "current turn" user query.
+            # Extract latest user query
             user_query = ""
             for msg in reversed(state.messages):
                 if hasattr(msg, "content") and msg.content and isinstance(msg, HumanMessage):
@@ -347,9 +454,26 @@ class GraphNodeHandler:
                     **response_model.to_full_response(),
                 }
 
+            # Get QueryIntent from state (set by intent_router_node)
+            query_intent_dict = state.query_intent
+            if not query_intent_dict:
+                # Fallback: if intent_router failed, create minimal QueryIntent
+                logger.warning("No query_intent in state, creating fallback intent")
+                query_intent = QueryIntent(
+                    intent_type="other",
+                    complexity="simple",
+                    needs_decomposition=False,
+                    business_intent_type="general_chat",
+                    confidence=0.5,
+                    reasoning="Fallback due to missing intent_router output",
+                )
+            else:
+                query_intent = QueryIntent.model_validate(query_intent_dict)
+
             planner = self._get_planner()
             output: PlanningOutput = await planner.plan(
                 user_query=user_query,
+                query_intent=query_intent,
                 context_bundle=state.context_bundle,
             )
 
@@ -365,9 +489,8 @@ class GraphNodeHandler:
             finish_first = bool(plan.steps) and plan.steps[0].step_type == PlanStepType.FINISH
 
             if not has_actionable_step or finish_first:
-                # Do NOT rely on LLM-provided action strings.
-                # Action binding is a deterministic system concern.
-                bit = getattr(output.query_intent, "business_intent_type", None)
+                # Use QueryIntent from state for deterministic repair
+                bit = query_intent.business_intent_type
                 action = {
                     "order_management": ActionName.ORDER_MANAGEMENT,
                     "product_search": ActionName.PRODUCT_SEARCH,
@@ -376,8 +499,7 @@ class GraphNodeHandler:
                     "general_chat": ActionName.CHAT,
                 }.get(str(bit), ActionName.CHAT)
 
-                # Reuse the single source of truth for execution binding:
-                # ActionName -> agent node mapping lives in GraphRouter, not here.
+                # Reuse the single source of truth for execution binding
                 tmp_state = MultiAgentState(next_action=action)
                 node_name = self.graph.router.route_after_supervisor(tmp_state)
                 try:
@@ -410,13 +532,6 @@ class GraphNodeHandler:
                     ],
                 )
 
-            # Persist intent & entities into state (single source of truth)
-            intent_dict = output.query_intent.model_dump()
-            entities_update = {}
-            if output.query_intent.entities:
-                entities_update = output.query_intent.entities.model_dump(exclude_none=True)
-            merged_entities = {**(state.entities or {}), **(entities_update or {})}
-
             audit_event = {
                 "node": SystemNodeName.PLANNER.value,
                 "event": "plan_created",
@@ -431,11 +546,8 @@ class GraphNodeHandler:
                 goal_display = goal_display[:50] + "..."
 
             return {
-                "query_intent": intent_dict,
-                "entities": merged_entities,
                 "plan": output.plan,
                 "action_audit": state.action_audit + [audit_event],
-                # Keep state consistent for downstream nodes/observability
                 "original_question": user_query,
                 "step_display": StepDisplay.create(
                     name="📋 制定计划",

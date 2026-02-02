@@ -31,6 +31,7 @@ class SystemNodeName(str, Enum):
     """Reserved system node names used in the LangGraph."""
 
     CONTEXT_MANAGER = "context_manager"
+    INTENT_ROUTER = "intent_router"
     SUPERVISOR = "supervisor"
     POLICY_GATE = "policy_gate"
     PLANNER = "planner"

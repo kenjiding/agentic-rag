@@ -122,6 +122,24 @@ class QueryIntent(BaseModel):
         ),
     )
 
+    # External platform routing (for deterministic browser_agent dispatch)
+    external_platform: Optional[str] = Field(
+        default=None,
+        description=(
+            "用户明确指定的外部电商平台名称（如 '淘宝', '京东', '咸鱼', '闲鱼', '天猫'）。"
+            "仅当用户明确要求在特定外部网站搜索时填写，否则为 None。"
+        ),
+    )
+
+    requires_external_search: bool = Field(
+        default=False,
+        description=(
+            "是否需要使用 browser_agent 进行外网搜索。"
+            "当 external_platform 有值时必须为 True；"
+            "当用户要求跨平台比价时也为 True。"
+        ),
+    )
+
     # Extensible bucket for future planner signals
     extra: Dict[str, Any] = Field(default_factory=dict)
 

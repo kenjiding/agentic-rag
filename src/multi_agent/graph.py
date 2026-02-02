@@ -367,8 +367,9 @@ class MultiAgentGraph:
 
         # 添加系统节点
         graph.add_node(SystemNodeName.CONTEXT_MANAGER.value, self.node_handler.context_manager_node)
-        graph.add_node(SystemNodeName.POLICY_GATE.value, self.node_handler.policy_gate_node)
+        graph.add_node(SystemNodeName.INTENT_ROUTER.value, self.node_handler.intent_router_node)
         graph.add_node(SystemNodeName.PLANNER.value, self.node_handler.planner_node)
+        graph.add_node(SystemNodeName.POLICY_GATE.value, self.node_handler.policy_gate_node)
         graph.add_node(SystemNodeName.PLAN_EXECUTOR.value, self.node_handler.plan_executor_node)
         graph.add_node(SystemNodeName.POST_ACTION_VERIFIER.value, self.node_handler.post_action_verifier_node)
         graph.add_node(SystemNodeName.SUPERVISOR.value, self.node_handler.supervisor_node)  # fallback
@@ -378,10 +379,11 @@ class MultiAgentGraph:
             graph.add_node(descriptor.name, descriptor.node)
             logger.info(f"添加Agent节点: {descriptor.name}")
 
-        # 设置入口点（修改：从context_manager开始）
+        # 设置入口点（从context_manager开始）
         graph.set_entry_point(SystemNodeName.CONTEXT_MANAGER.value)
-        # Plan-first: intent/entities extraction is merged into planner (single-shot)
-        graph.add_edge(SystemNodeName.CONTEXT_MANAGER.value, SystemNodeName.PLANNER.value)
+        # Intent-Planner separation: context_manager -> intent_router -> planner
+        graph.add_edge(SystemNodeName.CONTEXT_MANAGER.value, SystemNodeName.INTENT_ROUTER.value)
+        graph.add_edge(SystemNodeName.INTENT_ROUTER.value, SystemNodeName.PLANNER.value)
         graph.add_edge(SystemNodeName.PLANNER.value, SystemNodeName.POLICY_GATE.value)
         graph.add_edge(SystemNodeName.POLICY_GATE.value, SystemNodeName.PLAN_EXECUTOR.value)
         graph.add_edge(SystemNodeName.POST_ACTION_VERIFIER.value, SystemNodeName.PLAN_EXECUTOR.value)
