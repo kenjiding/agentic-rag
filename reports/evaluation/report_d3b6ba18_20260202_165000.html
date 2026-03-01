@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>评测报告 - 演示评测</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .score-ring {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-radius: 9999px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .status-success {
+            background: #dcfce7;
+            color: #166534;
+        }
+        .status-failed {
+            background: #fee2e2;
+            color: #991b1b;
+        }
+        .status-error {
+            background: #fef3c7;
+            color: #92400e;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold text-gray-900">演示评测</h1>
+            <p class="text-gray-600 mt-2">评测系统功能演示</p>
+            <p class="text-sm text-gray-500 mt-1">
+                生成时间: 2026-02-02 16:50:00
+            </p>
+        </header>
+        
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            
+            <div class="card">
+                <p class="text-sm text-gray-500">总用例数</p>
+                <p class="text-3xl font-bold text-gray-900">5</p>
+            </div>
+            <div class="card">
+                <p class="text-sm text-gray-500">通过率</p>
+                <p class="text-3xl font-bold text-green-600">80.0%</p>
+            </div>
+            <div class="card">
+                <p class="text-sm text-gray-500">平均延迟</p>
+                <p class="text-3xl font-bold text-gray-900">33ms</p>
+            </div>
+            <div class="card">
+                <p class="text-sm text-gray-500">违规次数</p>
+                <p class="text-3xl font-bold text-green-600">0</p>
+            </div>
+        
+        </div>
+        
+        <!-- Score Overview -->
+        <div class="card">
+            <h2 class="text-xl font-semibold mb-6">评分概览</h2>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-6">
+                
+                <div class="flex flex-col items-center">
+                    <div class="score-ring bg-yellow-100 text-yellow-600">63%</div>
+                    <p class="mt-2 text-sm text-gray-600">任务完成</p>
+                </div>
+            
+                <div class="flex flex-col items-center">
+                    <div class="score-ring bg-green-100 text-green-600">83%</div>
+                    <p class="mt-2 text-sm text-gray-600">轨迹质量</p>
+                </div>
+            
+                <div class="flex flex-col items-center">
+                    <div class="score-ring bg-green-100 text-green-600">100%</div>
+                    <p class="mt-2 text-sm text-gray-600">工具准确率</p>
+                </div>
+            
+                <div class="flex flex-col items-center">
+                    <div class="score-ring bg-green-100 text-green-600">100%</div>
+                    <p class="mt-2 text-sm text-gray-600">合规性</p>
+                </div>
+            
+            </div>
+        </div>
+        
+        <!-- Charts -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">用例状态分布</h2>
+                <canvas id="statusChart"></canvas>
+            </div>
+            <div class="card">
+                <h2 class="text-xl font-semibold mb-4">评分分布</h2>
+                <canvas id="scoreChart"></canvas>
+            </div>
+        </div>
+        
+        <!-- Consistency Metrics (if available) -->
+        
+        
+        <!-- Safety Violations -->
+        
+        
+        <!-- Results Table -->
+        <div class="card">
+            <h2 class="text-xl font-semibold mb-4">详细结果</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">用例ID</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">状态</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">任务完成</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">轨迹质量</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">工具准确率</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">合规性</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">延迟</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">basic_greeting_01</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="status-badge status-success">通过</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.90</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">166ms</td>
+                </tr>
+            
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">basic_greeting_02</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="status-badge status-success">通过</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.50</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.80</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0ms</td>
+                </tr>
+            
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">basic_knowledge_01</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="status-badge status-failed">失败</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.15</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.80</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0ms</td>
+                </tr>
+            
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">basic_knowledge_02</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="status-badge status-success">通过</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.50</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.80</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0ms</td>
+                </tr>
+            
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">basic_product_01</td>
+                    <td class="px-6 py-4 whitespace-nowrap">
+                        <span class="status-badge status-success">通过</span>
+                    </td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0.87</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">1.00</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">0ms</td>
+                </tr>
+            
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Status Chart
+        new Chart(document.getElementById('statusChart'), {
+            type: 'doughnut',
+            data: {
+                labels: ['通过', '失败', '错误'],
+                datasets: [{
+                    data: [4, 1, 0],
+                    backgroundColor: ['#22c55e', '#ef4444', '#f59e0b'],
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'bottom' }
+                }
+            }
+        });
+        
+        // Score Chart
+        new Chart(document.getElementById('scoreChart'), {
+            type: 'radar',
+            data: {
+                labels: ['任务完成', '轨迹质量', '工具准确率', '合规性'],
+                datasets: [{
+                    label: '平均分数',
+                    data: [
+                        0.63,
+                        0.83,
+                        1.00,
+                        1.00
+                    ],
+                    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                    borderColor: 'rgb(59, 130, 246)',
+                    pointBackgroundColor: 'rgb(59, 130, 246)',
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    r: {
+                        beginAtZero: true,
+                        max: 1
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

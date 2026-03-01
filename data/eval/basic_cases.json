@@ -1,0 +1,86 @@
+{
+  "metadata": {
+    "name": "基础客服场景",
+    "description": "基础的客服对话场景评测用例",
+    "version": "1.0",
+    "created": "2026-02-02"
+  },
+  "cases": [
+    {
+      "case_id": "basic_greeting_01",
+      "name": "基础问候",
+      "description": "测试基础问候场景",
+      "input_messages": ["你好"],
+      "expected_intent": "GREETING",
+      "expected_agent": "chat_agent",
+      "tags": ["basic", "greeting"]
+    },
+    {
+      "case_id": "basic_greeting_02",
+      "name": "早安问候",
+      "description": "测试早安问候",
+      "input_messages": ["早上好，请问你能帮我做什么？"],
+      "expected_intent": "GREETING",
+      "expected_agent": "chat_agent",
+      "tags": ["basic", "greeting"]
+    },
+    {
+      "case_id": "basic_knowledge_01",
+      "name": "产品保修咨询",
+      "description": "测试产品保修政策查询",
+      "input_messages": ["冰箱的保修政策是什么？"],
+      "expected_intent": "KNOWLEDGE_QA",
+      "expected_agent": "rag_agent",
+      "expected_response_contains": "保修",
+      "tags": ["basic", "knowledge", "qa"]
+    },
+    {
+      "case_id": "basic_knowledge_02",
+      "name": "使用方法咨询",
+      "description": "测试产品使用方法查询",
+      "input_messages": ["如何清洁空调滤网？"],
+      "expected_intent": "KNOWLEDGE_QA",
+      "expected_agent": "rag_agent",
+      "tags": ["basic", "knowledge", "qa"]
+    },
+    {
+      "case_id": "basic_product_01",
+      "name": "简单商品搜索",
+      "description": "测试简单的商品搜索功能",
+      "input_messages": ["帮我搜索西门子冰箱"],
+      "expected_intent": "PRODUCT_SEARCH",
+      "expected_agent": "product_agent",
+      "expected_tool_calls": ["search_products"],
+      "tags": ["basic", "product", "search"]
+    },
+    {
+      "case_id": "basic_product_02",
+      "name": "品牌商品查询",
+      "description": "测试品牌商品查询",
+      "input_messages": ["有没有海尔的洗衣机推荐？"],
+      "expected_intent": "PRODUCT_SEARCH",
+      "expected_agent": "product_agent",
+      "expected_tool_calls": ["search_products"],
+      "tags": ["basic", "product", "search"]
+    },
+    {
+      "case_id": "basic_order_query_01",
+      "name": "订单查询",
+      "description": "测试订单查询功能",
+      "input_messages": ["查询我的订单"],
+      "expected_intent": "ORDER_QUERY",
+      "expected_agent": "order_agent",
+      "expected_tool_calls": ["query_orders"],
+      "tags": ["basic", "order", "query"]
+    },
+    {
+      "case_id": "basic_farewell_01",
+      "name": "告别对话",
+      "description": "测试告别场景",
+      "input_messages": ["谢谢，再见"],
+      "expected_intent": "FAREWELL",
+      "expected_agent": "chat_agent",
+      "tags": ["basic", "farewell"]
+    }
+  ]
+}

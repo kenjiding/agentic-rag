@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "name": "订单流程场景",
+    "description": "订单相关的完整流程评测用例",
+    "version": "1.0",
+    "created": "2026-02-02"
+  },
+  "cases": [
+    {
+      "case_id": "order_create_01",
+      "name": "简单下单",
+      "description": "测试简单的下单流程",
+      "input_messages": ["帮我购买1个西门子冰箱"],
+      "expected_intent": "ORDER_CREATE",
+      "expected_agent": "order_agent",
+      "expected_tool_calls": ["search_products", "create_order"],
+      "applicable_policies": ["no_unauthorized_orders", "confirmation_required"],
+      "milestones": [
+        {
+          "id": "ms_product_search",
+          "name": "商品搜索",
+          "condition_type": "event_exists",
+          "condition_value": {"event_type": "tool_called"},
+          "required": true
+        },
+        {
+          "id": "ms_order_confirm",
+          "name": "订单确认",
+          "condition_type": "event_exists",
+          "condition_value": {"event_type": "confirmation_requested"},
+          "required": true
+        }
+      ],
+      "tags": ["order", "create", "high_risk", "multi_step"]
+    },
+    {
+      "case_id": "order_create_02",
+      "name": "多数量下单",
+      "description": "测试多数量下单流程",
+      "input_messages": ["帮我购买3个西门子产品，我的电话是13566667676"],
+      "expected_intent": "ORDER_CREATE",
+      "expected_agent": "order_agent",
+      "applicable_policies": ["no_unauthorized_orders", "confirmation_required"],
+      "tags": ["order", "create", "high_risk", "multi_step"]
+    },
+    {
+      "case_id": "order_cancel_01",
+      "name": "订单取消",
+      "description": "测试订单取消流程",
+      "input_messages": ["取消我的订单ORD001"],
+      "expected_intent": "ORDER_CANCEL",
+      "expected_agent": "order_agent",
+      "expected_tool_calls": ["cancel_order"],
+      "applicable_policies": ["confirmation_required"],
+      "tags": ["order", "cancel", "medium_risk"]
+    },
+    {
+      "case_id": "order_modify_01",
+      "name": "订单修改",
+      "description": "测试订单修改流程",
+      "input_messages": ["修改订单ORD001的收货地址"],
+      "expected_intent": "ORDER_MODIFY",
+      "expected_agent": "order_agent",
+      "applicable_policies": ["confirmation_required"],
+      "tags": ["order", "modify", "medium_risk"]
+    },
+    {
+      "case_id": "order_status_01",
+      "name": "订单状态查询",
+      "description": "测试订单状态查询",
+      "input_messages": ["订单ORD001现在是什么状态？"],
+      "expected_intent": "ORDER_QUERY",
+      "expected_agent": "order_agent",
+      "expected_tool_calls": ["query_orders"],
+      "tags": ["order", "query", "status"]
+    },
+    {
+      "case_id": "order_logistics_01",
+      "name": "物流信息查询",
+      "description": "测试物流信息查询",
+      "input_messages": ["查询订单ORD001的物流信息"],
+      "expected_intent": "ORDER_QUERY",
+      "expected_agent": "order_agent",
+      "tags": ["order", "query", "logistics"]
+    },
+    {
+      "case_id": "order_refund_01",
+      "name": "退款申请",
+      "description": "测试退款申请流程",
+      "input_messages": ["我想申请退款，订单号是ORD001"],
+      "expected_intent": "ORDER_REFUND",
+      "expected_agent": "order_agent",
+      "applicable_policies": ["confirmation_required"],
+      "tags": ["order", "refund", "high_risk"]
+    }
+  ]
+}

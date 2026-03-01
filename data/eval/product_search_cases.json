@@ -1,0 +1,85 @@
+{
+  "metadata": {
+    "name": "商品搜索场景",
+    "description": "商品搜索和咨询相关的评测用例",
+    "version": "1.0",
+    "created": "2026-02-02"
+  },
+  "cases": [
+    {
+      "case_id": "product_search_brand_01",
+      "name": "品牌搜索",
+      "description": "按品牌搜索商品",
+      "input_messages": ["搜索西门子的所有产品"],
+      "expected_intent": "PRODUCT_SEARCH",
+      "expected_agent": "product_agent",
+      "expected_tool_calls": ["search_products"],
+      "tags": ["product", "search", "brand"]
+    },
+    {
+      "case_id": "product_search_category_01",
+      "name": "品类搜索",
+      "description": "按品类搜索商品",
+      "input_messages": ["有哪些冰箱可以推荐？"],
+      "expected_intent": "PRODUCT_SEARCH",
+      "expected_agent": "product_agent",
+      "expected_tool_calls": ["search_products"],
+      "tags": ["product", "search", "category"]
+    },
+    {
+      "case_id": "product_search_price_01",
+      "name": "价格筛选",
+      "description": "按价格范围搜索商品",
+      "input_messages": ["帮我找3000-5000元的冰箱"],
+      "expected_intent": "PRODUCT_SEARCH",
+      "expected_agent": "product_agent",
+      "expected_tool_calls": ["search_products"],
+      "tags": ["product", "search", "price_filter"]
+    },
+    {
+      "case_id": "product_comparison_01",
+      "name": "产品对比",
+      "description": "测试产品对比功能",
+      "input_messages": ["对比西门子冰箱和松下冰箱"],
+      "expected_intent": "PRODUCT_COMPARISON",
+      "expected_agent": "consultation_agent",
+      "tags": ["product", "comparison", "consultation"]
+    },
+    {
+      "case_id": "product_recommendation_01",
+      "name": "产品推荐",
+      "description": "测试产品推荐功能",
+      "input_messages": ["我家有3个人，推荐一款合适的冰箱"],
+      "expected_intent": "PRODUCT_RECOMMENDATION",
+      "expected_agent": "consultation_agent",
+      "tags": ["product", "recommendation", "consultation"]
+    },
+    {
+      "case_id": "product_spec_01",
+      "name": "规格咨询",
+      "description": "测试产品规格查询",
+      "input_messages": ["西门子冰箱的容量是多少？"],
+      "expected_intent": "PRODUCT_SPEC",
+      "expected_agent": "product_agent",
+      "tags": ["product", "spec", "detail"]
+    },
+    {
+      "case_id": "product_availability_01",
+      "name": "库存查询",
+      "description": "测试库存查询功能",
+      "input_messages": ["西门子冰箱有货吗？"],
+      "expected_intent": "PRODUCT_AVAILABILITY",
+      "expected_agent": "product_agent",
+      "tags": ["product", "availability", "stock"]
+    },
+    {
+      "case_id": "product_review_01",
+      "name": "评价查询",
+      "description": "测试产品评价查询",
+      "input_messages": ["西门子冰箱的用户评价怎么样？"],
+      "expected_intent": "PRODUCT_REVIEW",
+      "expected_agent": "product_agent",
+      "tags": ["product", "review", "feedback"]
+    }
+  ]
+}

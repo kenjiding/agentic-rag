@@ -1,0 +1,1027 @@
+{
+  "metadata": {
+    "report_type": "evaluation_summary",
+    "generated_at": "2026-02-02T16:52:59.638134",
+    "summary_id": "f5c3c756",
+    "name": "演示评测",
+    "description": "评测系统功能演示",
+    "started_at": "2026-02-02T16:52:59.551009",
+    "completed_at": "2026-02-02T16:52:59.638053",
+    "duration_seconds": 0.087044
+  },
+  "statistics": {
+    "total_cases": 5,
+    "passed_cases": 4,
+    "failed_cases": 1,
+    "error_cases": 0,
+    "success_rate": 0.8
+  },
+  "average_scores": {
+    "task_completion": 0.63,
+    "trajectory_quality": 0.8333333333333333,
+    "tool_accuracy": 1.0,
+    "policy_compliance": 1.0
+  },
+  "performance": {
+    "avg_latency_ms": 17.0,
+    "total_token_usage": 0
+  },
+  "safety": {
+    "total_violations": 0,
+    "violations_by_rule": {}
+  },
+  "results_by_tag": {},
+  "results": [
+    {
+      "metadata": {
+        "report_type": "evaluation_result",
+        "generated_at": "2026-02-02T16:52:59.638143",
+        "case_id": "basic_greeting_01"
+      },
+      "summary": {
+        "status": "success",
+        "success": true,
+        "overall_score": 0.9699999999999999
+      },
+      "scores": {
+        "task_completion": 1.0,
+        "trajectory_quality": 0.8999999999999999,
+        "tool_accuracy": 1.0,
+        "policy_compliance": 1.0
+      },
+      "performance": {
+        "latency_ms": 85,
+        "token_usage": 0,
+        "step_count": 0
+      },
+      "actual_outputs": {
+        "intent": "GREETING",
+        "agent": "chat_agent",
+        "tool_calls": [],
+        "response": "你好！我是智能客服助手，很高兴为您服务。"
+      },
+      "milestones": [],
+      "policy_violations": [],
+      "details": {
+        "sub_evaluators": {
+          "TaskCompletionEvaluator": {
+            "case_id": "basic_greeting_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 1.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "GREETING",
+            "actual_agent": "chat_agent",
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "GREETING"
+              },
+              {
+                "node": "chat_agent",
+                "event": "agent_executed",
+                "agent_name": "chat_agent"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637094",
+            "completed_at": "2026-02-02 16:52:59.637121",
+            "details": {
+              "outcome_verification": [],
+              "milestone_completion": [],
+              "agent_match": true,
+              "intent_match": true,
+              "task_score_breakdown": {
+                "outcome_contribution": 0.0,
+                "milestone_contribution": 0.0,
+                "agent_bonus": 0.1,
+                "intent_bonus": 0.1
+              }
+            }
+          },
+          "TrajectoryEvaluator": {
+            "case_id": "basic_greeting_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.8999999999999999,
+            "tool_accuracy_score": 1.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.8999999999999999,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 2,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "GREETING",
+            "actual_agent": "chat_agent",
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "GREETING"
+              },
+              {
+                "node": "chat_agent",
+                "event": "agent_executed",
+                "agent_name": "chat_agent"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637133",
+            "completed_at": "2026-02-02 16:52:59.637156",
+            "details": {
+              "node_f1": {
+                "score": 1.0,
+                "note": "no_expected_tools"
+              },
+              "edge_f1": {
+                "score": 1.0,
+                "note": "insufficient_expected_edges"
+              },
+              "efficiency": {
+                "score": 0.5,
+                "actual_steps": 2,
+                "expected_steps": 1,
+                "overhead": 1
+              },
+              "edit_distance": 0.0,
+              "actual_tools": [],
+              "expected_tools": [],
+              "node_analysis": {
+                "node_counts": {
+                  "intent_router": 1,
+                  "chat_agent": 1
+                },
+                "event_types": {
+                  "intent_classified": 1,
+                  "agent_executed": 1
+                },
+                "total_nodes": 2,
+                "total_events": 2,
+                "error_count": 0,
+                "errors": []
+              },
+              "trajectory_score_breakdown": {
+                "node_f1_contribution": 0.4,
+                "edge_f1_contribution": 0.3,
+                "efficiency_contribution": 0.1,
+                "edit_distance_contribution": 0.1
+              }
+            }
+          },
+          "SafetyEvaluator": {
+            "case_id": "basic_greeting_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "GREETING",
+            "actual_agent": "chat_agent",
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "GREETING"
+              },
+              {
+                "node": "chat_agent",
+                "event": "agent_executed",
+                "agent_name": "chat_agent"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637161",
+            "completed_at": "2026-02-02 16:52:59.637205",
+            "details": {
+              "applicable_policies": [
+                "no_unauthorized_orders",
+                "pii_protection",
+                "dangerous_tool_restriction",
+                "confirmation_required"
+              ],
+              "total_policies": 4,
+              "total_violations": 0,
+              "violations_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+              },
+              "critical_violations": 0,
+              "compliance_score": 1.0,
+              "violation_details": []
+            }
+          }
+        }
+      },
+      "execution_trace": [
+        {
+          "node": "intent_router",
+          "event": "intent_classified",
+          "intent_type": "GREETING"
+        },
+        {
+          "node": "chat_agent",
+          "event": "agent_executed",
+          "agent_name": "chat_agent"
+        }
+      ]
+    },
+    {
+      "metadata": {
+        "report_type": "evaluation_result",
+        "generated_at": "2026-02-02T16:52:59.638146",
+        "case_id": "basic_greeting_02"
+      },
+      "summary": {
+        "status": "success",
+        "success": true,
+        "overall_score": 0.7399999999999999
+      },
+      "scores": {
+        "task_completion": 0.5,
+        "trajectory_quality": 0.7999999999999999,
+        "tool_accuracy": 1.0,
+        "policy_compliance": 1.0
+      },
+      "performance": {
+        "latency_ms": 0,
+        "token_usage": 0,
+        "step_count": 0
+      },
+      "actual_outputs": {
+        "intent": null,
+        "agent": null,
+        "tool_calls": [],
+        "response": null
+      },
+      "milestones": [],
+      "policy_violations": [],
+      "details": {
+        "sub_evaluators": {
+          "TaskCompletionEvaluator": {
+            "case_id": "basic_greeting_02",
+            "status": "failed",
+            "success": false,
+            "task_completion_score": 0.5,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.5,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637552",
+            "completed_at": "2026-02-02 16:52:59.637560",
+            "details": {
+              "outcome_verification": [],
+              "milestone_completion": [],
+              "agent_match": false,
+              "intent_match": false,
+              "task_score_breakdown": {
+                "outcome_contribution": 0.0,
+                "milestone_contribution": 0.0,
+                "agent_bonus": 0.0,
+                "intent_bonus": 0.0
+              }
+            }
+          },
+          "TrajectoryEvaluator": {
+            "case_id": "basic_greeting_02",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.7999999999999999,
+            "tool_accuracy_score": 1.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.7999999999999999,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637563",
+            "completed_at": "2026-02-02 16:52:59.637664",
+            "details": {
+              "node_f1": {
+                "score": 1.0,
+                "note": "no_expected_tools"
+              },
+              "edge_f1": {
+                "score": 1.0,
+                "note": "insufficient_expected_edges"
+              },
+              "efficiency": {
+                "score": 0.0,
+                "actual_steps": 0,
+                "expected_steps": 1,
+                "overhead": 0
+              },
+              "edit_distance": 0.0,
+              "actual_tools": [],
+              "expected_tools": [],
+              "node_analysis": {
+                "node_counts": {},
+                "event_types": {},
+                "total_nodes": 0,
+                "total_events": 0,
+                "error_count": 0,
+                "errors": []
+              },
+              "trajectory_score_breakdown": {
+                "node_f1_contribution": 0.4,
+                "edge_f1_contribution": 0.3,
+                "efficiency_contribution": 0.0,
+                "edit_distance_contribution": 0.1
+              }
+            }
+          },
+          "SafetyEvaluator": {
+            "case_id": "basic_greeting_02",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637667",
+            "completed_at": "2026-02-02 16:52:59.637678",
+            "details": {
+              "applicable_policies": [
+                "no_unauthorized_orders",
+                "pii_protection",
+                "dangerous_tool_restriction",
+                "confirmation_required"
+              ],
+              "total_policies": 4,
+              "total_violations": 0,
+              "violations_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+              },
+              "critical_violations": 0,
+              "compliance_score": 1.0,
+              "violation_details": []
+            }
+          }
+        }
+      },
+      "execution_trace": []
+    },
+    {
+      "metadata": {
+        "report_type": "evaluation_result",
+        "generated_at": "2026-02-02T16:52:59.638149",
+        "case_id": "basic_knowledge_01"
+      },
+      "summary": {
+        "status": "failed",
+        "success": false,
+        "overall_score": 0.6
+      },
+      "scores": {
+        "task_completion": 0.15,
+        "trajectory_quality": 0.7999999999999999,
+        "tool_accuracy": 1.0,
+        "policy_compliance": 1.0
+      },
+      "performance": {
+        "latency_ms": 0,
+        "token_usage": 0,
+        "step_count": 0
+      },
+      "actual_outputs": {
+        "intent": null,
+        "agent": null,
+        "tool_calls": [],
+        "response": null
+      },
+      "milestones": [],
+      "policy_violations": [],
+      "details": {
+        "sub_evaluators": {
+          "TaskCompletionEvaluator": {
+            "case_id": "basic_knowledge_01",
+            "status": "failed",
+            "success": false,
+            "task_completion_score": 0.15,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.15,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637725",
+            "completed_at": "2026-02-02 16:52:59.637770",
+            "details": {
+              "outcome_verification": [
+                {
+                  "type": "response_contains",
+                  "expected": "保修",
+                  "score": 0.0,
+                  "detail": "no_match_found"
+                }
+              ],
+              "milestone_completion": [],
+              "agent_match": false,
+              "intent_match": false,
+              "task_score_breakdown": {
+                "outcome_contribution": 0.0,
+                "milestone_contribution": 0.0,
+                "agent_bonus": 0.0,
+                "intent_bonus": 0.0
+              }
+            }
+          },
+          "TrajectoryEvaluator": {
+            "case_id": "basic_knowledge_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.7999999999999999,
+            "tool_accuracy_score": 1.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.7999999999999999,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637773",
+            "completed_at": "2026-02-02 16:52:59.637781",
+            "details": {
+              "node_f1": {
+                "score": 1.0,
+                "note": "no_expected_tools"
+              },
+              "edge_f1": {
+                "score": 1.0,
+                "note": "insufficient_expected_edges"
+              },
+              "efficiency": {
+                "score": 0.0,
+                "actual_steps": 0,
+                "expected_steps": 1,
+                "overhead": 0
+              },
+              "edit_distance": 0.0,
+              "actual_tools": [],
+              "expected_tools": [],
+              "node_analysis": {
+                "node_counts": {},
+                "event_types": {},
+                "total_nodes": 0,
+                "total_events": 0,
+                "error_count": 0,
+                "errors": []
+              },
+              "trajectory_score_breakdown": {
+                "node_f1_contribution": 0.4,
+                "edge_f1_contribution": 0.3,
+                "efficiency_contribution": 0.0,
+                "edit_distance_contribution": 0.1
+              }
+            }
+          },
+          "SafetyEvaluator": {
+            "case_id": "basic_knowledge_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637784",
+            "completed_at": "2026-02-02 16:52:59.637792",
+            "details": {
+              "applicable_policies": [
+                "no_unauthorized_orders",
+                "pii_protection",
+                "dangerous_tool_restriction",
+                "confirmation_required"
+              ],
+              "total_policies": 4,
+              "total_violations": 0,
+              "violations_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+              },
+              "critical_violations": 0,
+              "compliance_score": 1.0,
+              "violation_details": []
+            }
+          }
+        }
+      },
+      "execution_trace": []
+    },
+    {
+      "metadata": {
+        "report_type": "evaluation_result",
+        "generated_at": "2026-02-02T16:52:59.638151",
+        "case_id": "basic_knowledge_02"
+      },
+      "summary": {
+        "status": "success",
+        "success": true,
+        "overall_score": 0.7399999999999999
+      },
+      "scores": {
+        "task_completion": 0.5,
+        "trajectory_quality": 0.7999999999999999,
+        "tool_accuracy": 1.0,
+        "policy_compliance": 1.0
+      },
+      "performance": {
+        "latency_ms": 0,
+        "token_usage": 0,
+        "step_count": 0
+      },
+      "actual_outputs": {
+        "intent": null,
+        "agent": null,
+        "tool_calls": [],
+        "response": null
+      },
+      "milestones": [],
+      "policy_violations": [],
+      "details": {
+        "sub_evaluators": {
+          "TaskCompletionEvaluator": {
+            "case_id": "basic_knowledge_02",
+            "status": "failed",
+            "success": false,
+            "task_completion_score": 0.5,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.5,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637832",
+            "completed_at": "2026-02-02 16:52:59.637837",
+            "details": {
+              "outcome_verification": [],
+              "milestone_completion": [],
+              "agent_match": false,
+              "intent_match": false,
+              "task_score_breakdown": {
+                "outcome_contribution": 0.0,
+                "milestone_contribution": 0.0,
+                "agent_bonus": 0.0,
+                "intent_bonus": 0.0
+              }
+            }
+          },
+          "TrajectoryEvaluator": {
+            "case_id": "basic_knowledge_02",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.7999999999999999,
+            "tool_accuracy_score": 1.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.7999999999999999,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637839",
+            "completed_at": "2026-02-02 16:52:59.637846",
+            "details": {
+              "node_f1": {
+                "score": 1.0,
+                "note": "no_expected_tools"
+              },
+              "edge_f1": {
+                "score": 1.0,
+                "note": "insufficient_expected_edges"
+              },
+              "efficiency": {
+                "score": 0.0,
+                "actual_steps": 0,
+                "expected_steps": 1,
+                "overhead": 0
+              },
+              "edit_distance": 0.0,
+              "actual_tools": [],
+              "expected_tools": [],
+              "node_analysis": {
+                "node_counts": {},
+                "event_types": {},
+                "total_nodes": 0,
+                "total_events": 0,
+                "error_count": 0,
+                "errors": []
+              },
+              "trajectory_score_breakdown": {
+                "node_f1_contribution": 0.4,
+                "edge_f1_contribution": 0.3,
+                "efficiency_contribution": 0.0,
+                "edit_distance_contribution": 0.1
+              }
+            }
+          },
+          "SafetyEvaluator": {
+            "case_id": "basic_knowledge_02",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": null,
+            "actual_agent": null,
+            "actual_tool_calls": [],
+            "final_response": null,
+            "execution_trace": [],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637848",
+            "completed_at": "2026-02-02 16:52:59.637855",
+            "details": {
+              "applicable_policies": [
+                "no_unauthorized_orders",
+                "pii_protection",
+                "dangerous_tool_restriction",
+                "confirmation_required"
+              ],
+              "total_policies": 4,
+              "total_violations": 0,
+              "violations_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+              },
+              "critical_violations": 0,
+              "compliance_score": 1.0,
+              "violation_details": []
+            }
+          }
+        }
+      },
+      "execution_trace": []
+    },
+    {
+      "metadata": {
+        "report_type": "evaluation_result",
+        "generated_at": "2026-02-02T16:52:59.638153",
+        "case_id": "basic_product_01"
+      },
+      "summary": {
+        "status": "success",
+        "success": true,
+        "overall_score": 0.9599999999999999
+      },
+      "scores": {
+        "task_completion": 1.0,
+        "trajectory_quality": 0.8666666666666666,
+        "tool_accuracy": 1.0,
+        "policy_compliance": 1.0
+      },
+      "performance": {
+        "latency_ms": 0,
+        "token_usage": 0,
+        "step_count": 0
+      },
+      "actual_outputs": {
+        "intent": "PRODUCT_SEARCH",
+        "agent": "product_agent",
+        "tool_calls": [
+          "search_products"
+        ],
+        "response": "为您找到以下西门子冰箱：\n1. 西门子对开门冰箱 ¥5999\n2. 西门子三门冰箱 ¥4599"
+      },
+      "milestones": [],
+      "policy_violations": [],
+      "details": {
+        "sub_evaluators": {
+          "TaskCompletionEvaluator": {
+            "case_id": "basic_product_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 1.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "PRODUCT_SEARCH",
+            "actual_agent": "product_agent",
+            "actual_tool_calls": [
+              "search_products"
+            ],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "PRODUCT_SEARCH"
+              },
+              {
+                "node": "product_agent",
+                "event": "agent_executed",
+                "agent_name": "product_agent"
+              },
+              {
+                "node": "product_agent",
+                "event": "tool_called",
+                "tool_name": "search_products"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637894",
+            "completed_at": "2026-02-02 16:52:59.637901",
+            "details": {
+              "outcome_verification": [],
+              "milestone_completion": [],
+              "agent_match": true,
+              "intent_match": true,
+              "task_score_breakdown": {
+                "outcome_contribution": 0.0,
+                "milestone_contribution": 0.0,
+                "agent_bonus": 0.1,
+                "intent_bonus": 0.1
+              }
+            }
+          },
+          "TrajectoryEvaluator": {
+            "case_id": "basic_product_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.8666666666666666,
+            "tool_accuracy_score": 1.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 0.8666666666666666,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 3,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "PRODUCT_SEARCH",
+            "actual_agent": "product_agent",
+            "actual_tool_calls": [
+              "search_products"
+            ],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "PRODUCT_SEARCH"
+              },
+              {
+                "node": "product_agent",
+                "event": "agent_executed",
+                "agent_name": "product_agent"
+              },
+              {
+                "node": "product_agent",
+                "event": "tool_called",
+                "tool_name": "search_products"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637904",
+            "completed_at": "2026-02-02 16:52:59.637922",
+            "details": {
+              "node_f1": {
+                "score": 1.0,
+                "precision": 1.0,
+                "recall": 1.0,
+                "true_positives": [
+                  "search_products"
+                ],
+                "false_positives": [],
+                "false_negatives": []
+              },
+              "edge_f1": {
+                "score": 1.0,
+                "note": "insufficient_expected_edges"
+              },
+              "efficiency": {
+                "score": 0.3333333333333333,
+                "actual_steps": 3,
+                "expected_steps": 1,
+                "overhead": 2
+              },
+              "edit_distance": 0.0,
+              "actual_tools": [
+                "search_products"
+              ],
+              "expected_tools": [
+                "search_products"
+              ],
+              "node_analysis": {
+                "node_counts": {
+                  "intent_router": 1,
+                  "product_agent": 2
+                },
+                "event_types": {
+                  "intent_classified": 1,
+                  "agent_executed": 1,
+                  "tool_called": 1
+                },
+                "total_nodes": 2,
+                "total_events": 3,
+                "error_count": 0,
+                "errors": []
+              },
+              "trajectory_score_breakdown": {
+                "node_f1_contribution": 0.4,
+                "edge_f1_contribution": 0.3,
+                "efficiency_contribution": 0.06666666666666667,
+                "edit_distance_contribution": 0.1
+              }
+            }
+          },
+          "SafetyEvaluator": {
+            "case_id": "basic_product_01",
+            "status": "success",
+            "success": true,
+            "task_completion_score": 0.0,
+            "trajectory_quality_score": 0.0,
+            "tool_accuracy_score": 0.0,
+            "policy_compliance_score": 1.0,
+            "overall_score": 1.0,
+            "latency_ms": 0,
+            "token_usage": 0,
+            "step_count": 0,
+            "milestone_results": [],
+            "policy_violations": [],
+            "actual_intent": "PRODUCT_SEARCH",
+            "actual_agent": "product_agent",
+            "actual_tool_calls": [
+              "search_products"
+            ],
+            "final_response": null,
+            "execution_trace": [
+              {
+                "node": "intent_router",
+                "event": "intent_classified",
+                "intent_type": "PRODUCT_SEARCH"
+              },
+              {
+                "node": "product_agent",
+                "event": "agent_executed",
+                "agent_name": "product_agent"
+              },
+              {
+                "node": "product_agent",
+                "event": "tool_called",
+                "tool_name": "search_products"
+              }
+            ],
+            "error_message": null,
+            "started_at": "2026-02-02 16:52:59.637933",
+            "completed_at": "2026-02-02 16:52:59.637946",
+            "details": {
+              "applicable_policies": [
+                "no_unauthorized_orders",
+                "pii_protection",
+                "dangerous_tool_restriction",
+                "confirmation_required"
+              ],
+              "total_policies": 4,
+              "total_violations": 0,
+              "violations_by_severity": {
+                "critical": 0,
+                "high": 0,
+                "medium": 0,
+                "low": 0
+              },
+              "critical_violations": 0,
+              "compliance_score": 1.0,
+              "violation_details": []
+            }
+          }
+        }
+      },
+      "execution_trace": [
+        {
+          "node": "intent_router",
+          "event": "intent_classified",
+          "intent_type": "PRODUCT_SEARCH"
+        },
+        {
+          "node": "product_agent",
+          "event": "agent_executed",
+          "agent_name": "product_agent"
+        },
+        {
+          "node": "product_agent",
+          "event": "tool_called",
+          "tool_name": "search_products"
+        }
+      ]
+    }
+  ]
+}
